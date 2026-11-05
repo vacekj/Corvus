@@ -99,6 +99,30 @@ public final class SignalCli {
         return env
     }
 
+    /// The Java build of signal-cli is a shell script; the native build is a Mach-O binary.
+    nonisolated public static func isJavaLauncher(_ executable: String) -> Bool {
+        guard let h = FileHandle(forReadingAtPath: executable) else { return false }
+        defer { try? h.close() }
+        return h.readData(ofLength: 2) == Data("#!".utf8)
+    }
+
+    /// Faster JVM start for the long-running jsonRpc process: the classes signal-cli loads are kept in a
+    /// class-data-sharing archive that the JVM creates on the first run and maps on later ones (~25 % faster
+    /// to the first answer). JVM log output goes to stderr so stdout stays JSON only.
+    nonisolated public static func javaEnvironment(_ env: [String: String], executable: String) -> [String: String] {
+        guard isJavaLauncher(executable), env["CORVUS_NO_CDS"] == nil else { return env }
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("io.github.corvus.mac", isDirectory: true)
+        try? FileManager.default.createDirectory(at: caches, withIntermediateDirectories: true)
+        // One archive per signal-cli installation (an upgrade makes the JVM rebuild it anyway).
+        let stable = executable.utf8.reduce(UInt64(1469598103934665603)) { ($0 ^ UInt64($1)) &* 1099511628211 }
+        let archive = caches.appendingPathComponent("signal-cli-\(String(stable, radix: 36)).jsa").path
+        var env = env
+        let opts = "-Xlog:disable -Xlog:all=warning:stderr -XX:+AutoCreateSharedArchive -XX:SharedArchiveFile=\(archive)"
+        env["JAVA_OPTS"] = [env["JAVA_OPTS"], opts].compactMap { $0 }.joined(separator: " ")
+        return env
+    }
+
     /// Phone numbers are masked in diagnostics unless CORVUS_DEBUG is set.
     nonisolated public static func maskNumbers(_ text: String) -> String {
         if ProcessInfo.processInfo.environment["CORVUS_DEBUG"] != nil { return text }
@@ -216,7 +240,7 @@ public final class SignalCli {
         stop()
         let p = Process()
         SignalCli.configure(p, executable: executable, arguments: ["-a", account, "jsonRpc"])
-        p.environment = SignalCli.childEnvironment()
+        p.environment = SignalCli.javaEnvironment(SignalCli.childEnvironment(), executable: executable)
         p.qualityOfService = .userInitiated
         let input = Pipe(), output = Pipe(), errors = Pipe()
         p.standardInput = input

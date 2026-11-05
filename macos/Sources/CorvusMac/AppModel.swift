@@ -147,9 +147,16 @@ final class AppModel {
     var account: String { chats.account }
 
     init() {
-        cli.onEnvelope = { [weak self] env in self?.onEnvelope(env) }
+        cli.onEnvelope = { [weak self] env in
+            guard let self else { return }
+            // signal-cli may start while the history is still being unlocked: keep messages until it is loaded.
+            if self.historyReady { self.onEnvelope(env) } else { self.earlyEnvelopes.append(env) }
+        }
         cli.onCallEvent = { [weak self] ev in self?.onCallEvent(ev) }
         cli.onStopped = { [weak self] reason in
+            // A quick start that did not hold: check signal-cli and the account properly next time.
+            if let t = self?.fastStartAt, Date().timeIntervalSince(t) < 30 { self?.fullCheckNext = true }
+            if self?.earlyStarted == true { self?.earlyStarted = false; self?.fullCheckNext = true }
             self?.setConnected(false, info: reason)
             self?.scheduleAutoReconnect()
         }
@@ -162,6 +169,7 @@ final class AppModel {
     func start() {
         guard !started else { return }
         started = true
+        Perf.mark("start")
         notifier.setUp()
         timers.append(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.expireMessages() }
@@ -173,15 +181,48 @@ final class AppModel {
                 self?.fetchMissingAvatars()
             }
         })
+        startCliEarly()
         Task {
             guard await unlockHistory() else {
+                cli.stop()
                 NSApp.terminate(nil)
                 return
             }
             historyReady = true
+            Perf.mark("history ready")
+            applyCachedRoster()
+            let early = earlyEnvelopes
+            earlyEnvelopes = []
+            early.forEach(onEnvelope)
             guard await ensureExecutable() else { return }
             await connectAccount()
         }
+    }
+
+    /// With a known account and signal-cli, the (slow to start) JVM is started while the history is being
+    /// unlocked; `connectAccount` then only has to use it.
+    private func startCliEarly() {
+        let exe = UserDefaults.standard.string(forKey: "executable") ?? ""
+        let acc = UserDefaults.standard.string(forKey: "account") ?? ""
+        guard !exe.isEmpty, !acc.isEmpty, FileManager.default.isExecutableFile(atPath: exe),
+              UserDefaults.standard.string(forKey: executableStamp(exe)) != nil else { return }
+        cli.executable = exe
+        fastStartAt = Date()
+        cli.start(account: acc)
+        earlyStarted = cli.isRunning
+        if earlyStarted { Perf.mark("signal-cli started early") }
+    }
+
+    /// Names and groups from the previous run, until signal-cli answers.
+    private func applyCachedRoster() {
+        let acc = UserDefaults.standard.string(forKey: "account") ?? ""
+        guard !acc.isEmpty, let cache = RosterCache.load(account: acc) else { return }
+        chats.account = acc
+        roster.load(account: acc)
+        if let c = cache.contacts { applyContacts(c) }
+        if let g = cache.groups { applyGroups(g) }
+        listChanged()
+        Perf.mark("cached names applied")
     }
 
     func shutdown() {
@@ -244,6 +285,17 @@ final class AppModel {
 
     /// signal-cli died on its own (crash, killed): start it again after 3, 10, 30, 60 s. The counter resets
     /// once a connection stayed up for two minutes, so a crash loop does not spin forever.
+    @ObservationIgnored var fastStartAt: Date?
+    @ObservationIgnored var earlyEnvelopes: [JSON] = []
+    @ObservationIgnored var earlyStarted = false
+    @ObservationIgnored var fullCheckNext = false
+
+    /// Identifies the installed signal-cli (path + modification date): its version is cached for it.
+    private func executableStamp(_ exe: String) -> String {
+        let mtime = ((try? FileManager.default.attributesOfItem(atPath: exe))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "cliVersion.\(exe).\(Int(mtime))"
+    }
+
     func scheduleAutoReconnect() {
         let now = Date()
         if let since = lastAutoReconnect, now.timeIntervalSince(since) > 120 { autoReconnects = 0 }
@@ -273,9 +325,32 @@ final class AppModel {
         guard historyReady else { return }
         connectGen += 1
         let gen = connectGen
-        cli.stop()
+        let keepEarly = earlyStarted && cli.isRunning && !fullCheckNext
+        if !keepEarly { cli.stop() }
         setConnected(false)
         statusText = "Connecting …"
+
+        // Quick start: with a known account and an unchanged signal-cli, start the JSON-RPC process right
+        // away. `--version` and `listAccounts` each start a separate JVM (several seconds); they only run when
+        // something changed or the quick start failed.
+        let stamp = executableStamp(cli.executable)
+        let savedAccount = UserDefaults.standard.string(forKey: "account") ?? ""
+        if !fullCheckNext, !savedAccount.isEmpty, let cached = UserDefaults.standard.string(forKey: stamp) {
+            version = cached
+            chats.account = savedAccount
+            Perf.mark("account known (quick start)")
+            if !(earlyStarted && cli.isRunning) {
+                fastStartAt = Date()
+                cli.start(account: savedAccount)
+            }
+            earlyStarted = false
+            if cli.isRunning {
+                didStartCli()
+                return
+            }
+        }
+        fullCheckNext = false
+        fastStartAt = nil
 
         let (vr, versionLine) = await cli.queryVersion()
         guard gen == connectGen else { return }
@@ -284,6 +359,7 @@ final class AppModel {
             return
         }
         version = versionLine.split(separator: " ").last.map(String.init) ?? versionLine
+        UserDefaults.standard.set(version, forKey: stamp)
 
         let (ar, accounts) = await cli.queryAccounts()
         guard gen == connectGen else { return }
@@ -317,8 +393,13 @@ final class AppModel {
         guard gen == connectGen else { return } // reconnect requested while a dialog was open
 
         chats.account = acc
+        Perf.mark("account known")
         cli.start(account: acc)
         guard cli.isRunning else { return }
+        didStartCli()
+    }
+
+    private func didStartCli() {
         setConnected(true)
         loadContactsAndGroups()
         subscribeCallEvents()
@@ -380,44 +461,9 @@ final class AppModel {
         Task {
             do {
                 let res = try await cli.call("listContacts")
-                noteContacts(res)
-                for cv in jsonArray(res) {
-                    let c = jsonObject(cv)
-                    let number = jsonString(c["number"]), uuid = jsonString(c["uuid"])
-                    let key = !number.isEmpty ? number : uuid
-                    if key.isEmpty { continue }
-                    if !number.isEmpty && !uuid.isEmpty { chats.alias[uuid] = number }
-
-                    var title = jsonString(c["name"])
-                    if title.isEmpty { title = jsonString(c["profileName"]) }
-                    if !title.isEmpty { chats.contactNames[key] = title }
-
-                    // signal-cli lists every known recipient (address book, group members, …), not just people
-                    // we have chatted with. Only show a chat once there is one: local history, a new message,
-                    // or an archived chat on the phone.
-                    let sig = jsonBool(c["isArchived"])
-                    if jsonBool(c["isHidden"]) { continue }
-                    if chats.convs[key] == nil && !sig { continue }
-
-                    chats.ensure(key, title: key)
-                    let expiration = jsonInt(c["messageExpirationTime"])
-                    if chats.convs[key]!.expirationSeconds != expiration {
-                        chats.convs[key]!.expirationSeconds = expiration
-                        persist(Records.expiration(key, expiration))
-                    }
-                    let stored = chats.convs[key]!.storedName
-                    if title.isEmpty { title = stored.isEmpty ? key : stored }
-                    let nick = chats.convs[key]!.localNickname
-                    chats.convs[key]!.title = nick.isEmpty ? title : nick
-
-                    // Archive state: follow signal-cli only when *it* changed (e.g. archived on the phone);
-                    // otherwise keep the local state (e.g. auto-unarchived by a new message).
-                    if sig != chats.convs[key]!.sigArchived {
-                        chats.convs[key]!.sigArchived = sig
-                        chats.convs[key]!.archived = sig
-                        persist(Records.archive(key, archived: sig, sigArchived: sig))
-                    }
-                }
+                Perf.mark("contacts received")
+                applyContacts(res)
+                RosterCache.save(contacts: res, account: account)
                 listChanged()
             } catch {
                 showFlash("Could not load contacts: \(error.localizedDescription)", seconds: 8)
@@ -425,24 +471,73 @@ final class AppModel {
         }
         Task {
             guard let res = try? await cli.call("listGroups") else { return }
-            noteGroups(res)
-            for gv in jsonArray(res) {
-                let g = jsonObject(gv)
-                if g["isMember"] != nil && !jsonBool(g["isMember"]) { continue }
-                let id = jsonString(g["id"])
-                if id.isEmpty { continue }
-                var title = jsonString(g["name"])
-                if title.isEmpty { title = "Group" }
-                let key = "g:" + id
-                chats.ensure(key, title: title, group: true)
-                chats.convs[key]!.title = title
-                let expiration = jsonInt(g["messageExpirationTime"])
-                if chats.convs[key]!.expirationSeconds != expiration {
-                    chats.convs[key]!.expirationSeconds = expiration
-                    persist(Records.expiration(key, expiration))
-                }
-            }
+            Perf.mark("groups received")
+            applyGroups(res)
+            RosterCache.save(groups: res, account: account)
             listChanged()
+        }
+    }
+
+    /// Names, aliases and chat states from a `listContacts` result (live, or the cached one at startup).
+    func applyContacts(_ res: Any) {
+        noteContacts(res)
+        for cv in jsonArray(res) {
+            let c = jsonObject(cv)
+            let number = jsonString(c["number"]), uuid = jsonString(c["uuid"])
+            let key = !number.isEmpty ? number : uuid
+            if key.isEmpty { continue }
+            if !number.isEmpty && !uuid.isEmpty { chats.alias[uuid] = number }
+
+            var title = jsonString(c["name"])
+            if title.isEmpty { title = jsonString(c["profileName"]) }
+            if !title.isEmpty { chats.contactNames[key] = title }
+
+            // signal-cli lists every known recipient (address book, group members, …), not just people
+            // we have chatted with. Only show a chat once there is one: local history, a new message,
+            // or an archived chat on the phone.
+            let sig = jsonBool(c["isArchived"])
+            if jsonBool(c["isHidden"]) { continue }
+            if chats.convs[key] == nil && !sig { continue }
+
+            chats.ensure(key, title: key)
+            let expiration = jsonInt(c["messageExpirationTime"])
+            if chats.convs[key]!.expirationSeconds != expiration {
+                chats.convs[key]!.expirationSeconds = expiration
+                persist(Records.expiration(key, expiration))
+            }
+            let stored = chats.convs[key]!.storedName
+            if title.isEmpty { title = stored.isEmpty ? key : stored }
+            let nick = chats.convs[key]!.localNickname
+            chats.convs[key]!.title = nick.isEmpty ? title : nick
+
+            // Archive state: follow signal-cli only when *it* changed (e.g. archived on the phone);
+            // otherwise keep the local state (e.g. auto-unarchived by a new message).
+            if sig != chats.convs[key]!.sigArchived {
+                chats.convs[key]!.sigArchived = sig
+                chats.convs[key]!.archived = sig
+                persist(Records.archive(key, archived: sig, sigArchived: sig))
+            }
+        }
+    }
+
+    /// Group chats and names from a `listGroups` result (live, or the cached one at startup).
+    func applyGroups(_ res: Any) {
+        noteGroups(res)
+        for gv in jsonArray(res) {
+            let g = jsonObject(gv)
+            if g["isMember"] != nil && !jsonBool(g["isMember"]) { continue }
+            let id = jsonString(g["id"])
+            if id.isEmpty { continue }
+            var title = jsonString(g["name"])
+            if title.isEmpty { title = "Group" }
+            let key = "g:" + id
+            chats.ensure(key, title: title, group: true)
+            chats.convs[key]!.title = title
+            let expiration = jsonInt(g["messageExpirationTime"])
+            if chats.convs[key]!.expirationSeconds != expiration {
+                chats.convs[key]!.expirationSeconds = expiration
+                persist(Records.expiration(key, expiration))
+            }
         }
     }
 
@@ -452,13 +547,19 @@ final class AppModel {
         let store = self.store, path = AppPaths.historyPath
         statusText = create ? "Creating chat history …" : "Unlocking chat history …"
         defer { statusText = "Not connected" }
+        Perf.mark("open store")
         return await Task.detached {
             do {
                 if create {
                     try store.create(path: path, passphrase: secret)
+                    let k = RosterCache.deriveKey(from: secret)
+                    await MainActor.run { RosterCache.setKey(k) }
                     return .success([])
                 }
-                return .success(try store.open(path: path, passphrase: secret))
+                let records = try store.open(path: path, passphrase: secret)
+                let k = RosterCache.deriveKey(from: secret)
+                await MainActor.run { RosterCache.setKey(k) }
+                return .success(records)
             } catch let e as HistoryStoreError {
                 return .failure(e)
             } catch {
@@ -565,7 +666,9 @@ final class AppModel {
     }
 
     private func loadHistory(_ records: [JSON]) {
+        Perf.mark("history decrypted+parsed (\(records.count) records)")
         chats.loadHistory(records)
+        Perf.mark("history applied")
         // Older versions kept small preview copies of pictures in the history. Media is now shown from the
         // original files, so they are dropped once (stickers keep theirs: for imported ones it is the sticker).
         if chats.stripAttachmentThumbnails() > 0 { _ = rewriteHistory("remove the stored picture previews") }
@@ -595,7 +698,12 @@ final class AppModel {
     private func changePassphrase(old: String, new: String) async -> HistoryStoreError? {
         let store = self.store
         return await Task.detached { () -> HistoryStoreError? in
-            do { try store.changePassphrase(old: old, new: new); return nil } catch let e as HistoryStoreError { return e } catch {
+            do {
+                try store.changePassphrase(old: old, new: new)
+                let k = RosterCache.deriveKey(from: new)
+                await MainActor.run { RosterCache.forget(); RosterCache.setKey(k) } // rewritten when signal-cli answers
+                return nil
+            } catch let e as HistoryStoreError { return e } catch {
                 return HistoryStoreError(code: 5)
             }
         }.value
@@ -1692,8 +1800,15 @@ final class AppModel {
     }
 
     func fetchMissingAvatars() {
+        guard avatarsWanted else { return }
+        // signal-cli keeps the pictures as files: read them directly (all at once, also before signal-cli
+        // has started) instead of asking for each one over JSON-RPC.
+        if FileManager.default.fileExists(atPath: Self.signalCliAvatarDir.path) {
+            loadLocalAvatars()
+            return
+        }
         // Only while connected (otherwise the request would just fail and never be retried).
-        guard avatarsWanted, cli.isRunning else { return }
+        guard cli.isRunning else { return }
         for key in chats.convs.keys {
             if avatarInFlight >= 4 { return } // continues when a request finishes
             if avatarTried.contains(key) || avatarBusy.contains(key) { continue }
@@ -1701,9 +1816,66 @@ final class AppModel {
         }
     }
 
+    nonisolated static var signalCliAvatarDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/signal-cli/avatars", isDirectory: true)
+    }
+
+    /// signal-cli's file names: "contact-<number|uuid>" (address book), "profile-<number|uuid>" (own picture)
+    /// and "group-<group id, URL-safe base64>".
+    nonisolated static func avatarFileNames(key: String, isGroup: Bool) -> [String] {
+        if isGroup {
+            let id = String(key.dropFirst(2)).replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            return ["group-" + id]
+        }
+        return ["contact-" + key, "profile-" + key]
+    }
+
+    private func loadLocalAvatars(only keys: [String]? = nil) {
+        let wanted = (keys ?? Array(chats.convs.keys)).filter { !avatarTried.contains($0) && !avatarBusy.contains($0) }
+        guard !wanted.isEmpty else { return }
+        let jobs = wanted.compactMap { k in chats.convs[k].map { (k, $0.isGroup) } }
+        for (k, _) in jobs {
+            avatarTried.insert(k)
+            avatarBusy.insert(k)
+            avatarFetchedMs[k] = nowMs()
+        }
+        Task {
+            let found: [(String, Int, NSImage?)] = await Task.detached(priority: .userInitiated) {
+                let dir = AppModel.signalCliAvatarDir
+                return jobs.map { key, isGroup in
+                    for name in AppModel.avatarFileNames(key: key, isGroup: isGroup) where !name.contains("..") {
+                        if let d = try? Data(contentsOf: dir.appendingPathComponent(name)), !d.isEmpty,
+                           let img = MediaDecode.image(d, maxPixel: 128) {
+                            return (key, d.hashValue, Media.roundAvatar(img))
+                        }
+                    }
+                    return (key, 0, nil)
+                }
+            }.value
+            for (key, digest, img) in found {
+                avatarBusy.remove(key)
+                if let img {
+                    if avatarDigest[key] != digest || avatars[key] == nil {
+                        avatarDigest[key] = digest
+                        avatars[key] = img
+                    }
+                } else if avatars[key] != nil {
+                    avatars.removeValue(forKey: key)
+                    avatarDigest.removeValue(forKey: key)
+                }
+            }
+        }
+    }
+
     private func refreshAvatar(_ key: String) {
-        guard avatarsWanted, cli.isRunning, !avatarBusy.contains(key) else { return }
+        guard avatarsWanted, !avatarBusy.contains(key) else { return }
         if nowMs() - (avatarFetchedMs[key] ?? 0) < 60_000 { return } // a burst of messages is one request
+        if FileManager.default.fileExists(atPath: Self.signalCliAvatarDir.path) {
+            avatarTried.remove(key)
+            loadLocalAvatars(only: [key])
+            return
+        }
+        guard cli.isRunning else { return }
         fetchAvatar(key)
     }
 

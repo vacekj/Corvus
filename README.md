@@ -147,6 +147,8 @@ On macOS, `signal-cli` can be installed with Homebrew as shown above. On Linux, 
 
 **macOS: prefer the Java build of signal-cli.** The native (GraalVM) build that Homebrew installs for 0.14.9 can crash shortly after start (a `StackOverflowError` while reporting a contact-discovery error from libsignal, exit code 134). Corvus then shows itself as disconnected and the composer stays disabled. Corvus reconnects automatically (after 3, 10, 30 and 60 seconds), but if the crash repeats, download the Java release from the [signal-cli releases](https://github.com/AsamK/signal-cli/releases), install a Java runtime (`brew install openjdk`) and point **Settings → Path to signal-cli** at its `bin/signal-cli`.
 
+**Startup (macOS):** Corvus starts signal-cli while it unlocks the history, skips the extra `--version` / `listAccounts` runs when nothing changed, reads profile pictures from signal-cli's files and shows the names from the previous run (kept encrypted with the history key in `roster-cache.bin`) until signal-cli answers. For the Java build it keeps a JVM class-data-sharing archive (about 40 MB) in `~/Library/Caches/io.github.corvus.mac`; delete it any time, or set `CORVUS_NO_CDS=1` to turn this off.
+
 ## Local data and encryption
 
 Corvus stores its chat history in an encrypted `history.corvus` file. By default, the history key is stored in your operating system's keychain; you can switch to passphrase protection in **Settings → History protection**.

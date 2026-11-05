@@ -13,6 +13,7 @@ struct ChatPane: View {
         VStack(spacing: 0) {
             if model.searchVisible { SearchBar() }
             MessageList(conversation: conversation)
+                .id(conversation.key) // fresh paging state per chat
                 .overlay {
                     if dropTargeted {
                         ZStack {
@@ -111,6 +112,10 @@ struct MessageGrouping {
 private struct MessageList: View {
     @Environment(AppModel.self) private var model
     let conversation: Conversation
+    /// Only the newest messages are laid out; older ones are added in pages while scrolling up, so a chat
+    /// with thousands of messages opens as fast as a short one.
+    @State private var shown = MessageList.page
+    static let page = 120
 
     private func sameRun(_ a: Message, _ b: Message) -> Bool {
         a.outgoing == b.outgoing && a.authorKey == b.authorKey && abs(a.ts - b.ts) <= Theme.groupGapMs
@@ -119,20 +124,27 @@ private struct MessageList: View {
 
     var body: some View {
         let msgs = conversation.msgs
+        let start = max(0, msgs.count - shown)
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
                     if msgs.isEmpty {
                         EmptyChat(conversation: conversation).padding(.top, 60)
                     }
-                    ForEach(Array(msgs.enumerated()), id: \.element.id) { i, m in
+                    if start > 0 {
+                        ProgressView().controlSize(.small).padding(8)
+                            .onAppear { loadOlder(msgs, start: start, proxy: proxy) }
+                    }
+                    ForEach(Array(zip(msgs.indices[start...], msgs[start...])), id: \.1.id) { i, m in
                         let newDay = i == 0 || !Calendar.current.isDate(msgs[i - 1].time, inSameDayAs: m.time)
                         let g = MessageGrouping(joinedAbove: i > 0 && sameRun(msgs[i - 1], m),
                                                 joinedBelow: i + 1 < msgs.count && sameRun(m, msgs[i + 1]))
-                        if newDay { DateSeparator(date: m.time) }
-                        MessageRow(message: m, isGroup: conversation.isGroup, grouping: g)
-                            .padding(.top, g.joinedAbove ? 2 : (newDay ? 2 : 10))
-                            .id(m.id)
+                        VStack(spacing: 0) {
+                            if newDay { DateSeparator(date: m.time) }
+                            MessageRow(message: m, isGroup: conversation.isGroup, grouping: g)
+                                .padding(.top, g.joinedAbove ? 2 : (newDay ? 2 : 10))
+                        }
+                        .id(m.id)
                     }
                 }
                 .padding(.horizontal, 16)
@@ -146,12 +158,26 @@ private struct MessageList: View {
             }
             .onChange(of: model.scrollRequest?.serial) { _, _ in
                 guard let id = model.scrollRequest?.id else { return }
-                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+                // A quote or search hit further back: lay out the messages up to it first.
+                if let i = msgs.firstIndex(where: { $0.id == id }), i < start {
+                    shown = msgs.count - i + 20
+                    DispatchQueue.main.async {
+                        withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+                    }
+                } else {
+                    withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+                }
             }
             .onAppear {
                 if let id = msgs.last?.id { proxy.scrollTo(id, anchor: .bottom) }
             }
         }
+    }
+
+    private func loadOlder(_ msgs: [Message], start: Int, proxy: ScrollViewProxy) {
+        let keep = msgs[start].id // stays where it is on screen
+        shown += Self.page
+        DispatchQueue.main.async { proxy.scrollTo(keep, anchor: .top) }
     }
 }
 
