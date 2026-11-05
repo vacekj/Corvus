@@ -99,7 +99,7 @@ extension AppModel {
     // MARK: - Polls
 
     func createPoll(question: String, options: [String], allowMultiple: Bool) {
-        guard let key = current, let c = chats.convs[key] else { return }
+        guard let key = current, let c = chats.convs[key], !isSendLocked(key) else { return }
         let q = question.trimmingCharacters(in: .whitespacesAndNewlines)
         let opts = options.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
         guard !q.isEmpty, (2...10).contains(opts.count) else {
@@ -314,7 +314,7 @@ extension AppModel {
     /// Forwards text, attachments or a sticker to up to five chats (like Signal Desktop).
     func forward(messageId: String, to targets: [String]) {
         guard let source = current, let (_, m) = message(withId: messageId), !m.deleted, !m.viewOnce, !m.isPoll else { return }
-        let keys = Array(targets.prefix(AppModel.maxForwardTargets)).filter { chats.convs[$0] != nil }
+        let keys = Array(targets.prefix(AppModel.maxForwardTargets)).filter { chats.convs[$0] != nil && !isSendLocked($0) }
         guard !keys.isEmpty else { return }
         forwardMessageId = nil
         showFlash("Forwarding …", seconds: 120)
