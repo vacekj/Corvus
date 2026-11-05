@@ -546,7 +546,7 @@ final class AppModel {
 
     /// Compacts the file so the ciphertext of removed data is gone.
     @discardableResult
-    private func rewriteHistory(_ what: String) -> Bool {
+    func rewriteHistory(_ what: String) -> Bool {
         do {
             try store.rewrite(chats.allRecords())
             return true
@@ -1420,6 +1420,7 @@ final class AppModel {
 
     func fetchAttachmentData(_ key: String, _ att: Attachment) async throws -> Data {
         if !att.path.isEmpty, let d = FileManager.default.contents(atPath: att.path) { return d }
+        if !att.encPath.isEmpty { return try await Task.detached { try DesktopImport.data(att) }.value }
         guard !att.id.isEmpty, let c = chats.convs[key] else { throw RpcError("The attachment is no longer available.") }
         var p: JSON = ["id": att.id]
         addRecipient(&p, c)

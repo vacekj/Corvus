@@ -28,6 +28,10 @@ public struct Attachment: Equatable, Hashable {
     public var width = 0
     public var height = 0
     public var thumb = Data()   // JPEG/PNG preview (<= 480 px), kept in the encrypted history
+    // Imported from Signal Desktop: the still encrypted file copied into the Corvus data folder
+    // ("imported-attachments/<encPath>") and its Signal Desktop file key (empty = plaintext file).
+    public var encPath = ""
+    public var localKey = ""
 
     public init() {}
 

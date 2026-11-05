@@ -57,6 +57,12 @@ xcrun clang++ -std=c++17 -O2 -mmacosx-version-min=14.0 "$REPO_DIR/src/SignalCliH
     -o "$HELPER/Contents/MacOS/corvus-signal-cli"
 sed "s/@PROJECT_VERSION@/$VERSION/g" "$REPO_DIR/packaging/macos/SignalCliHelper.plist.in" > "$HELPER/Contents/Info.plist"
 
+# Signal Desktop history import (tools/signal-desktop-import).
+echo "==> Building Signal Desktop import helper"
+cargo build --release --locked --manifest-path "$REPO_DIR/tools/signal-desktop-import/Cargo.toml"
+cp "$REPO_DIR/tools/signal-desktop-import/target/release/corvus-signal-import" "$APP/Contents/Helpers/"
+codesign --force --sign - --timestamp=none "$APP/Contents/Helpers/corvus-signal-import"
+
 echo "==> Signing (ad hoc)"
 codesign --force --sign - --timestamp=none "$HELPER"
 codesign --force --sign - --timestamp=none "$APP"

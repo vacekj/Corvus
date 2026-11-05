@@ -14,6 +14,7 @@ public enum Records {
         if a.width > 0 { o["w"] = a.width }
         if a.height > 0 { o["h"] = a.height }
         if !a.thumb.isEmpty { o["th"] = a.thumb.base64EncodedString() }
+        if !a.encPath.isEmpty { o["ep"] = a.encPath; o["lk"] = a.localKey }
         return o
     }
 
@@ -27,6 +28,8 @@ public enum Records {
         a.width = jsonInt(o["w"])
         a.height = jsonInt(o["h"])
         a.thumb = Data(base64Encoded: jsonString(o["th"])) ?? Data()
+        a.encPath = jsonString(o["ep"])
+        a.localKey = jsonString(o["lk"])
         return a
     }
 

@@ -193,6 +193,8 @@ struct AppCommands: Commands {
                 .keyboardShortcut("n")
             Button("Link device …") { Task { await model.linkDevice() } }
             Button("Reconnect") { model.reconnect() }
+            Divider()
+            Button("Import from Signal Desktop …") { Task { await model.importFromSignalDesktop() } }
                 .keyboardShortcut("r")
         }
         CommandGroup(after: .textEditing) {
