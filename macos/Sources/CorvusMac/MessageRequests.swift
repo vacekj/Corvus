@@ -196,14 +196,25 @@ struct RequestBanner: View {
 
     private func banner<Actions: View>(icon: String, title: String, text: String,
                                        @ViewBuilder actions: () -> Actions) -> some View {
-        HStack(alignment: .center, spacing: 12) {
+        let label = HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon).font(.system(size: 20)).foregroundStyle(Theme.signalBlue)
             VStack(alignment: .leading, spacing: 2) {
                 Text(title).font(.callout.weight(.semibold))
-                if !text.isEmpty { Text(text).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                if !text.isEmpty { Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(4) }
             }
-            Spacer(minLength: 8)
-            HStack(spacing: 8) { actions() }.controlSize(.regular).disabled(!model.connected)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        let buttons = HStack(spacing: 8) { actions() }.controlSize(.regular).disabled(!model.connected).fixedSize()
+        // Side by side when the pane is wide enough, otherwise the buttons go below the text.
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: 12) {
+                label.frame(minWidth: 260)
+                buttons
+            }
+            VStack(alignment: .trailing, spacing: 8) {
+                label
+                buttons
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)

@@ -131,6 +131,8 @@ final class AppModel {
 
     @ObservationIgnored let cli = SignalCli()
     @ObservationIgnored let store = HistoryStore()
+    @ObservationIgnored var autoReconnects = 0
+    @ObservationIgnored var lastAutoReconnect: Date?
     @ObservationIgnored let notifier = Notifier()
     @ObservationIgnored let sound = SoundPlayer()
     @ObservationIgnored private var connectGen = 0
@@ -146,7 +148,10 @@ final class AppModel {
     init() {
         cli.onEnvelope = { [weak self] env in self?.onEnvelope(env) }
         cli.onCallEvent = { [weak self] ev in self?.onCallEvent(ev) }
-        cli.onStopped = { [weak self] reason in self?.setConnected(false, info: reason) }
+        cli.onStopped = { [weak self] reason in
+            self?.setConnected(false, info: reason)
+            self?.scheduleAutoReconnect()
+        }
         cli.onLogLine = { [weak self] line in self?.showFlash(line, seconds: 5) }
         notifier.onActivate = { [weak self] key in self?.activateConversation(key) }
     }
@@ -234,6 +239,24 @@ final class AppModel {
         UserDefaults.standard.set(exe, forKey: "executable")
         cli.executable = exe
         Task { await connectAccount() }
+    }
+
+    /// signal-cli died on its own (crash, killed): start it again after 3, 10, 30, 60 s. The counter resets
+    /// once a connection stayed up for two minutes, so a crash loop does not spin forever.
+    func scheduleAutoReconnect() {
+        let now = Date()
+        if let since = lastAutoReconnect, now.timeIntervalSince(since) > 120 { autoReconnects = 0 }
+        let delays: [Double] = [3, 10, 30, 60]
+        guard autoReconnects < delays.count, !chats.account.isEmpty else { return }
+        let delay = delays[autoReconnects]
+        autoReconnects += 1
+        lastAutoReconnect = now
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, !self.connected else { return }
+                self.reconnect()
+            }
+        }
     }
 
     func reconnect() {
@@ -1221,7 +1244,7 @@ final class AppModel {
         guard let m = c.msgs.last(where: { $0.outgoing && $0.authorKey == account && !chats.isPendingPreview(c.key, ts: $0.ts) })
         else { return false }
         startEdit(m.id)
-        return true
+        return !editKey.isEmpty // false when the message can no longer be edited
     }
 
     func cancelEdit(restoreDraft: Bool = true) {
