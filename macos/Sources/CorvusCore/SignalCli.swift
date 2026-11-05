@@ -118,7 +118,8 @@ public final class SignalCli {
         let stable = executable.utf8.reduce(UInt64(1469598103934665603)) { ($0 ^ UInt64($1)) &* 1099511628211 }
         let archive = caches.appendingPathComponent("signal-cli-\(String(stable, radix: 36)).jsa").path
         var env = env
-        let opts = "-Xlog:disable -Xlog:all=warning:stderr -XX:+AutoCreateSharedArchive -XX:SharedArchiveFile=\(archive)"
+        // JVM log output is off: it goes to stdout by default (breaking JSON-RPC) and its CDS notices are not errors.
+        let opts = "-Xlog:disable -XX:+AutoCreateSharedArchive -XX:SharedArchiveFile=\(archive)"
         env["JAVA_OPTS"] = [env["JAVA_OPTS"], opts].compactMap { $0 }.joined(separator: " ")
         return env
     }

@@ -73,6 +73,7 @@ final class AppModel {
     @ObservationIgnored private var gifPending: Set<String> = []
     var animatedGifs: [String: Data] = [:]      // attachment token -> GIF data
     var videoURLs: [String: URL] = [:]          // attachment token -> local file for playback
+    @ObservationIgnored private var expiryScanRunning = false
     @ObservationIgnored var videoFiles: [String: URL] = [:] // attachment token -> fetched video file (poster, playback)
     var videoLoading: Set<String> = []
 
@@ -956,9 +957,22 @@ final class AppModel {
         return nowMs() - lastInputMs < 30_000
     }
 
+    /// The scan over every message runs off the main thread (on a copy), so the 1 s timer can't cause a
+    /// dropped frame while scrolling.
     private func expireMessages() {
+        guard historyReady, !expiryScanRunning else { return }
+        expiryScanRunning = true
+        let snapshot = chats, now = nowMs()
+        Task {
+            let found = await Task.detached(priority: .utility) { snapshot.hasExpiredMessages(now: now) }.value
+            expiryScanRunning = false
+            if found { removeExpiredMessages() }
+        }
+    }
+
+    private func removeExpiredMessages() {
         let now = nowMs()
-        guard historyReady, chats.hasExpiredMessages(now: now), chats.expireMessages(now: now) else { return }
+        guard chats.expireMessages(now: now) else { return }
         rewriteHistory("remove expired messages")
         if let key = current, chats.convs[key] != nil { updateSearch() }
     }

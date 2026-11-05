@@ -125,6 +125,10 @@ private struct MessageList: View {
     var body: some View {
         let msgs = conversation.msgs
         let start = max(0, msgs.count - shown)
+        // Read the shared model here once, not in every row: a row that reads `model.chats` is rebuilt
+        // whenever any chat changes.
+        let pendingTs = Set(model.chats.pendingSends.values.lazy
+            .filter { $0.conversationKey == conversation.key }.map(\.temporaryTimestamp))
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -141,7 +145,9 @@ private struct MessageList: View {
                                                 joinedBelow: i + 1 < msgs.count && sameRun(m, msgs[i + 1]))
                         VStack(spacing: 0) {
                             if newDay { DateSeparator(date: m.time) }
-                            MessageRow(message: m, isGroup: conversation.isGroup, grouping: g)
+                            MessageRow(message: m, isGroup: conversation.isGroup, grouping: g,
+                                       pending: pendingTs.contains(m.ts),
+                                       avatar: conversation.isGroup && !m.outgoing && !g.joinedBelow ? authorAvatar(m) : nil)
                                 .padding(.top, g.joinedAbove ? 2 : (newDay ? 2 : 10))
                         }
                         .id(m.id)
@@ -172,6 +178,11 @@ private struct MessageList: View {
                 if let id = msgs.last?.id { proxy.scrollTo(id, anchor: .bottom) }
             }
         }
+    }
+
+    private func authorAvatar(_ m: Message) -> NSImage {
+        if let c = model.chats.convs[m.authorKey] { return model.avatarImage(c) }
+        return Media.placeholderAvatar(key: m.authorKey, title: m.sender)
     }
 
     private func loadOlder(_ msgs: [Message], start: Int, proxy: ScrollViewProxy) {
@@ -231,6 +242,8 @@ private struct MessageRow: View {
     let message: Message
     let isGroup: Bool
     let grouping: MessageGrouping
+    let pending: Bool
+    let avatar: NSImage?
     @State private var hovering = false
 
     private var showAvatarColumn: Bool { isGroup && !message.outgoing }
@@ -242,10 +255,8 @@ private struct MessageRow: View {
             if showAvatarColumn {
                 // One avatar per run of messages, next to its last bubble.
                 Group {
-                    if !grouping.joinedBelow, let c = model.chats.convs[m.authorKey] {
-                        AvatarView(image: model.avatarImage(c), size: 28)
-                    } else if !grouping.joinedBelow {
-                        AvatarView(image: Media.placeholderAvatar(key: m.authorKey, title: m.sender), size: 28)
+                    if let avatar {
+                        AvatarView(image: avatar, size: 28)
                     } else {
                         Color.clear
                     }
@@ -254,7 +265,7 @@ private struct MessageRow: View {
                 .padding(.bottom, m.reactions.isEmpty ? 0 : 14)
             }
             if m.outgoing { hoverActions }
-            Bubble(message: m, isGroup: isGroup, grouping: grouping)
+            Bubble(message: m, isGroup: isGroup, grouping: grouping, pending: pending)
                 .padding(.bottom, m.reactions.isEmpty ? 0 : 14)
                 .overlay(alignment: m.outgoing ? .bottomTrailing : .bottomLeading) {
                     if !m.reactions.isEmpty {
@@ -268,7 +279,18 @@ private struct MessageRow: View {
     }
 
     /// Quick actions that appear next to the bubble under the pointer (like the Signal desktop client).
+    /// Built only under the pointer: a `Menu` is an AppKit pop-up button, and one in every row made
+    /// scrolling through long chats drop frames.
     private var hoverActions: some View {
+        ZStack {
+            if hovering && model.connected && !message.deleted { hoverButtons.transition(.opacity) }
+        }
+        .frame(width: 46, height: 22)
+        .padding(.bottom, 6)
+        .animation(.easeOut(duration: 0.12), value: hovering)
+    }
+
+    private var hoverButtons: some View {
         HStack(spacing: 2) {
             Menu {
                 ForEach(EmojiCatalog.quickReactions, id: \.self) { e in
@@ -287,9 +309,6 @@ private struct MessageRow: View {
                 .help("Reply")
         }
         .foregroundStyle(.secondary)
-        .padding(.bottom, 6)
-        .opacity(hovering && model.connected && !message.deleted ? 1 : 0)
-        .animation(.easeOut(duration: 0.12), value: hovering)
     }
 }
 
@@ -299,6 +318,7 @@ private struct Bubble: View {
     let message: Message
     let isGroup: Bool
     let grouping: MessageGrouping
+    let pending: Bool
     @State private var infoShown = false
 
     var body: some View {
@@ -307,7 +327,6 @@ private struct Bubble: View {
         let fg = m.outgoing ? a.outTextColor : a.inTextColor
         let bg = m.outgoing ? a.outBgColor : a.inBgColor
         let shape = bubbleShape(radius: CGFloat(a.radius))
-        let pending = model.chats.isPendingPreview(model.current ?? "", ts: m.ts)
         let mediaOnly = m.text.isEmpty && !m.quote.valid && !m.attachments.isEmpty && !m.viewOnce
             && m.attachments.allSatisfy { $0.isImage && !$0.isSticker }
         let stickerOnly = m.text.isEmpty && !m.viewOnce && m.attachments.count == 1 && m.attachments[0].isSticker
@@ -444,7 +463,18 @@ private struct Bubble: View {
     /// Created once: building a detector is expensive and `linkified` runs on every redraw of a bubble.
     private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
 
+    private static let linkCache: NSCache<NSString, LinkifiedBox> = { let c = NSCache<NSString, LinkifiedBox>(); c.countLimit = 4000; return c }()
+
+    /// Link detection is slow; rows are rebuilt on every scroll into view, so results are kept.
     static func linkified(_ text: String, emojiOnly: Bool = false) -> AttributedString {
+        let key = ((emojiOnly ? "1" : "0") + text) as NSString
+        if let hit = linkCache.object(forKey: key) { return hit.value }
+        let s = makeLinkified(text, emojiOnly: emojiOnly)
+        linkCache.setObject(LinkifiedBox(s), forKey: key)
+        return s
+    }
+
+    private static func makeLinkified(_ text: String, emojiOnly: Bool) -> AttributedString {
         var s = AttributedString(text)
         s.font = emojiOnly ? .system(size: 40) : .system(size: NSFont.systemFontSize + 1)
         guard !emojiOnly, let detector = linkDetector else { return s }
@@ -457,6 +487,11 @@ private struct Bubble: View {
         }
         return s
     }
+}
+
+final class LinkifiedBox {
+    let value: AttributedString
+    init(_ v: AttributedString) { value = v }
 }
 
 extension Message {
@@ -600,18 +635,33 @@ private struct MaxWidth: ViewModifier {
 private struct BubbleContentLayout: Layout {
     let spacing: CGFloat
 
+    /// Child sizes per proposed width: measuring text is the expensive part of laying out a bubble,
+    /// and SwiftUI asks for the same widths again when placing.
+    struct Cache { var sizes: [CGFloat?: [CGSize]] = [:] }
+
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache.sizes.removeAll(keepingCapacity: true) }
+
+    private func sizes(_ width: CGFloat?, _ subviews: Subviews, _ cache: inout Cache) -> [CGSize] {
+        if let s = cache.sizes[width] { return s }
+        let s = subviews.map { $0.sizeThatFits(ProposedViewSize(width: width, height: nil)) }
+        cache.sizes[width] = s
+        return s
+    }
+
     // Children are always measured by width only: a proposed height would stretch flexible parts
     // (e.g. the quote's accent bar) when sizing, but not when placing, leaving the bubble too tall.
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
-        let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: proposal.width, height: nil)) }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        let sizes = sizes(proposal.width, subviews, &cache)
         let height = sizes.map(\.height).reduce(0, +) + spacing * CGFloat(max(sizes.count - 1, 0))
         return CGSize(width: sizes.map(\.width).max() ?? 0, height: height)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
         var y = bounds.minY
+        let all = sizes(bounds.width, subviews, &cache)
         for (i, v) in subviews.enumerated() {
-            let size = v.sizeThatFits(ProposedViewSize(width: bounds.width, height: nil))
+            let size = all[i]
             let x = i == subviews.count - 1 ? bounds.maxX - size.width : bounds.minX
             v.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(width: size.width, height: size.height))
             y += size.height + spacing

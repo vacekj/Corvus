@@ -99,7 +99,18 @@ enum Media {
     // MARK: Avatars
 
     /// Coloured circle with the first letter, like the official client shows without a picture.
+    private static let placeholderCache: NSCache<NSString, NSImage> = { let c = NSCache<NSString, NSImage>(); c.countLimit = 2000; return c }()
+
+    /// Same picture object for the same contact, so views don't redraw it on every update.
     static func placeholderAvatar(key: String, title: String, size: CGFloat = 64) -> NSImage {
+        let ck = "\(key)|\(title)|\(size)" as NSString
+        if let img = placeholderCache.object(forKey: ck) { return img }
+        let img = drawPlaceholderAvatar(key: key, title: title, size: size)
+        placeholderCache.setObject(img, forKey: ck)
+        return img
+    }
+
+    private static func drawPlaceholderAvatar(key: String, title: String, size: CGFloat) -> NSImage {
         let letter = title.first(where: { $0.isLetter || $0.isNumber }).map { String($0).uppercased() } ?? "?"
         var hash: UInt32 = 2166136261
         for b in key.utf8 { hash = (hash ^ UInt32(b)) &* 16777619 }

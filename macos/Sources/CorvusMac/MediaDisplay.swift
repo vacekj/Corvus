@@ -88,6 +88,11 @@ extension AppModel {
         "\(att.id)|\(att.encPath)|\(att.path)|\(att.size)|\(px)"
     }
 
+    /// Already decoded picture, so a row scrolled back into view shows it at once instead of a placeholder.
+    func cachedDisplayImage(_ att: Attachment, maxPixel: Int) -> NSImage? {
+        MediaImageCache.shared.cached(mediaCacheKey(att, maxPixel))
+    }
+
     /// Full-quality picture of an image attachment, decoded for display. With a message, its stored pixel
     /// size is corrected when it differs (Signal reports the size before EXIF rotation).
     func displayImage(_ key: String, _ att: Attachment, maxPixel: Int, message: Message? = nil, index: Int = 0) async -> NSImage? {
@@ -166,6 +171,7 @@ struct FullImageView: View {
         let att = attachment
         let token = model.attachmentToken(message, index)
         let px = Int(maxSide * max(displayScale, 2))
+        let image = self.image ?? model.cachedDisplayImage(att, maxPixel: px)
         let size = AppModel.mediaFrame(width: image.map { Int($0.size.width) } ?? att.width,
                                        height: image.map { Int($0.size.height) } ?? att.height, maxSide: maxSide)
         ZStack {
@@ -188,8 +194,9 @@ struct FullImageView: View {
         .onTapGesture { model.openAttachment(message, index) }
         .task(id: "\(token)|\(px)") {
             if att.isGif { model.loadAnimatedGif(message, index) }
+            if self.image != nil { return }
             if let img = await model.displayImage(conversation, att, maxPixel: px, message: message, index: index) {
-                image = img
+                self.image = img
             } else {
                 failed = true
             }
