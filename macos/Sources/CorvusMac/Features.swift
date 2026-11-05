@@ -346,6 +346,7 @@ extension AppModel {
                 guard let c = chats.convs[key] else { continue }
                 var p: JSON = [:]
                 if !m.text.isEmpty { p["message"] = m.text }
+                if !m.text.isEmpty && !m.textStyles.isEmpty { p["textStyle"] = m.textStyles.map(\.cliString) }
                 if let sticker { p["sticker"] = "\(sticker.stickerPackId):\(sticker.stickerId)" }
                 let staged = Media.stageForSignalCli(files)
                 if !files.isEmpty { p["attachments"] = staged.paths }
@@ -357,6 +358,7 @@ extension AppModel {
                     var copy = Message()
                     copy.ts = ts
                     copy.text = m.text
+                    copy.textStyles = m.textStyles
                     copy.outgoing = true
                     copy.authorKey = account
                     copy.attachments = m.attachments.enumerated().map { i, a in

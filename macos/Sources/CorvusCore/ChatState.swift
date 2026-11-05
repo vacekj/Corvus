@@ -19,6 +19,7 @@ public struct ChatState {
     public var contactNames: [String: String] = [:]   // key -> contact name from signal-cli
     public var pendingSends: [String: PendingSend] = [:]
     public var account = ""
+    var unmatchedReceipts: [ReceiptEvent] = []     // receipts for messages not (yet) in the history
 
     public init() {}
 
@@ -168,10 +169,13 @@ public struct ChatState {
         return Records.reaction(key, ts: m.ts, author: effectiveAuthor(c, m), by: reactor, emoji: emoji) // original ts = stable identity
     }
 
-    public mutating func applyEdit(_ key: String, targetTs: Int64, authors: [String], text: String, newTs: Int64) -> JSON? {
+    public mutating func applyEdit(_ key: String, targetTs: Int64, authors: [String], text: String, newTs: Int64,
+                                   styles: [TextStyleRange] = [], mentions: [MentionRange] = []) -> JSON? {
         guard let c = convs[key], let i = findMessage(c, ts: targetTs, authors: authors) else { return nil }
         if c.msgs[i].deleted || newTs <= c.msgs[i].latestTs { return nil } // deleted / already applied / outdated revision
         convs[key]!.msgs[i].text = text
+        convs[key]!.msgs[i].textStyles = styles
+        convs[key]!.msgs[i].mentions = mentions
         convs[key]!.msgs[i].editTs = newTs
         convs[key]!.msgs[i].editCount += 1
         return Records.edit(key, convs[key]!.msgs[i])
@@ -276,7 +280,7 @@ public struct ChatState {
               })
         else {
             markDone(&self)
-            return addMessage(key, confirmed)?.records ?? []
+            return (addMessage(key, confirmed)?.records ?? []) + replayUnmatchedReceipts(for: ts)
         }
 
         // If an envelope already inserted the confirmed timestamp by another path, remove
@@ -302,7 +306,7 @@ public struct ChatState {
             recs.append(Records.archive(key, archived: false, sigArchived: convs[key]!.sigArchived))
         }
         markDone(&self)
-        return recs
+        return recs + replayUnmatchedReceipts(for: ts)
     }
 
     public mutating func removePendingPreview(_ pending: PendingSend) {

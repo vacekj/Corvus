@@ -227,6 +227,7 @@ private func parseBody(_ dm: JSON, _ out: inout ParsedEnvelope, envelopeTs: Int6
 
     out.msg.viewOnce = jsonBool(dm["viewOnce"])
     out.msg.text = jsonString(dm["message"])
+    out.msg.textStyles = parseTextStyles(dm)
     out.mentions = parseMentions(dm)
     out.msg.attachments = parseAttachments(dm)
     // Sticker: {"sticker": {"packId": "<hex>", "stickerId": 3}}
@@ -289,6 +290,7 @@ private func parseEdit(_ edit: JSON, _ out: inout ParsedEnvelope, envelopeTs: In
     out.kind = .edit
     out.targetTs = target
     out.msg.text = text
+    out.msg.textStyles = parseTextStyles(dm)
     out.mentions = parseMentions(dm)
     out.msg.ts = ts > 0 ? ts : nowMs()
     out.groupId = groupIdOf(dm)

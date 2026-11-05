@@ -150,6 +150,14 @@ public struct Message: Equatable, Identifiable {
 
     public var poll = Poll()          // valid for poll messages
 
+    // Signal text formatting (see Formatting.swift); offsets are UTF-16 units of `text`.
+    public var textStyles: [TextStyleRange] = []
+    public var mentions: [MentionRange] = []
+
+    // Outgoing messages: best status over all recipients (0 sent, 1 delivered, 2 read) and the state per recipient.
+    public var receiptStatus = 0
+    public var recipientReceipts: [String: RecipientReceipt] = [:]
+
     public init() {}
 
     public var id: String { "\(ts)|\(authorKey)|\(outgoing)" }
@@ -166,6 +174,8 @@ public struct Message: Equatable, Identifiable {
     public mutating func markDeleted() {
         deleted = true
         text = ""
+        textStyles = []
+        mentions = []
         attachments = []
         quote = Quote()
         reactions = [:]

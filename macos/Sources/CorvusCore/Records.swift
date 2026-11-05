@@ -32,7 +32,10 @@ public enum Records {
 
     // Edit state: x = current text, et = timestamp of the latest revision, ec = number of edits.
     private static func editToJson(_ m: Message) -> JSON {
-        ["x": m.text, "et": m.editTs, "ec": m.editCount]
+        var e: JSON = ["x": m.text, "et": m.editTs, "ec": m.editCount]
+        if !m.textStyles.isEmpty { e["st"] = textStylesToJson(m.textStyles) }
+        if !m.mentions.isEmpty { e["mn"] = mentionsToJson(m.mentions) }
+        return e
     }
 
     public static func message(_ conv: String, _ m: Message) -> JSON {
@@ -60,6 +63,10 @@ public enum Records {
             d["at"] = atts.map(attachmentToJson)
         }
         if m.poll.isValid && !m.deleted { d["pl"] = pollToJson(m.poll) }
+        if !m.textStyles.isEmpty && !m.deleted { d["st"] = textStylesToJson(m.textStyles) }
+        if !m.mentions.isEmpty && !m.deleted { d["mn"] = mentionsToJson(m.mentions) }
+        if m.outgoing && m.receiptStatus > 0 { d["rs"] = min(m.receiptStatus, 2) }
+        if m.outgoing && !m.recipientReceipts.isEmpty { d["rr"] = recipientReceiptsToJson(m.recipientReceipts) }
         var rec: JSON = ["t": "m", "c": conv, "ts": m.ts, "s": m.sender, "x": m.deleted ? "" : m.text,
                          "o": m.outgoing, "au": m.authorKey]
         if m.editCount > 0 && !m.deleted { d["ed"] = editToJson(m) }
@@ -128,8 +135,17 @@ public enum Records {
             m.quote.text = jsonString(q["t"])
             m.quote.attachmentNote = jsonString(q["n"])
         }
+        if d["st"] != nil { m.textStyles = textStylesFromJson(d["st"]) }
+        if d["mn"] != nil { m.mentions = mentionsFromJson(d["mn"]) }
+        if d["rs"] != nil && m.outgoing { m.receiptStatus = min(max(jsonInt(d["rs"]), 0), 2) }
+        if d["rr"] != nil && m.outgoing { m.recipientReceipts = recipientReceiptsFromJson(jsonObject(d["rr"])) }
         if let e = d["ed"] as? JSON {
-            if e["x"] != nil { m.text = jsonString(e["x"]) }
+            if e["x"] != nil {
+                // The edit record carries the whole new body: text without "st"/"mn" is unformatted.
+                m.text = jsonString(e["x"])
+                m.textStyles = textStylesFromJson(e["st"])
+                m.mentions = mentionsFromJson(e["mn"])
+            }
             m.editTs = jsonInt64(e["et"])
             m.editCount = jsonInt(e["ec"])
         }

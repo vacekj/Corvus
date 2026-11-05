@@ -580,3 +580,305 @@ final class DesktopParityTests: XCTestCase {
         XCTAssertNil(jsonObject(Records.message("+49111", out)["d"])["at"])
     }
 }
+
+final class ReceiptTests: XCTestCase {
+    private func outgoing(_ ts: Int64, group: Bool = false) -> (ChatState, String) {
+        var s = ChatState()
+        s.account = "+49000"
+        let key = group ? "g:G1" : "+49111"
+        var m = Message()
+        m.ts = ts
+        m.text = "hello"
+        m.outgoing = true
+        m.authorKey = "+49000"
+        _ = s.addMessage(key, m, title: group ? "Group" : "", group: group)
+        return (s, key)
+    }
+
+    func testParseReceiptEnvelope() {
+        let delivery = parseReceipt(["sourceNumber": "+49111", "sourceUuid": "u-1", "timestamp": 5000, "receiptMessage": [
+            "when": 5000, "isDelivery": true, "isRead": false, "isViewed": false, "timestamps": [100, 101],
+        ] as JSON])
+        XCTAssertEqual(delivery?.status, 1)
+        XCTAssertEqual(delivery?.sender, "+49111")
+        XCTAssertEqual(delivery?.timestamps, [100, 101])
+        XCTAssertEqual(delivery?.timeMs, 5000)
+        XCTAssertEqual(parseReceipt(["sourceUuid": "u-1", "timestamp": 1, "receiptMessage": ["isRead": true, "timestamps": [1]] as JSON])?.status, 2)
+        XCTAssertEqual(parseReceipt(["sourceUuid": "u-1", "timestamp": 1, "receiptMessage": ["isViewed": true, "timestamps": [1]] as JSON])?.status, 2)
+        XCTAssertEqual(parseReceipt(["sourceUuid": "u-1", "timestamp": 1, "receiptMessage": ["isViewed": true, "timestamps": [1]] as JSON])?.sender, "u-1")
+        // No effect: neither delivery nor read, no timestamps, not a receipt.
+        XCTAssertNil(parseReceipt(["sourceNumber": "+1", "receiptMessage": ["timestamps": [1]] as JSON]))
+        XCTAssertNil(parseReceipt(["sourceNumber": "+1", "receiptMessage": ["isRead": true, "timestamps": [Int]()] as JSON]))
+        XCTAssertNil(parseReceipt(["sourceNumber": "+1", "dataMessage": ["message": "x"] as JSON]))
+        // The message parser still ignores receipts.
+        XCTAssertEqual(parseEnvelope(["sourceNumber": "+1", "receiptMessage": ["isRead": true, "timestamps": [1]] as JSON]).kind, .none)
+    }
+
+    func testDeliveredThenReadIsStoredWithTheQtKeys() throws {
+        var (s, key) = outgoing(100)
+        let rec1 = s.applyReceipt(key, recipient: "+49111", status: 1, timestamps: [100], atMs: 5000)
+        XCTAssertEqual(rec1.count, 1)
+        XCTAssertEqual(s.convs[key]!.msgs[0].deliveryStatus, 1)
+        // The same receipt again changes nothing.
+        XCTAssertTrue(s.applyReceipt(key, recipient: "+49111", status: 1, timestamps: [100], atMs: 6000).isEmpty)
+        let rec2 = s.applyReceipt(key, recipient: "+49111", status: 2, timestamps: [100], atMs: 7000)
+        XCTAssertEqual(rec2.count, 1)
+        // A late delivery receipt never lowers the status.
+        XCTAssertTrue(s.applyReceipt(key, recipient: "+49111", status: 1, timestamps: [100], atMs: 8000).isEmpty)
+        let m = s.convs[key]!.msgs[0]
+        XCTAssertEqual(m.receiptStatus, 2)
+        XCTAssertEqual(m.recipientReceipts["+49111"], RecipientReceipt(status: 2, deliveredAtMs: 5000, readAtMs: 7000))
+
+        // Exactly the keys of src/Records.cpp: update record, extras "rs" and "rr" {recipient: {s, d, r}}.
+        let r = rec2[0]
+        XCTAssertEqual(jsonString(r["t"]), "u")
+        XCTAssertEqual(jsonString(r["c"]), key)
+        XCTAssertEqual(jsonInt64(r["ts"]), 100)
+        XCTAssertEqual(jsonString(r["au"]), "+49000")
+        let d = jsonObject(r["d"])
+        XCTAssertEqual(jsonInt(d["rs"]), 2)
+        let entry = jsonObject(jsonObject(d["rr"])["+49111"])
+        XCTAssertEqual(jsonInt(entry["s"]), 2)
+        XCTAssertEqual(jsonInt64(entry["d"]), 5000)
+        XCTAssertEqual(jsonInt64(entry["r"]), 7000)
+
+        // Replaying the history (message + updates) and compaction both reproduce the state.
+        var h = ChatState()
+        h.account = "+49000"
+        var original = m
+        original.receiptStatus = 0
+        original.recipientReceipts = [:]
+        h.loadHistory([Records.message(key, original)] + rec1 + rec2)
+        XCTAssertEqual(h.convs[key]!.msgs[0].recipientReceipts, m.recipientReceipts)
+        XCTAssertEqual(h.convs[key]!.msgs[0].receiptStatus, 2)
+        var c = ChatState()
+        c.loadHistory(s.allRecords())
+        XCTAssertEqual(c.convs[key]!.msgs[0].recipientReceipts, m.recipientReceipts)
+        XCTAssertEqual(c.convs[key]!.msgs[0].receiptStatus, 2)
+    }
+
+    func testReadsAQtWrittenRecord() {
+        let rec: JSON = ["t": "m", "c": "+49111", "ts": 50, "s": "", "x": "hi", "o": true, "au": "+49000", "d": [
+            "rs": 1, "rr": ["+49111": ["s": 1, "d": 900, "r": 0], "": ["s": 2]],
+            "futureKey": ["whatever": 1],
+        ] as JSON]
+        let m = Records.messageFromRecord(rec)
+        XCTAssertEqual(m.receiptStatus, 1)
+        XCTAssertEqual(m.recipientReceipts, ["+49111": RecipientReceipt(status: 1, deliveredAtMs: 900, readAtMs: 0)])
+        // Incoming messages never carry receipts.
+        var inc = rec
+        inc["o"] = false
+        XCTAssertEqual(Records.messageFromRecord(inc).receiptStatus, 0)
+        // Out of range values are clamped.
+        let high = Records.messageFromRecord(["t": "m", "c": "+1", "ts": 1, "o": true, "d": ["rs": 9, "rr": ["+1": ["s": 7]]] as JSON])
+        XCTAssertEqual(high.receiptStatus, 2)
+        XCTAssertEqual(high.recipientReceipts["+1"]?.status, 2)
+    }
+
+    func testGroupReceiptsAggregatePerRecipient() {
+        var (s, key) = outgoing(200, group: true)
+        s.alias["u-2"] = "+49222"
+        // Group receipts do not name the group: they arrive with the member's own conversation key.
+        XCTAssertEqual(s.applyReceipt("+49111", recipient: "+49111", status: 1, timestamps: [200], atMs: 1).count, 1)
+        XCTAssertEqual(s.applyReceipt("u-2", recipient: "u-2", status: 2, timestamps: [200], atMs: 2).count, 1)
+        let m = s.convs[key]!.msgs[0]
+        XCTAssertEqual(m.recipientReceipts.keys.sorted(), ["+49111", "+49222"])
+        XCTAssertEqual(m.recipientReceipts["+49111"]?.status, 1)
+        XCTAssertEqual(m.recipientReceipts["+49222"]?.status, 2)
+        XCTAssertEqual(m.deliveryStatus, 2)
+        XCTAssertEqual(m.recipients(withStatusAtLeast: 1), ["+49111", "+49222"])
+        XCTAssertEqual(m.recipients(withStatusAtLeast: 2), ["+49222"])
+        // Receipts from ourselves (another device) and for incoming messages are ignored.
+        XCTAssertTrue(s.applyReceipt("+49000", recipient: "+49000", status: 2, timestamps: [200], atMs: 3).isEmpty)
+        _ = s.addMessage("+49111", { var i = Message(); i.ts = 300; i.authorKey = "+49111"; return i }())
+        XCTAssertTrue(s.applyReceipt("+49111", recipient: "+49111", status: 2, timestamps: [300], atMs: 3).isEmpty)
+    }
+
+    func testEditedMessageIsAcknowledgedByItsLatestTimestamp() {
+        var (s, key) = outgoing(400)
+        _ = s.applyEdit(key, targetTs: 400, authors: ["+49000"], text: "fixed", newTs: 450)
+        XCTAssertEqual(s.applyReceipt(key, recipient: "+49111", status: 2, timestamps: [450], atMs: 9).count, 1)
+        XCTAssertEqual(s.convs[key]!.msgs[0].receiptStatus, 2)
+    }
+
+    func testReceiptBeforeTheSendIsConfirmed() {
+        var s = ChatState()
+        s.account = "+49000"
+        var preview = Message()
+        preview.ts = 10
+        preview.text = "group hello"
+        preview.outgoing = true
+        preview.authorKey = "+49000"
+        s.ensure("g:G1", title: "Group", group: true)
+        s.convs["g:G1"]!.insertSorted(preview)
+        var pending = PendingSend()
+        pending.conversationKey = "g:G1"
+        pending.temporaryTimestamp = 10
+        pending.message = preview
+        s.pendingSends["p1"] = pending
+
+        // A fast recipient acknowledges the final timestamp before the RPC reply has been processed.
+        XCTAssertTrue(s.applyReceipt("+49111", recipient: "+49111", status: 1, timestamps: [777], atMs: 5).isEmpty)
+        let recs = s.finalizePendingSend("p1", timestamp: 777)
+        XCTAssertEqual(recs.map { jsonString($0["t"]) }, ["m", "u"])
+        XCTAssertEqual(s.convs["g:G1"]!.msgs[0].ts, 777)
+        XCTAssertEqual(s.convs["g:G1"]!.msgs[0].recipientReceipts["+49111"]?.status, 1)
+    }
+}
+
+final class FormattingTests: XCTestCase {
+    func testParsesSignalCliTextStyles() {
+        // signal-cli JsonDataMessage: "textStyles": [{"style", "start", "length"}]
+        let pe = parseEnvelope(["sourceNumber": "+49111", "dataMessage": [
+            "timestamp": 1, "message": "bold and italic",
+            "textStyles": [["style": "BOLD", "start": 0, "length": 4], ["style": "ITALIC", "start": 9, "length": 6],
+                           ["style": "BOLD", "start": -1, "length": 2], ["style": "", "start": 0, "length": 1]],
+        ] as JSON])
+        XCTAssertEqual(pe.msg.textStyles, [TextStyleRange(start: 0, length: 4, style: .bold),
+                                           TextStyleRange(start: 9, length: 6, style: .italic)])
+        // The string form (used by `send`, and read by the Qt app) is understood too.
+        XCTAssertEqual(parseTextStyles(["textStyle": ["3:2:SPOILER", "bad", "1:0:BOLD"]]),
+                       [TextStyleRange(start: 3, length: 2, style: .spoiler)])
+        // Edits carry their styles.
+        let edit = parseEnvelope(["source": "+49222", "editMessage": ["targetSentTimestamp": 5, "dataMessage": [
+            "timestamp": 9, "message": "fixed", "textStyles": [["style": "MONOSPACE", "start": 0, "length": 5]],
+        ] as JSON] as JSON])
+        XCTAssertEqual(edit.msg.textStyles, [TextStyleRange(start: 0, length: 5, style: .monospace)])
+    }
+
+    func testMentionsKeepStylesAlignedAndAreStored() {
+        let text = "😀 \u{FFFC} is bold"
+        let pe = parseEnvelope(["sourceNumber": "+49111", "dataMessage": [
+            "timestamp": 1, "message": text,
+            "mentions": [["name": "Alice", "number": "+49222", "uuid": "u-2", "start": 3, "length": 1]],
+            "textStyles": [["style": "BOLD", "start": 8, "length": 4], ["style": "ITALIC", "start": 3, "length": 1]],
+        ] as JSON])
+        let body = substituteMentions(pe.msg.text, pe.mentions, styles: pe.msg.textStyles) { $0.name }
+        XCTAssertEqual(body.text, "😀 @Alice is bold")
+        // "@Alice" starts at UTF-16 offset 3 (the emoji is two units) and is 6 units long.
+        XCTAssertEqual(body.mentions, [MentionRange(start: 3, length: 6, uuid: "u-2")])
+        XCTAssertEqual(body.styles, [TextStyleRange(start: 13, length: 4, style: .bold), TextStyleRange(start: 3, length: 6, style: .italic)])
+        let ns = body.text as NSString
+        XCTAssertEqual(ns.substring(with: NSRange(location: 13, length: 4)), "bold")
+        XCTAssertEqual(ns.substring(with: NSRange(location: 3, length: 6)), "@Alice")
+
+        var m = Message()
+        m.ts = 1
+        m.text = body.text
+        m.textStyles = body.styles
+        m.mentions = body.mentions
+        let rec = Records.message("+49111", m)
+        let d = jsonObject(rec["d"])
+        // Keys of src/Records.cpp: "st" = ["start:length:STYLE"], "mn" = [{s, l, u}].
+        XCTAssertEqual(jsonArray(d["st"]).map(jsonString), ["13:4:BOLD", "3:6:ITALIC"])
+        let mn = jsonObject(jsonArray(d["mn"]).first)
+        XCTAssertEqual([jsonInt(mn["s"]), jsonInt(mn["l"]), jsonString(mn["u"])] as [AnyHashable], [3, 6, "u-2"])
+        let back = Records.messageFromRecord(rec)
+        XCTAssertEqual(back.textStyles, m.textStyles)
+        XCTAssertEqual(back.mentions, m.mentions)
+        // A message without formatting stores no extra keys.
+        var plain = Message()
+        plain.ts = 2
+        plain.text = "x"
+        XCTAssertNil(Records.message("+49111", plain)["d"])
+    }
+
+    func testPlaceholderMentionsOfTheQtAppAreExpandedWhenShown() {
+        // The Qt app keeps U+FFFC in the text and the ranges in "mn".
+        let rec: JSON = ["t": "m", "c": "g:G1", "ts": 5, "s": "Bob", "x": "hi \u{FFFC}!", "o": false, "au": "+49111", "d": [
+            "mn": [["s": 3, "l": 1, "u": "u-2"]], "st": ["0:2:BOLD", "3:2:ITALIC"],
+        ] as JSON]
+        let m = Records.messageFromRecord(rec)
+        XCTAssertEqual(m.mentions, [MentionRange(start: 3, length: 1, uuid: "u-2")])
+        let shown = expandMentions(text: m.text, styles: m.textStyles, mentions: m.mentions) { _ in "Alice" }
+        XCTAssertEqual(shown.text, "hi @Alice!")
+        XCTAssertEqual(shown.mentions, [MentionRange(start: 3, length: 6, uuid: "u-2")])
+        XCTAssertEqual(shown.styles, [TextStyleRange(start: 0, length: 2, style: .bold), TextStyleRange(start: 3, length: 7, style: .italic)])
+        // Already expanded text is left alone.
+        let again = expandMentions(text: shown.text, styles: shown.styles, mentions: shown.mentions) { _ in "X" }
+        XCTAssertEqual(again, shown)
+        // Unknown style names and broken ranges survive / are ignored.
+        let odd = Records.messageFromRecord(["t": "m", "c": "+1", "ts": 1, "x": "abc", "d": [
+            "st": ["0:1:WIGGLY", "x:y:BOLD", "1:0:BOLD"], "mn": [["s": -1, "l": 2], ["l": 3]], "zz": 1] as JSON])
+        XCTAssertEqual(odd.textStyles, [TextStyleRange(start: 0, length: 1, style: "WIGGLY")])
+        XCTAssertTrue(odd.mentions.isEmpty)
+    }
+
+    func testEditsReplaceTheStyles() {
+        var s = ChatState()
+        s.account = "+49000"
+        var m = Message()
+        m.ts = 10
+        m.text = "old bold"
+        m.textStyles = [TextStyleRange(start: 4, length: 4, style: .bold)]
+        m.outgoing = true
+        m.authorKey = "+49000"
+        _ = s.addMessage("+49111", m)
+        let rec = s.applyEdit("+49111", targetTs: 10, authors: ["+49000"], text: "new italic", newTs: 11,
+                              styles: [TextStyleRange(start: 4, length: 6, style: .italic)])!
+        XCTAssertEqual(jsonArray(jsonObject(jsonObject(rec["d"])["ed"])["st"]).map(jsonString), ["4:6:ITALIC"])
+        var h = ChatState()
+        h.loadHistory([Records.message("+49111", m), rec])
+        XCTAssertEqual(h.convs["+49111"]!.msgs[0].text, "new italic")
+        XCTAssertEqual(h.convs["+49111"]!.msgs[0].textStyles, [TextStyleRange(start: 4, length: 6, style: .italic)])
+        // An edit without formatting removes the old one.
+        let plain = s.applyEdit("+49111", targetTs: 10, authors: ["+49000"], text: "plain", newTs: 12)!
+        var h2 = ChatState()
+        h2.loadHistory([Records.message("+49111", m), plain])
+        XCTAssertTrue(h2.convs["+49111"]!.msgs[0].textStyles.isEmpty)
+        // Deleting for everyone clears them.
+        var deleted = s.convs["+49111"]!.msgs[0]
+        deleted.markDeleted()
+        XCTAssertTrue(deleted.textStyles.isEmpty && deleted.mentions.isEmpty)
+    }
+
+    func testMarkdownInput() {
+        func parse(_ s: String) -> (String, [String]) {
+            let r = parseMarkdownStyles(s)
+            return (r.text, r.styles.map(\.cliString))
+        }
+        XCTAssertTrue(parse("hello") == ("hello", []))
+        XCTAssertTrue(parse("a **bold** b") == ("a bold b", ["2:4:BOLD"]))
+        XCTAssertTrue(parse("_it_ ~gone~ `code` ||secret||") == ("it gone code secret", ["0:2:ITALIC", "3:4:STRIKETHROUGH", "8:4:MONOSPACE", "13:6:SPOILER"]))
+        XCTAssertTrue(parse("~~gone~~") == ("gone", ["0:4:STRIKETHROUGH"]))
+        // Nesting; monospace content is literal.
+        XCTAssertTrue(parse("**bold _and italic_**") == ("bold and italic", ["0:15:BOLD", "5:10:ITALIC"]))
+        XCTAssertTrue(parse("`**not bold**`") == ("**not bold**", ["0:12:MONOSPACE"]))
+        // Offsets are UTF-16 units.
+        XCTAssertTrue(parse("😀 **x**") == ("😀 x", ["3:1:BOLD"]))
+        XCTAssertTrue(parse("é **x** 👨‍👩‍👧 _y_") == ("é x 👨‍👩‍👧 y", ["2:1:BOLD", "\(("é x 👨‍👩‍👧 " as NSString).length):1:ITALIC"]))
+        // Things that look like markers but are not.
+        XCTAssertTrue(parse("snake_case_name") == ("snake_case_name", []))
+        XCTAssertTrue(parse("2 * 3 * 4") == ("2 * 3 * 4", []))
+        XCTAssertTrue(parse("about ~5 and ~10") == ("about ~5 and ~10", []))
+        XCTAssertTrue(parse("**unclosed") == ("**unclosed", []))
+        XCTAssertTrue(parse("** spaced **") == ("** spaced **", []))
+        XCTAssertTrue(parse("____") == ("____", []))
+        XCTAssertTrue(parse("a || b") == ("a || b", []))
+        // Styles are sent as signal-cli "start:length:STYLE" strings.
+        XCTAssertEqual(TextStyleRange(start: 1, length: 2, style: .bold).cliString, "1:2:BOLD")
+        XCTAssertEqual(TextStyleRange(cliString: "1:2:BOLD"), TextStyleRange(start: 1, length: 2, style: .bold))
+    }
+
+    func testMarkdownRoundTripForEditing() {
+        for source in ["a **bold** b", "**bold _and italic_** x", "😀 ~gone~ and `code`", "||spoiler|| text", "plain"] {
+            let parsed = parseMarkdownStyles(source)
+            let back = parseMarkdownStyles(markdownSource(text: parsed.text, styles: parsed.styles))
+            XCTAssertEqual(back.text, parsed.text, source)
+            XCTAssertEqual(Set(back.styles), Set(parsed.styles), source)
+        }
+    }
+
+    func testStyledRuns() {
+        let runs = styledRuns(text: "ab😀cd", styles: [TextStyleRange(start: 1, length: 3, style: .bold),
+                                                      TextStyleRange(start: 2, length: 2, style: .spoiler),
+                                                      TextStyleRange(start: 0, length: 99, style: "UNKNOWN")],
+                              mentions: [MentionRange(start: 4, length: 1, uuid: "u")])
+        XCTAssertEqual(runs.map { [$0.location, $0.length] }, [[0, 1], [1, 1], [2, 2], [4, 1], [5, 1]])
+        XCTAssertEqual(runs[1].styles, [.bold])
+        XCTAssertEqual(runs[2].styles, [.bold, .spoiler])
+        XCTAssertEqual(runs[2].spoiler, 0)
+        XCTAssertEqual(runs[3].mention?.uuid, "u")
+        XCTAssertTrue(styledRuns(text: "", styles: []).isEmpty)
+    }
+}
