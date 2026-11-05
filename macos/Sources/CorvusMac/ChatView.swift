@@ -26,7 +26,8 @@ struct ChatPane: View {
                         .padding(12)
                     }
                 }
-            ComposerArea()
+            RequestBanner(conversation: conversation)
+            ComposerArea().disabled(model.isSendLocked(conversation.key))
         }
         .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { providers in
             handleDrop(providers)

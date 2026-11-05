@@ -109,6 +109,11 @@ final class AppModel {
     var galleryShown = false
     var pollComposerShown = false
 
+    // groups, blocking and message requests (Groups.swift, MessageRequests.swift)
+    var roster = Roster()
+    var groupInfoKey: String?                  // group whose info sheet is shown
+    var newGroupShown = false
+
     // composer extras
     var viewOnceNext = false                    // send the single attached photo/video as View Once
     @ObservationIgnored var voiceNoteNext = false
@@ -344,12 +349,14 @@ final class AppModel {
     // MARK: - Contacts / groups
 
     private func loadContactsAndGroups() {
+        roster.load(account: account)
         avatarTried.removeAll() // ask signal-cli again, avatars may have changed
         avatarBusy.removeAll()
         avatarInFlight = 0
         Task {
             do {
                 let res = try await cli.call("listContacts")
+                noteContacts(res)
                 for cv in jsonArray(res) {
                     let c = jsonObject(cv)
                     let number = jsonString(c["number"]), uuid = jsonString(c["uuid"])
@@ -394,6 +401,7 @@ final class AppModel {
         }
         Task {
             guard let res = try? await cli.call("listGroups") else { return }
+            noteGroups(res)
             for gv in jsonArray(res) {
                 let g = jsonObject(gv)
                 if g["isMember"] != nil && !jsonBool(g["isMember"]) { continue }
@@ -720,6 +728,11 @@ final class AppModel {
         guard let c = chats.convs[key] else { return }
         guard await Dialogs.confirm("Delete conversation", "Delete “\(c.title)” and its stored messages from this computer?",
                                     ok: "Delete", destructive: true) else { return }
+        removeConversation(key)
+    }
+
+    /// Drops a conversation and its stored messages without asking.
+    func removeConversation(_ key: String) {
         if key == editKey { cancelEdit() }
         chats.convs.removeValue(forKey: key)
         drafts.removeValue(forKey: key)
@@ -985,15 +998,16 @@ final class AppModel {
         guard let (_, recs) = chats.addMessage(key, m, title: title, group: group) else { return false } // duplicate
         persist(recs)
         // A message in the selected chat is only read while the user looks at it.
-        if !m.outgoing && !(key == current && userIsLooking()) { chats.convs[key]!.unread += 1 }
-        if !m.outgoing && !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+        let quiet = !m.outgoing && isQuiet(key, author: m.authorKey) // blocked sender or unaccepted request
+        if !m.outgoing && !quiet && !(key == current && userIsLooking()) { chats.convs[key]!.unread += 1 }
+        if !m.outgoing && !quiet && !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
         if key == current { updateSearch() }
         listChanged()
         return true
     }
 
     func alertIncoming(_ key: String, _ m: Message) {
-        guard let c = chats.convs[key], !c.muted else { return }
+        guard let c = chats.convs[key], !c.muted, !isQuiet(key, author: m.authorKey) else { return }
         // Nothing to announce while the user is looking at this very conversation.
         if key == current && userIsLooking() { return }
 
@@ -1061,6 +1075,7 @@ final class AppModel {
             showFlash("Not connected to signal-cli.", seconds: 5)
             return
         }
+        guard !isSendLocked(key) else { return } // message request, blocked chat or left group
         if sticker == nil && linkDraft.isPending(for: text) { // the link preview is still loading
             deferSendForLinkPreview()
             return

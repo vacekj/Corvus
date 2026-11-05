@@ -882,3 +882,385 @@ final class FormattingTests: XCTestCase {
         XCTAssertTrue(styledRuns(text: "", styles: []).isEmpty)
     }
 }
+
+// MARK: - Groups, blocking and message requests
+
+final class GroupInfoTests: XCTestCase {
+    private let me = "+49111000"
+
+    private func detailed() -> JSON {
+        [
+            "id": "R1JPVVA=", "name": "Team", "description": "Plans", "isMember": true, "isBlocked": false,
+            "messageExpirationTime": 3600,
+            "members": [["number": "+49111000", "uuid": "u-me", "isAdmin": true],
+                        ["number": "+49222000", "uuid": "u-bob", "isAdmin": false],
+                        ["number": NSNull(), "uuid": "u-carol", "isAdmin": false]],
+            "pendingMembers": [["number": "+49333000", "uuid": "u-dave"]],
+            "requestingMembers": [["number": "+49444000", "uuid": "u-erin"]],
+            "banned": [["number": "+49555000", "uuid": "u-mallory"]],
+            "permissionAddMember": "ONLY_ADMINS", "permissionEditDetails": "EVERY_MEMBER",
+            "permissionSendMessage": "every-member",
+            "groupInviteLink": "https://signal.group/#abc",
+        ]
+    }
+
+    func testParsesDetailedGroup() {
+        let g = GroupInfo(json: detailed())
+        XCTAssertEqual(g.key, "g:R1JPVVA=")
+        XCTAssertEqual(g.name, "Team")
+        XCTAssertEqual(g.description, "Plans")
+        XCTAssertEqual(g.expiration, 3600)
+        XCTAssertEqual(g.members.map(\.id), ["+49111000", "+49222000", "u-carol"])
+        XCTAssertEqual(g.members.map(\.isAdmin), [true, false, false])
+        XCTAssertEqual(g.pending.map(\.id), ["+49333000"])
+        XCTAssertEqual(g.requesting.map(\.id), ["+49444000"])
+        XCTAssertEqual(g.banned.map(\.id), ["+49555000"])
+        XCTAssertEqual(g.permAddMember, .onlyAdmins)
+        XCTAssertEqual(g.permEditDetails, .everyMember)
+        XCTAssertTrue(g.inviteLinkEnabled)
+        XCTAssertEqual(g.inviteLink, "https://signal.group/#abc")
+        XCTAssertEqual(g.adminCount, 1)
+    }
+
+    func testLegacyStringMembersAndSeparateAdminList() {
+        let g = GroupInfo(json: ["id": "x", "name": "Old", "members": ["+49111000", "u-bob"], "admins": ["u-bob"],
+                                 "groupInviteLink": NSNull()])
+        XCTAssertEqual(g.members.map(\.id), ["+49111000", "u-bob"])
+        XCTAssertEqual(g.members.map(\.isAdmin), [false, true])
+        XCTAssertFalse(g.inviteLinkEnabled)
+        XCTAssertTrue(g.isMember) // no isMember field: a member
+    }
+
+    func testParseListDropsEntriesWithoutId() {
+        XCTAssertEqual(GroupInfo.parseList([["id": "a", "name": "A"], ["name": "no id"]] as [JSON]).map(\.id), ["a"])
+        XCTAssertTrue(GroupInfo.parseList(nil).isEmpty)
+    }
+
+    func testPermissions() {
+        let g = GroupInfo(json: detailed())
+        XCTAssertTrue(g.canAddMembers(me))              // admin
+        XCTAssertFalse(g.canAddMembers("+49222000"))    // only admins may add
+        XCTAssertTrue(g.canEditDetails("+49222000"))    // everybody may edit
+        XCTAssertFalse(g.canEditDetails("+49999000"))   // not a member
+        XCTAssertTrue(g.canAdminister(me))
+        XCTAssertFalse(g.canAdminister("u-bob"))
+    }
+
+    func testOnlyAdminNeedsSuccessorToLeave() {
+        let g = GroupInfo(json: detailed())
+        XCTAssertTrue(g.needsSuccessor(leaving: me))
+        XCTAssertEqual(g.successors(leaving: me).map(\.id), ["+49222000", "u-carol"])
+        XCTAssertFalse(g.needsSuccessor(leaving: "+49222000"))
+        var alone = g
+        alone.members = [GroupMember(number: me, isAdmin: true)]
+        XCTAssertFalse(alone.needsSuccessor(leaving: me))
+    }
+
+    func testInvitationNeedsPendingEntryAndNoMembership() {
+        var g = GroupInfo(json: detailed())
+        XCTAssertFalse(g.isInvitation(for: me))
+        g.isMember = false
+        g.pending = [GroupMember(number: me, uuid: "u-me")]
+        XCTAssertTrue(g.isInvitation(for: me))
+        g.isTerminated = true
+        XCTAssertFalse(g.isInvitation(for: me))
+    }
+
+    func testUpdateGroupParameters() {
+        let g = GroupInfo(json: detailed())
+        XCTAssertEqual(GroupParams.create(name: "New", members: ["+49222000"]) as NSDictionary,
+                       ["name": "New", "member": ["+49222000"]] as NSDictionary)
+        XCTAssertEqual(GroupParams.create(name: "New", description: "d", members: []) as NSDictionary,
+                       ["name": "New", "description": "d"] as NSDictionary)
+        XCTAssertEqual(GroupParams.details(from: g, name: "Team", description: "Other") as NSDictionary,
+                       ["description": "Other"] as NSDictionary)
+        XCTAssertTrue(GroupParams.details(from: g, name: "Team", description: "Plans").isEmpty)
+        XCTAssertTrue(GroupParams.details(from: g, name: "").isEmpty) // an empty name is never sent
+        XCTAssertEqual(GroupParams.update(groupId: "R1JPVVA=", GroupParams.addMembers(["a"])) as NSDictionary,
+                       ["groupId": "R1JPVVA=", "member": ["a"]] as NSDictionary)
+        XCTAssertEqual(GroupParams.removeMembers(["a"]) as NSDictionary, ["removeMember": ["a"]] as NSDictionary)
+        XCTAssertEqual(GroupParams.promote(["a"]) as NSDictionary, ["admin": ["a"]] as NSDictionary)
+        XCTAssertEqual(GroupParams.demote(["a"]) as NSDictionary, ["removeAdmin": ["a"]] as NSDictionary)
+        XCTAssertEqual(GroupParams.link(.enabledWithApproval) as NSDictionary, ["link": "enabled-with-approval"] as NSDictionary)
+        XCTAssertEqual(GroupParams.resetLink as NSDictionary, ["resetLink": true] as NSDictionary)
+        XCTAssertEqual(GroupParams.quit(groupId: "g", successor: "u-bob") as NSDictionary,
+                       ["groupId": "g", "admin": ["u-bob"]] as NSDictionary)
+        XCTAssertEqual(GroupParams.quit(groupId: "g") as NSDictionary, ["groupId": "g"] as NSDictionary)
+    }
+}
+
+final class RosterTests: XCTestCase {
+    private let me = "+49111000"
+
+    private func conv(_ key: String, incoming: Int = 1, outgoing: Int = 0, group: Bool = false) -> Conversation {
+        var c = Conversation(key: key, title: key, isGroup: group)
+        for i in 0..<incoming {
+            var m = Message()
+            m.ts = Int64(100 + i)
+            m.text = "hi"
+            c.msgs.append(m)
+        }
+        for i in 0..<outgoing {
+            var m = Message()
+            m.ts = Int64(200 + i)
+            m.text = "yes"
+            m.outgoing = true
+            c.msgs.append(m)
+        }
+        return c
+    }
+
+    private func roster(contacts: [JSON] = [], groups: [JSON]? = nil, baselined: Bool = true) -> Roster {
+        var r = Roster()
+        r.account = me
+        r.update(contacts: contacts)
+        if let groups { r.update(groups: groups) }
+        if baselined {
+            r.baselineContacts(existing: [])
+            r.baselineGroups()
+        }
+        return r
+    }
+
+    private let alice: JSON = ["number": "+49222000", "uuid": "u-alice", "name": "Alice", "isBlocked": false, "isHidden": false]
+
+    func testStrangerWhoWroteFirstIsARequest() {
+        let r = roster(contacts: [alice])
+        XCTAssertTrue(r.isRequest(conv("+49999000")))
+        XCTAssertFalse(r.isRequest(conv("+49222000")), "a contact is not a request")
+        XCTAssertFalse(r.isRequest(conv("u-alice")), "a contact addressed by UUID is not a request")
+        XCTAssertFalse(r.isRequest(conv("+49999000", incoming: 1, outgoing: 1)), "we wrote to them")
+        XCTAssertFalse(r.isRequest(conv("+49999000", incoming: 0)), "an empty chat we started ourselves")
+        XCTAssertFalse(r.isRequest(conv(me)), "Note to Self")
+    }
+
+    func testAliasResolvesUuidToContact() {
+        let r = roster(contacts: [["number": "+49222000", "uuid": "u-alice"]])
+        let aliases = ["u-alice": "+49222000"]
+        XCTAssertFalse(r.isRequest(conv("u-alice"), resolve: { aliases[$0] ?? $0 }))
+    }
+
+    func testNothingIsARequestBeforeTheListsAreKnown() {
+        var r = Roster()
+        r.account = me
+        XCTAssertFalse(r.isRequest(conv("+49999000")))
+        r.update(contacts: [alice])
+        XCTAssertFalse(r.isRequest(conv("+49999000")), "contacts known but existing chats not grandfathered yet")
+        r.baselineContacts(existing: ["+49888000"])
+        XCTAssertTrue(r.isRequest(conv("+49999000")))
+        XCTAssertFalse(r.isRequest(conv("+49888000")), "existing chat at the first run")
+    }
+
+    func testHiddenContactIsStillARequest() {
+        let r = roster(contacts: [["number": "+49444000", "uuid": "u-dave", "isHidden": true]])
+        XCTAssertTrue(r.isRequest(conv("+49444000")))
+        XCTAssertFalse(r.pickableContacts.contains { $0.number == "+49444000" })
+    }
+
+    func testAcceptEndsTheRequest() {
+        var r = roster()
+        XCTAssertTrue(r.isRequest(conv("+49999000")))
+        r.accept("+49999000")
+        XCTAssertFalse(r.isRequest(conv("+49999000")))
+    }
+
+    func testGroupRequests() {
+        let member: JSON = ["id": "TUVN", "name": "Member", "isMember": true, "members": [["number": "+49111000", "uuid": "u-me"]]]
+        let invite: JSON = ["id": "SU5W", "name": "Invite", "isMember": false,
+                            "pendingMembers": [["number": "+49111000", "uuid": "u-me"]]]
+        var r = roster(contacts: [], groups: [member], baselined: false)
+        r.baselineGroups() // first run: the groups we are in are ours
+        r.update(groups: [member, invite, ["id": "TkVX", "name": "New", "isMember": true]])
+        XCTAssertFalse(r.isRequest(conv("g:TUVN", group: true)), "grandfathered group")
+        XCTAssertTrue(r.isRequest(conv("g:SU5W", incoming: 0, group: true)), "open invitation")
+        XCTAssertTrue(r.isRequest(conv("g:TkVX", incoming: 0, group: true)), "added after the first run")
+        XCTAssertFalse(r.isRequest(conv("g:TkVX", incoming: 1, outgoing: 1, group: true)), "we wrote in it")
+        r.accept("g:TkVX")
+        XCTAssertFalse(r.isRequest(conv("g:TkVX", incoming: 0, group: true)))
+        XCTAssertFalse(r.isRequest(conv("g:UNKNOWN", group: true)), "group signal-cli does not list")
+    }
+
+    func testBlockedStateFromContactsAndGroups() {
+        var r = roster(contacts: [["number": "+49333000", "uuid": "u-bad", "isBlocked": true]],
+                       groups: [["id": "QkFE", "name": "Bad", "isBlocked": true], ["id": "R09P", "name": "Ok"]])
+        XCTAssertTrue(r.isBlocked("+49333000"))
+        XCTAssertTrue(r.isBlocked("u-bad"))
+        XCTAssertTrue(r.isBlocked("g:QkFE"))
+        XCTAssertFalse(r.isBlocked("g:R09P"))
+        // A blocked chat is not a request, but nothing can be sent and nothing makes noise.
+        let c = conv("+49333000")
+        XCTAssertFalse(r.isRequest(c))
+        XCTAssertTrue(r.isSendLocked(c))
+        XCTAssertTrue(r.isQuiet(c))
+        XCTAssertFalse(r.mayAcknowledge(c))
+        // Unblocking on the next list.
+        r.update(contacts: [["number": "+49333000", "uuid": "u-bad", "isBlocked": false]])
+        XCTAssertFalse(r.isBlocked("u-bad"))
+    }
+
+    func testBlockedSenderInAnotherwiseNormalGroupIsQuiet() {
+        var r = roster(contacts: [["number": "+49333000", "isBlocked": true]],
+                       groups: [["id": "R09P", "name": "Ok", "isMember": true]])
+        r.accept("g:R09P")
+        let g = conv("g:R09P", group: true)
+        XCTAssertFalse(r.isQuiet(g, author: "+49222000"))
+        XCTAssertTrue(r.isQuiet(g, author: "+49333000"))
+        XCTAssertFalse(r.isSendLocked(g))
+    }
+
+    func testRequestsAreQuietAndLocked() {
+        let r = roster()
+        let c = conv("+49999000")
+        XCTAssertTrue(r.isQuiet(c))
+        XCTAssertTrue(r.isSendLocked(c))
+        XCTAssertFalse(r.mayAcknowledge(c), "no read receipts before the request is accepted")
+        let normal = conv("+49999000", incoming: 1, outgoing: 1)
+        XCTAssertFalse(r.isQuiet(normal))
+        XCTAssertFalse(r.isSendLocked(normal))
+        XCTAssertTrue(r.mayAcknowledge(normal))
+    }
+
+    func testLeftGroupLocksTheComposer() {
+        let r = roster(groups: [["id": "R09P", "name": "Gone", "isMember": false]])
+        XCTAssertTrue(r.isSendLocked(conv("g:R09P", group: true)))
+    }
+
+    func testLocalBlockUpdateCoversNumberAndUuid() {
+        var r = roster(contacts: [["number": "+49222000", "uuid": "u-alice"]])
+        r.setBlocked("u-alice", true, resolve: { $0 == "u-alice" ? "+49222000" : $0 })
+        XCTAssertTrue(r.isBlocked("+49222000"))
+        XCTAssertTrue(r.isBlocked("u-alice"))
+        r.setBlocked("+49222000", false)
+        XCTAssertFalse(r.isBlocked("u-alice"))
+    }
+
+    func testPersistenceIsPerAccount() throws {
+        let suite = "corvus-tests-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var r = roster(contacts: [["number": "+49333000", "isBlocked": true]], baselined: false)
+        r.baselineContacts(existing: ["+49888000", "g:SKIP"])
+        r.accept("+49999000")
+        r.save(defaults: defaults)
+
+        var again = Roster()
+        again.load(account: me, defaults: defaults)
+        XCTAssertEqual(again.accepted, ["+49888000", "+49999000"])
+        XCTAssertTrue(again.blocked.contains("+49333000"))
+        XCTAssertTrue(again.contactsBaselined)
+        XCTAssertFalse(again.groupsBaselined)
+
+        var other = Roster()
+        other.load(account: "+49000111", defaults: defaults)
+        XCTAssertTrue(other.accepted.isEmpty)
+        XCTAssertFalse(other.contactsBaselined)
+    }
+
+    func testRpcParameters() {
+        XCTAssertEqual(RequestParams.block(key: "+49222000") as NSDictionary, ["recipient": ["+49222000"]] as NSDictionary)
+        XCTAssertEqual(RequestParams.block(key: "g:R09P") as NSDictionary, ["groupId": ["R09P"]] as NSDictionary)
+        XCTAssertEqual(RequestParams.response(.accept, key: "+49222000") as NSDictionary,
+                       ["type": "accept", "recipient": ["+49222000"]] as NSDictionary)
+        XCTAssertEqual(RequestParams.response(.delete, key: "g:R09P") as NSDictionary,
+                       ["type": "delete", "groupId": "R09P"] as NSDictionary)
+    }
+}
+
+/// The group / block / request methods against tests/mock-signal-cli.py (same shapes as signal-cli 0.14).
+@MainActor
+final class GroupRpcTests: XCTestCase {
+    private func mock() throws -> String {
+        let source = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().appendingPathComponent("../../../tests/mock-signal-cli.py").standardized
+        let target = FileManager.default.temporaryDirectory.appendingPathComponent("mock-signal-cli-\(UUID().uuidString).py")
+        try FileManager.default.copyItem(at: source, to: target)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
+        return target.path
+    }
+
+    func testGroupLifecycleBlockAndRequestResponse() async throws {
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: "/usr/bin/python3"), "python3 missing")
+        let cli = SignalCli()
+        cli.executable = try mock()
+        defer { try? FileManager.default.removeItem(atPath: cli.executable) }
+        cli.start(account: "+491234567")
+        defer { cli.stop() }
+
+        // create (updateGroup without groupId)
+        let created = try await cli.call("updateGroup", GroupParams.create(name: "Fresh", description: "About", members: ["+49111", "+49222"]))
+        let id = jsonString(jsonObject(created)["groupId"])
+        XCTAssertFalse(id.isEmpty)
+        func load() async throws -> GroupInfo {
+            let list = GroupInfo.parseList(try await cli.call("listGroups", ["groupId": [id]]))
+            return try XCTUnwrap(list.first)
+        }
+        var g = try await load()
+        XCTAssertEqual(g.name, "Fresh")
+        XCTAssertEqual(g.description, "About")
+        XCTAssertEqual(g.members.map(\.id).sorted(), ["+49111", "+491234567", "+49222"])
+        XCTAssertTrue(g.isAdmin("+491234567"))
+
+        // rename / description / promote / demote / remove / add
+        try await cli.call("updateGroup", GroupParams.update(groupId: id, GroupParams.details(from: g, name: "Renamed", description: "New text")))
+        try await cli.call("updateGroup", GroupParams.update(groupId: id, GroupParams.promote(["+49111"])))
+        g = try await load()
+        XCTAssertEqual(g.name, "Renamed")
+        XCTAssertEqual(g.description, "New text")
+        XCTAssertTrue(g.isAdmin("+49111"))
+        try await cli.call("updateGroup", GroupParams.update(groupId: id, GroupParams.demote(["+49111"])))
+        try await cli.call("updateGroup", GroupParams.update(groupId: id, GroupParams.removeMembers(["+49222"])))
+        try await cli.call("updateGroup", GroupParams.update(groupId: id, GroupParams.addMembers(["+49555"])))
+        g = try await load()
+        XCTAssertFalse(g.isAdmin("+49111"))
+        XCTAssertNil(g.member("+49222"))
+        XCTAssertNotNil(g.member("+49555"))
+
+        // invite link
+        try await cli.call("updateGroup", GroupParams.update(groupId: id, GroupParams.link(.enabled)))
+        g = try await load()
+        XCTAssertTrue(g.inviteLinkEnabled)
+        let first = g.inviteLink
+        try await cli.call("updateGroup", GroupParams.update(groupId: id, GroupParams.resetLink))
+        g = try await load()
+        XCTAssertNotEqual(g.inviteLink, first)
+        try await cli.call("updateGroup", GroupParams.update(groupId: id, GroupParams.link(.disabled)))
+        g = try await load()
+        XCTAssertFalse(g.inviteLinkEnabled)
+
+        // blocking a group and a contact
+        try await cli.call("block", RequestParams.block(key: "g:" + id))
+        g = try await load()
+        XCTAssertTrue(g.isBlocked)
+        try await cli.call("unblock", RequestParams.block(key: "g:" + id))
+        g = try await load()
+        XCTAssertFalse(g.isBlocked)
+        try await cli.call("block", RequestParams.block(key: "+49111"))
+        var roster = Roster()
+        roster.update(contacts: try await cli.call("listContacts"))
+        XCTAssertTrue(roster.isBlocked("+49111"))
+        try await cli.call("unblock", RequestParams.block(key: "+49111"))
+        roster.update(contacts: try await cli.call("listContacts"))
+        XCTAssertFalse(roster.isBlocked("+49111"))
+
+        // message request responses: lowercase types only, like signal-cli
+        try await cli.call("sendMessageRequestResponse", RequestParams.response(.accept, key: "+49444"))
+        try await cli.call("sendMessageRequestResponse", RequestParams.response(.delete, key: "g:" + id))
+        do {
+            try await cli.call("sendMessageRequestResponse", ["type": "ACCEPT", "recipient": ["+49444"]])
+            XCTFail("uppercase type must be rejected")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("--type"))
+        }
+
+        // leaving: we are the only admin and others remain, so a successor is required
+        g = try await load()
+        XCTAssertTrue(g.needsSuccessor(leaving: "+491234567"))
+        do {
+            try await cli.call("quitGroup", GroupParams.quit(groupId: id))
+            XCTFail("the only admin must name a successor")
+        } catch {}
+        try await cli.call("quitGroup", GroupParams.quit(groupId: id, successor: "+49555"))
+        g = try await load()
+        XCTAssertFalse(g.isMember)
+    }
+}

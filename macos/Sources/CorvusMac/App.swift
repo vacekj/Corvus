@@ -191,6 +191,9 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New conversation …") { Task { await model.newConversation() } }
                 .keyboardShortcut("n")
+            Button("New group …") { model.newGroupShown = true }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(!model.connected || !model.historyReady)
             Button("Link device …") { Task { await model.linkDevice() } }
             Button("Reconnect") { model.reconnect() }
             Divider()
@@ -219,6 +222,9 @@ struct AppCommands: Commands {
                 }
                 .keyboardShortcut(KeyEquivalent(Character("\(n)")))
             }
+            Divider()
+            Button("Group info …") { if let key = model.current { model.showGroupInfo(key) } }
+                .disabled(model.currentConversation?.isGroup != true)
         }
         CommandGroup(after: .appSettings) {
             Button("History protection …") { Task { await model.changeHistoryProtection() } }

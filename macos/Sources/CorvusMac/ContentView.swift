@@ -33,6 +33,12 @@ struct ContentView: View {
                     }
                 }
                 ToolbarItem(placement: .automatic) {
+                    if let c = model.currentConversation, c.isGroup {
+                        Button { model.showGroupInfo(c.key) } label: { Label("Group info", systemImage: "info.circle") }
+                            .help("Group info: members, admins, invite link")
+                    }
+                }
+                ToolbarItem(placement: .automatic) {
                     Button { model.galleryShown = true } label: { Label("Media", systemImage: "photo.on.rectangle") }
                         .help("Media, files and links of this chat")
                         .disabled(model.current == nil)
@@ -66,6 +72,7 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.galleryShown) { MediaGallerySheet() }
         .sheet(isPresented: $model.storiesShown) { StoriesSheet() }
+        .modifier(GroupSheets())
         .onAppear {
             model.openMainWindow = {
                 openWindow(id: "main")
@@ -93,6 +100,7 @@ private struct ChatHeader: View {
                               systemImage: "timer")
                     }
                     if c.muted { Label("Muted", systemImage: "bell.slash") }
+                    if model.isBlocked(c.key) { Label("Blocked", systemImage: "nosign") }
                 }
                 .labelStyle(.titleAndIcon)
                 .font(.caption)
@@ -299,6 +307,7 @@ private struct ConversationRow: View {
                         .font(.system(size: 13, weight: c.unread > 0 ? .bold : .semibold))
                         .lineLimit(1)
                     if c.muted { Image(systemName: "bell.slash.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
+                    if model.isBlocked(c.key) { Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.red) }
                     Spacer(minLength: 4)
                     if let last = c.msgs.last {
                         Text(Self.shortTime(last.time))
@@ -307,7 +316,8 @@ private struct ConversationRow: View {
                     }
                 }
                 HStack(spacing: 4) {
-                    Text(c.msgs.last.map(preview) ?? (c.isGroup ? "Group" : " "))
+                    Text(model.isMessageRequest(c.key) ? "Message request"
+                            : c.msgs.last.map(preview) ?? (c.isGroup ? "Group" : " "))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -353,6 +363,7 @@ private struct ConversationMenu: View {
 
     var body: some View {
         let c = conversation
+        GroupMenuItems(conversation: c)
         if !c.isGroup {
             Button { Task { await model.startCall(c.key) } } label: { Label("Voice call", systemImage: "phone") }
                 .disabled(!model.connected || model.call?.isActive == true)
@@ -383,6 +394,7 @@ private struct ConversationMenu: View {
             }
         } label: { Label("Disappearing messages", systemImage: "timer") }
         .disabled(!model.connected)
+        BlockMenuItem(conversation: c)
         Divider()
         Button(role: .destructive) { Task { await model.deleteConversation(c.key) } } label: {
             Label("Delete conversation …", systemImage: "trash")

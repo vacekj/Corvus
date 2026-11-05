@@ -253,7 +253,7 @@ struct MessageInput: NSViewRepresentable {
             tv.string = text
             tv.needsDisplay = true
         }
-        tv.isEditable = model.connected
+        tv.isEditable = model.connected && model.canCompose
         // Settings → General: spell checking, grammar and autocorrect follow one switch.
         if tv.isContinuousSpellCheckingEnabled != spellCheck {
             tv.isContinuousSpellCheckingEnabled = spellCheck
