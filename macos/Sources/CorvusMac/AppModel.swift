@@ -877,14 +877,21 @@ final class AppModel {
     // MARK: - Receiving
 
     private func onEnvelope(_ env: JSON) {
+        if let receipt = parseReceipt(env) {
+            handleReceipt(receipt)
+            return
+        }
         var pe = parseEnvelope(env)
         if pe.kind == .none { return }
         if !pe.mentions.isEmpty {
-            pe.msg.text = applyMentions(pe.msg.text, pe.mentions) { m in
+            let body = substituteMentions(pe.msg.text, pe.mentions, styles: pe.msg.textStyles) { m in
                 let key = chats.resolveKey(m.number.isEmpty ? m.uuid : m.number)
                 let n = key.isEmpty ? "" : displayName(key)
                 return n.isEmpty ? (m.name.isEmpty ? m.number : m.name) : n
             }
+            pe.msg.text = body.text
+            pe.msg.textStyles = body.styles
+            pe.msg.mentions = body.mentions
         }
 
         let group = !pe.groupId.isEmpty
@@ -909,7 +916,8 @@ final class AppModel {
         case .edit:
             // Like the official clients: an edit is only applied to a known message written by the same author.
             let author = pe.outgoing ? account : srcKey
-            if let rec = chats.applyEdit(key, targetTs: pe.targetTs, authors: [author], text: pe.msg.text, newTs: pe.msg.ts) {
+            if let rec = chats.applyEdit(key, targetTs: pe.targetTs, authors: [author], text: pe.msg.text, newTs: pe.msg.ts,
+                                   styles: pe.msg.textStyles, mentions: pe.msg.mentions) {
                 persist(rec)
             }
             return
@@ -1061,7 +1069,9 @@ final class AppModel {
         viewOnceNext = false
 
         var p: JSON = [:]
-        if !text.isEmpty { p["message"] = text }
+        let formatted = parseMarkdownStyles(text) // **bold**, _italic_, ~strike~, `mono`, ||spoiler||
+        if !text.isEmpty { p["message"] = formatted.text }
+        if !formatted.styles.isEmpty { p["textStyle"] = formatted.styles.map(\.cliString) }
         var atts: [Attachment] = []
         for f in files {
             var a = Attachment()
@@ -1096,7 +1106,8 @@ final class AppModel {
         preview.ts = nowMs()
         while chats.findMessage(chats.convs[key]!, ts: preview.ts, authors: []) != nil { preview.ts += 1 }
         preview.orderTs = max(preview.ts, (chats.convs[key]!.msgs.last?.sortTs ?? 0) + 1)
-        preview.text = text
+        preview.text = formatted.text
+        preview.textStyles = formatted.styles
         preview.outgoing = true
         preview.authorKey = account
         preview.expiresInSeconds = c.expirationSeconds
@@ -1175,7 +1186,7 @@ final class AppModel {
         if editKey.isEmpty { editDraft = composerText } // keep an already running edit's draft
         editKey = c.key
         editTs = m.ts
-        composerText = m.text
+        composerText = markdownSource(text: m.text, styles: m.textStyles)
         composerCursorToEnd += 1
         composerFocusRequest += 1
     }
@@ -1210,7 +1221,8 @@ final class AppModel {
             showFlash("A message cannot be empty.", seconds: 6)
             return
         }
-        if text == m.text { // nothing changed
+        let formatted = parseMarkdownStyles(text)
+        if formatted.text == m.text && Set(formatted.styles) == Set(m.textStyles) { // nothing changed
             cancelEdit()
             return
         }
@@ -1220,7 +1232,15 @@ final class AppModel {
             return
         }
         // signal-cli: `send --edit-timestamp <ts>`; the target is the latest revision the peers know.
-        var p: JSON = ["message": text, "editTimestamp": m.latestTs]
+        // Mentions whose text was not touched stay mentions.
+        let units = Array(formatted.text.utf16), oldUnits = Array(m.text.utf16)
+        let keptMentions = m.mentions.filter { r in
+            r.start >= 0 && r.start + r.length <= units.count && r.start + r.length <= oldUnits.count && !r.uuid.isEmpty
+                && units[r.start..<(r.start + r.length)] == oldUnits[r.start..<(r.start + r.length)]
+        }
+        var p: JSON = ["message": formatted.text, "editTimestamp": m.latestTs]
+        if !formatted.styles.isEmpty { p["textStyle"] = formatted.styles.map(\.cliString) }
+        if !keptMentions.isEmpty { p["mention"] = keptMentions.map { "\($0.start):\($0.length):\($0.uuid)" } }
         if m.quote.valid && !m.quote.authorKey.isEmpty { // an edit keeps the reply it belongs to
             p["quoteTimestamp"] = m.quote.id
             p["quoteAuthor"] = m.quote.authorKey
@@ -1234,7 +1254,8 @@ final class AppModel {
                 clearFlash()
                 var ts = jsonInt64(jsonObject(res)["timestamp"])
                 if ts <= 0 { ts = nowMs() }
-                if let rec = chats.applyEdit(key, targetTs: origTs, authors: [account], text: text, newTs: ts) { persist(rec) }
+                if let rec = chats.applyEdit(key, targetTs: origTs, authors: [account], text: formatted.text, newTs: ts,
+                                       styles: formatted.styles, mentions: keptMentions) { persist(rec) }
                 if editKey == key && editTs == origTs { cancelEdit(restoreDraft: true) }
             } catch {
                 // stay in edit mode with the typed text so nothing is lost

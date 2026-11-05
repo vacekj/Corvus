@@ -272,6 +272,7 @@ private struct Bubble: View {
     let message: Message
     let isGroup: Bool
     let grouping: MessageGrouping
+    @State private var infoShown = false
 
     var body: some View {
         let m = message
@@ -362,11 +363,9 @@ private struct Bubble: View {
                             AttachmentView(message: m, index: i, attachment: att, foreground: fg, edgeToEdge: false)
                         }
                         if !m.text.isEmpty {
-                            Text(Bubble.linkified(m.text, emojiOnly: Bubble.isEmojiOnly(m.text)))
-                                .textSelection(.enabled)
-                                .foregroundStyle(fg)
-                                .tint(m.outgoing ? fg : Theme.signalBlue)
-                                .fixedSize(horizontal: false, vertical: true)
+                            FormattedMessageText(message: m, foreground: fg) {
+                                Bubble.linkified($0, emojiOnly: Bubble.isEmojiOnly(m.text))
+                            }
                         }
                     }
                     MetaRow(message: m, pending: pending, color: fg.opacity(0.7))
@@ -383,7 +382,8 @@ private struct Bubble: View {
         }
         .modifier(MaxWidth(480))
         .contentShape(shape)
-        .contextMenu { MessageMenu(message: m) }
+        .contextMenu { MessageMenu(message: m) { infoShown = true } }
+        .sheet(isPresented: $infoShown) { MessageInfoSheet(messageId: m.id) }
         .opacity(pending ? 0.7 : 1)
     }
 
@@ -448,7 +448,7 @@ private struct MetaRow: View {
             if message.isEdited { Text("Edited") }
             Text(message.time.formatted(date: .omitted, time: .shortened))
             if message.outgoing {
-                Image(systemName: pending ? "circle.dotted" : "checkmark.circle")
+                DeliveryTicks(message: message, pending: pending)
             }
         }
         .font(.system(size: 10, weight: .medium))
@@ -517,6 +517,7 @@ private struct ReactionsView: View {
 private struct MessageMenu: View {
     @Environment(AppModel.self) private var model
     let message: Message
+    let onInfo: () -> Void
 
     var body: some View {
         let m = message
@@ -549,6 +550,9 @@ private struct MessageMenu: View {
             Button { model.saveAttachment(m, i) } label: {
                 Label("Save “\(a.filename.isEmpty ? "attachment" : a.filename)” …", systemImage: "square.and.arrow.down")
             }
+        }
+        if !m.deleted {
+            Button(action: onInfo) { Label("Info …", systemImage: "info.circle") }
         }
         Divider()
         Button(role: .destructive) { Task { await model.deleteMessage(m.id) } } label: { Label("Delete …", systemImage: "trash") }
