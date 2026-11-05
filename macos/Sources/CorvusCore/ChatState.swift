@@ -33,6 +33,21 @@ public struct ChatState {
         convs[key] = c
     }
 
+    /// Drops the stored preview images of attachments (not of stickers). Returns how many were removed.
+    public mutating func stripAttachmentThumbnails() -> Int {
+        var n = 0
+        for key in convs.keys {
+            for i in convs[key]!.msgs.indices {
+                for a in convs[key]!.msgs[i].attachments.indices
+                where !convs[key]!.msgs[i].attachments[a].thumb.isEmpty && !convs[key]!.msgs[i].attachments[a].isSticker {
+                    convs[key]!.msgs[i].attachments[a].thumb = Data()
+                    n += 1
+                }
+            }
+        }
+        return n
+    }
+
     public func displayName(_ key: String) -> String {
         let r = resolveKey(key)
         if !account.isEmpty && (key == account || r == account) { return "You" }

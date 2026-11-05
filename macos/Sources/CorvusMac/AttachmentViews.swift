@@ -20,41 +20,17 @@ struct AttachmentView: View {
             if att.isSticker {
                 StickerView(attachment: att)
             } else if att.isVideo {
-                VideoAttachment(token: token, attachment: att, foreground: foreground) { model.openAttachment(message, index) }
+                VideoAttachment(message: message, index: index, token: token, attachment: att, foreground: foreground,
+                                maxSide: edgeToEdge ? 340 : 300) { model.openAttachment(message, index) }
             } else if att.isAudio {
                 AudioAttachment(token: token, attachment: att, foreground: foreground) { model.toggleAudio(message, index) }
-            } else if att.isImage, !att.thumb.isEmpty, let image = NSImage(data: att.thumb) {
-                imageView(image, token: token)
+            } else if att.isImage {
+                FullImageView(conversation: model.current ?? "", message: message, index: index,
+                              maxSide: edgeToEdge ? 340 : 300, cornerRadius: edgeToEdge ? 0 : 10)
             } else {
                 FileRow(attachment: att, foreground: foreground) { model.openAttachment(message, index) }
             }
         }
-    }
-
-    @ViewBuilder
-    private func imageView(_ image: NSImage, token: String) -> some View {
-        let size = displaySize(image.size)
-        Group {
-            if attachment.isGif, let data = model.animatedGifs[token] {
-                AnimatedImage(data: data)
-            } else {
-                Image(nsImage: image).resizable().interpolation(.high)
-            }
-        }
-        .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: edgeToEdge ? 0 : 10, style: .continuous))
-        .contentShape(Rectangle())
-        .onTapGesture { model.openAttachment(message, index) }
-        .onAppear { if attachment.isGif { model.loadAnimatedGif(message, index) } }
-        .help(attachment.filename)
-    }
-
-    private func displaySize(_ s: NSSize) -> CGSize {
-        let w = attachment.width > 0 ? CGFloat(attachment.width) : s.width
-        let h = attachment.height > 0 ? CGFloat(attachment.height) : s.height
-        let maxSide: CGFloat = edgeToEdge ? 340 : 300
-        let scale = min(maxSide / max(w, 1), maxSide / max(h, 1), 2) // small pictures are enlarged a little
-        return CGSize(width: max(120, w * scale), height: max(80, h * scale))
     }
 }
 
@@ -88,32 +64,50 @@ private struct FileRow: View {
 
 private struct VideoAttachment: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.displayScale) private var displayScale
+    let message: Message
+    let index: Int
     let token: String
     let attachment: Attachment
     let foreground: Color
+    let maxSide: CGFloat
     let load: () -> Void
     @State private var player: AVPlayer?
+    @State private var poster: NSImage?
 
     var body: some View {
+        // Shaped like the video (rotation applied); the poster is its first frame.
+        let size = AppModel.mediaFrame(width: poster.map { Int($0.size.width) } ?? attachment.width,
+                                       height: poster.map { Int($0.size.height) } ?? attachment.height, maxSide: maxSide)
         Group {
             if let player {
                 VideoPlayer(player: player)
-                    .frame(width: 320, height: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
                 Button(action: load) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.6))
+                        if let poster {
+                            Image(nsImage: poster).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
+                        } else {
+                            Rectangle().fill(Color.black.opacity(0.6))
+                        }
                         if model.videoLoading.contains(token) {
                             ProgressView().controlSize(.small)
                         } else {
-                            Image(systemName: "play.circle.fill").font(.system(size: 40)).foregroundStyle(.white)
+                            Image(systemName: "play.circle.fill").font(.system(size: 40)).foregroundStyle(.white).shadow(radius: 4)
                         }
                     }
-                    .frame(width: 320, height: 180)
+                    .frame(width: size.width, height: size.height)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help(attachment.filename)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .task(id: token) {
+            if poster == nil, let key = model.current {
+                poster = await model.videoPoster(key, message, index, maxPixel: Int(maxSide * max(displayScale, 2)))
             }
         }
         .onChange(of: model.videoURLs[token]) { _, url in

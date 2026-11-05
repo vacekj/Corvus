@@ -22,7 +22,7 @@ enum DesktopImport {
         return FileManager.default.isExecutableFile(atPath: p) ? p : nil
     }
 
-    /// Runs the helper; returns the parsed records (thumbnails normalised to Corvus' preview size).
+    /// Runs the helper; returns the parsed records.
     static func run(account: String) async throws -> (records: [JSON], log: String) {
         guard let helper = helperPath else { throw ImportError("The Signal Desktop import helper is missing from this build.") }
         let tmp = FileManager.default.temporaryDirectory.appendingPathComponent("corvus-import-\(UUID().uuidString)", isDirectory: true)
@@ -59,10 +59,8 @@ enum DesktopImport {
             if jsonString(o["t"]) == "m", var d = o["d"] as? JSON, let atts = d["at"] as? [JSON] {
                 d["at"] = atts.map { a -> JSON in
                     var a = a
-                    if let th = a["th"] as? String, let raw = Data(base64Encoded: th) {
-                        let small = Media.makeCompactThumbnail(raw)
-                        a["th"] = small.isEmpty ? nil : small.base64EncodedString()
-                    }
+                    // Only stickers keep inline data (it is the sticker); pictures are shown from the file.
+                    if !(jsonString(a["fn"]).hasPrefix(Attachment.stickerPrefix)) { a["th"] = nil }
                     if let ep = a["ep"] as? String, !DesktopAttachment.isSafeName(ep) { a["ep"] = nil; a["lk"] = nil }
                     return a
                 }

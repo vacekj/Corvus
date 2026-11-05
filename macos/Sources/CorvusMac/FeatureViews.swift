@@ -17,6 +17,8 @@ struct StickerView: View {
         Group {
             if let data = model.stickerImages[k], NSImage(data: data) != nil {
                 AnimatedImage(data: data)
+            } else if !attachment.thumb.isEmpty, NSImage(data: attachment.thumb) != nil {
+                AnimatedImage(data: attachment.thumb) // imported from Signal Desktop: the sticker itself
             } else {
                 RoundedRectangle(cornerRadius: 12).fill(Theme.field)
                     .overlay(Image(systemName: "face.smiling").font(.system(size: 30)).foregroundStyle(.secondary))
@@ -391,7 +393,7 @@ struct MediaGallerySheet: View {
                 case 0:
                     LazyVGrid(columns: Array(repeating: GridItem(.fixed(120), spacing: 6), count: 5), spacing: 6) {
                         ForEach(media) { it in
-                            Button { model.openAttachment(it.message, it.index) } label: { tile(it.attachment) }
+                            Button { model.openAttachment(it.message, it.index) } label: { GalleryTile(message: it.message, index: it.index) }
                                 .buttonStyle(.plain)
                                 .help(it.message.time.formatted())
                         }
@@ -445,23 +447,6 @@ struct MediaGallerySheet: View {
             }
         }
         .frame(width: 680, height: 520)
-    }
-
-    @ViewBuilder
-    private func tile(_ a: Attachment) -> some View {
-        ZStack {
-            if let img = NSImage(data: a.thumb) {
-                Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
-            } else {
-                Rectangle().fill(Theme.field)
-                Image(systemName: a.isVideo ? "film" : "photo").font(.title2).foregroundStyle(.secondary)
-            }
-            if a.isVideo {
-                Image(systemName: "play.circle.fill").font(.system(size: 28)).foregroundStyle(.white).shadow(radius: 3)
-            }
-        }
-        .frame(width: 120, height: 120)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
     private static let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
@@ -677,5 +662,36 @@ struct RecordingBar: View {
         .padding(.horizontal, 10)
         .frame(height: 40)
         .background(RoundedRectangle(cornerRadius: 17, style: .continuous).fill(Theme.field))
+    }
+}
+
+/// A square tile of the media gallery, decoded from the original picture or video.
+private struct GalleryTile: View {
+    @Environment(AppModel.self) private var model
+    let message: Message
+    let index: Int
+    @State private var image: NSImage?
+
+    var body: some View {
+        let a = message.attachments[index]
+        ZStack {
+            if let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle().fill(Theme.field)
+                Image(systemName: a.isVideo ? "film" : "photo").font(.title2).foregroundStyle(.secondary)
+            }
+            if a.isVideo {
+                Image(systemName: "play.circle.fill").font(.system(size: 28)).foregroundStyle(.white).shadow(radius: 3)
+            }
+        }
+        .frame(width: 120, height: 120)
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .contentShape(RoundedRectangle(cornerRadius: 6))
+        .task(id: "\(message.id)#\(index)") {
+            guard let key = model.current else { return }
+            image = a.isVideo ? await model.videoPoster(key, message, index, maxPixel: 300)
+                : await model.displayImage(key, a, maxPixel: 300)
+        }
     }
 }

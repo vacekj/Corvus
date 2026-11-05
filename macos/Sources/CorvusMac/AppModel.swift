@@ -73,6 +73,7 @@ final class AppModel {
     @ObservationIgnored private var gifPending: Set<String> = []
     var animatedGifs: [String: Data] = [:]      // attachment token -> GIF data
     var videoURLs: [String: URL] = [:]          // attachment token -> local file for playback
+    @ObservationIgnored var videoFiles: [String: URL] = [:] // attachment token -> fetched video file (poster, playback)
     var videoLoading: Set<String> = []
 
     // audio playback
@@ -565,6 +566,9 @@ final class AppModel {
 
     private func loadHistory(_ records: [JSON]) {
         chats.loadHistory(records)
+        // Older versions kept small preview copies of pictures in the history. Media is now shown from the
+        // original files, so they are dropped once (stickers keep theirs: for imported ones it is the sticker).
+        if chats.stripAttachmentThumbnails() > 0 { _ = rewriteHistory("remove the stored picture previews") }
         listChanged()
     }
 
@@ -1126,11 +1130,10 @@ final class AppModel {
             a.size = ((try? FileManager.default.attributesOfItem(atPath: f))?[.size] as? NSNumber)?.int64Value ?? 0
             a.contentType = Media.mimeType(forFile: f)
             if a.isImage, let data = FileManager.default.contents(atPath: f) {
-                if let (w, h) = Media.pixelSize(data) {
+                if let (w, h) = MediaDecode.orientedSize(data) ?? Media.pixelSize(data) {
                     a.width = w
                     a.height = h
                 }
-                a.thumb = Media.makeThumbnail(data)
             }
             atts.append(a)
         }
@@ -1461,44 +1464,15 @@ final class AppModel {
         let m = c.msgs[mi]
         if m.viewOnce { return } // View Once media never gets a stored preview
         fetchLinkPreviewThumbnail(key, ts: ts, author: author, attempt: attempt)
-        for (a, att) in m.attachments.enumerated() {
-            if !att.isImage || !att.thumb.isEmpty || att.id.isEmpty || att.size > Media.maxThumbSource { continue }
-            let token = "\(key)|\(ts)|\(author)|\(a)"
-            if thumbPending.contains(token) { continue }
-            thumbPending.insert(token)
-            var p: JSON = ["id": att.id]
-            addRecipient(&p, c)
-            Task { [p] in
-                defer { thumbPending.remove(token) }
-                let data: Data
-                do {
-                    let res = try await cli.call("getAttachment", p)
-                    data = Data(base64Encoded: jsonString(jsonObject(res)["data"])) ?? Data()
-                } catch {
-                    // signal-cli may still be downloading it: retry a few times
-                    if attempt < 3 {
-                        try? await Task.sleep(for: .seconds(2 * (attempt + 1)))
-                        thumbPending.remove(token)
-                        fetchThumbnails(key, ts: ts, author: author, attempt: attempt + 1)
-                    }
-                    return
-                }
-                let thumb = Media.makeThumbnail(data)
-                guard !thumb.isEmpty, let c2 = chats.convs[key], let i = chats.findMessage(c2, ts: ts, authors: [author]),
-                      a < c2.msgs[i].attachments.count else { return }
-                if let (w, h) = Media.pixelSize(data) {
-                    chats.convs[key]!.msgs[i].attachments[a].width = w
-                    chats.convs[key]!.msgs[i].attachments[a].height = h
-                }
-                chats.convs[key]!.msgs[i].attachments[a].thumb = thumb
-                persist(Records.attachmentsUpdate(key, chats.convs[key]!.msgs[i]))
-            }
-        }
+        // Pictures are shown from the original file when they come into view (MediaDisplay.swift); no copy
+        // is kept in the history.
     }
 
     func fetchAttachmentData(_ key: String, _ att: Attachment) async throws -> Data {
         if !att.path.isEmpty, let d = FileManager.default.contents(atPath: att.path) { return d }
         if !att.encPath.isEmpty { return try await Task.detached { try DesktopImport.data(att) }.value }
+        if let url = Self.signalCliAttachmentURL(att),
+           let d = try? await Task.detached(operation: { try Data(contentsOf: url, options: .mappedIfSafe) }).value, !d.isEmpty { return d }
         guard !att.id.isEmpty, let c = chats.convs[key] else { throw RpcError("The attachment is no longer available.") }
         var p: JSON = ["id": att.id]
         addRecipient(&p, c)
@@ -1540,10 +1514,7 @@ final class AppModel {
             Task {
                 defer { videoLoading.remove(token) }
                 do {
-                    let data = try await fetchAttachmentData(key, att)
-                    guard !data.isEmpty else { throw RpcError("The video file is empty.") }
-                    let suffix = AttachmentPolicy.mediaSuffix(filename: att.filename, contentType: att.contentType, fallback: "mp4")
-                    videoURLs[token] = try Media.writeAttachmentTemp(data, name: "video." + suffix)
+                    videoURLs[token] = try await videoFile(key, att, token: token)
                 } catch {
                     showFlash("Video playback failed: \(error.localizedDescription)")
                 }

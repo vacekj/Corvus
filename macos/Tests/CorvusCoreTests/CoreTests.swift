@@ -291,6 +291,36 @@ final class ChatStateTests: XCTestCase {
     }
 }
 
+final class ThumbnailStripTests: XCTestCase {
+    func testStripsPicturePreviewsButKeepsStickers() {
+        var s = ChatState()
+        s.account = "+49me"
+        var m = Message()
+        m.ts = 1
+        m.authorKey = "+49111"
+        var photo = Attachment()
+        photo.contentType = "image/jpeg"
+        photo.thumb = Data([1, 2, 3])
+        photo.width = 4000
+        photo.height = 3000
+        var sticker = Attachment()
+        sticker.contentType = "image/webp"
+        sticker.filename = Attachment.stickerPrefix + "p:1.webp"
+        sticker.thumb = Data([9])
+        m.attachments = [photo, sticker]
+        _ = s.addMessage("+49111", m)
+        XCTAssertEqual(s.stripAttachmentThumbnails(), 1)
+        let atts = s.convs["+49111"]!.msgs[0].attachments
+        XCTAssertTrue(atts[0].thumb.isEmpty)
+        XCTAssertEqual(atts[0].width, 4000)
+        XCTAssertEqual(atts[1].thumb, Data([9]))
+        XCTAssertEqual(s.stripAttachmentThumbnails(), 0)
+        // nothing left to store
+        XCTAssertNil(Records.message("+49111", s.convs["+49111"]!.msgs[0])["d"].flatMap { ($0 as? JSON)?["at"] as? [JSON] }?
+            .first?["th"])
+    }
+}
+
 final class HistoryStoreTests: XCTestCase {
     func testRoundTripThroughRustStore() throws {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

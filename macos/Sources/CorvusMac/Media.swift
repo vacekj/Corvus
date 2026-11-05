@@ -29,30 +29,6 @@ enum Media {
     }
 
     /// JPEG/PNG preview with the longest side <= maxDim (orientation applied), as stored in the history.
-    /// Smaller always-JPEG preview for bulk imports (keeps the encrypted history small).
-    static func makeCompactThumbnail(_ data: Data, maxDim: Int = 360) -> Data {
-        guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return Data() }
-        let opts: [CFString: Any] = [
-            kCGImageSourceCreateThumbnailFromImageAlways: true,
-            kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: maxDim,
-        ]
-        guard let img = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else { return Data() }
-        // Flatten onto white so transparent areas do not turn black in the JPEG.
-        let w = img.width, h = img.height
-        guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
-                                  space: CGColorSpace(name: CGColorSpace.sRGB)!,
-                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return Data() }
-        ctx.setFillColor(CGColor(gray: 1, alpha: 1))
-        ctx.fill(CGRect(x: 0, y: 0, width: w, height: h))
-        ctx.draw(img, in: CGRect(x: 0, y: 0, width: w, height: h))
-        guard let flat = ctx.makeImage() else { return Data() }
-        let out = NSMutableData()
-        guard let dest = CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil) else { return Data() }
-        CGImageDestinationAddImage(dest, flat, [kCGImageDestinationLossyCompressionQuality: 0.7] as CFDictionary)
-        return CGImageDestinationFinalize(dest) ? out as Data : Data()
-    }
-
     static func makeThumbnail(_ data: Data, maxDim: Int = 480) -> Data {
         guard let src = CGImageSourceCreateWithData(data as CFData, nil) else { return Data() }
         let opts: [CFString: Any] = [

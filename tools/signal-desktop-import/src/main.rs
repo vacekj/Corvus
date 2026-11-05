@@ -3,8 +3,8 @@
 //!
 //! Attachments stay encrypted: the Signal Desktop attachment files are copied (APFS clones)
 //! into `--attachments-dir`, and each record keeps the file name ("ep") together with the
-//! per-file key ("lk") inside the encrypted Corvus history. Thumbnails are decrypted and
-//! stored inline ("th"), like Corvus does for received media.
+//! per-file key ("lk") inside the encrypted Corvus history. Only stickers are stored inline
+//! ("th"); pictures and videos are shown from the attachment itself.
 //!
 //! Usage:
 //!   corvus-signal-import --account +NUMBER --attachments-dir DIR [--signal-dir DIR]
@@ -236,26 +236,7 @@ impl<'a> Exporter<'a> {
         } else {
             self.missing += 1;
         }
-        // Inline preview: Desktop's thumbnail (images and video screenshots), else a small image itself.
-        let thumb = a
-            .get("thumbnail")
-            .and_then(|t| self.db.decrypt_file(s(t, "path"), s(t, "localKey"), i(t, "size")).ok())
-            .or_else(|| {
-                a.get("screenshot")
-                    .and_then(|t| self.db.decrypt_file(s(t, "path"), s(t, "localKey"), i(t, "size")).ok())
-            })
-            .or_else(|| {
-                if ct.starts_with("image/") && size > 0 && size <= 200_000 && !path.is_empty() {
-                    self.db.decrypt_file(path, s(a, "localKey"), size).ok()
-                } else {
-                    None
-                }
-            });
-        if let Some(t) = thumb {
-            if !t.is_empty() {
-                o.insert("th".into(), B64.encode(t).into());
-            }
-        }
+        // No inline previews: Corvus shows pictures and videos from the attachment itself.
         Some(o)
     }
 

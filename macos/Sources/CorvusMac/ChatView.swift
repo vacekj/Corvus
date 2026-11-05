@@ -283,7 +283,7 @@ private struct Bubble: View {
         let shape = bubbleShape(radius: CGFloat(a.radius))
         let pending = model.chats.isPendingPreview(model.current ?? "", ts: m.ts)
         let mediaOnly = m.text.isEmpty && !m.quote.valid && !m.attachments.isEmpty && !m.viewOnce
-            && m.attachments.allSatisfy { $0.isImage && !$0.thumb.isEmpty && !$0.isSticker }
+            && m.attachments.allSatisfy { $0.isImage && !$0.isSticker }
         let stickerOnly = m.text.isEmpty && !m.viewOnce && m.attachments.count == 1 && m.attachments[0].isSticker
         let showSender = isGroup && !m.outgoing && !grouping.joinedAbove
 
