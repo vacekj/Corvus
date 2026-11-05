@@ -153,6 +153,7 @@ public struct Message: Equatable, Identifiable {
     public var viewOnceExpired = false
 
     public var poll = Poll()          // valid for poll messages
+    public var linkPreview = LinkPreview() // sender-provided preview card (never fetched by us when received)
 
     // Signal text formatting (see Formatting.swift); offsets are UTF-16 units of `text`.
     public var textStyles: [TextStyleRange] = []
@@ -189,6 +190,7 @@ public struct Message: Equatable, Identifiable {
         viewOnceViewed = false
         viewOnceExpired = false
         poll = Poll()
+        linkPreview = LinkPreview()
     }
 
     /// View Once media that has been opened (or was sent by us): only a placeholder remains.

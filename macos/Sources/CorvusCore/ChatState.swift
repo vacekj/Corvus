@@ -178,6 +178,7 @@ public struct ChatState {
         convs[key]!.msgs[i].mentions = mentions
         convs[key]!.msgs[i].editTs = newTs
         convs[key]!.msgs[i].editCount += 1
+        convs[key]!.msgs[i].linkPreview = LinkPreview()
         return Records.edit(key, convs[key]!.msgs[i])
     }
 

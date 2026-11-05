@@ -77,6 +77,9 @@ private struct AppearanceSettings: View {
             Section("Chat list") {
                 Toggle("Show contact avatars", isOn: $a.showAvatars)
             }
+            Section("Messages") {
+                Toggle("Generate link previews", isOn: $a.generateLinkPreviews)
+            }
             Section("Preview") {
                 VStack(spacing: 6) {
                     previewBubble("Hi! How are you?", outgoing: false)
@@ -93,7 +96,7 @@ private struct AppearanceSettings: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 520)
+        .frame(height: 580)
         .onAppear {
             if !loaded { a = model.appearance; loaded = true }
         }

@@ -70,6 +70,7 @@ public enum Records {
         if !m.mentions.isEmpty && !m.deleted { d["mn"] = mentionsToJson(m.mentions) }
         if m.outgoing && m.receiptStatus > 0 { d["rs"] = min(m.receiptStatus, 2) }
         if m.outgoing && !m.recipientReceipts.isEmpty { d["rr"] = recipientReceiptsToJson(m.recipientReceipts) }
+        if let lp = linkPreviewExtra(m) { d["lp"] = lp }
         var rec: JSON = ["t": "m", "c": conv, "ts": m.ts, "s": m.sender, "x": m.deleted ? "" : m.text,
                          "o": m.outgoing, "au": m.authorKey]
         if m.editCount > 0 && !m.deleted { d["ed"] = editToJson(m) }
@@ -78,8 +79,9 @@ public enum Records {
     }
 
     /// Text edit of a message: an "update" record with the extra "ed"; ts = original timestamp.
+    /// The empty "lp" removes the preview, which belongs to the old text (same as the Qt app).
     public static func edit(_ conv: String, _ m: Message) -> JSON {
-        ["t": "u", "c": conv, "ts": m.ts, "au": m.authorKey, "d": ["ed": editToJson(m)] as JSON]
+        ["t": "u", "c": conv, "ts": m.ts, "au": m.authorKey, "d": ["ed": editToJson(m), "lp": JSON()] as JSON]
     }
 
     /// Delete for everyone: an "update" record with the extra "dl"; ts = original timestamp.
@@ -160,6 +162,7 @@ public enum Records {
         if d["vv"] != nil { m.viewOnceViewed = jsonBool(d["vv"]) }
         if d["ve"] != nil { m.viewOnceExpired = jsonBool(d["ve"]) }
         if let pl = d["pl"] as? JSON { m.poll = pollFromJson(pl) }
+        if let lp = d["lp"] as? JSON { m.linkPreview = linkPreviewFromJson(lp) }
         if d["at"] != nil {
             m.attachments = jsonArray(d["at"]).map { attachmentFromJson(jsonObject($0)) }
         }

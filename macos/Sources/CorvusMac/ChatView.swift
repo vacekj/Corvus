@@ -367,6 +367,7 @@ private struct Bubble: View {
                                 Bubble.linkified($0, emojiOnly: Bubble.isEmojiOnly(m.text))
                             }
                         }
+                        if m.linkPreview.isValid { LinkPreviewCard(preview: m.linkPreview, foreground: fg) }
                     }
                     MetaRow(message: m, pending: pending, color: fg.opacity(0.7))
                 }
