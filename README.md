@@ -26,7 +26,10 @@ Corvus is a desktop interface for [signal-cli](https://github.com/AsamK/signal-c
 - Record and send voice messages (needs signal-cli 0.14.2 or newer to arrive as a voice note).
 - Send and receive Signal View Once photos and videos (select exactly one image or video and press **1×**; requires signal-cli 0.13.18 or newer).
 - Forward messages and attachments to up to five chats at once (right-click a message → **Forward…**).
+- Delivery and read receipts, text formatting (bold, italic, strikethrough, monospace, spoilers) and mentions, link previews.
+- Group management (create, rename, members and admins, invite links, leave), blocking, and message requests.
 - macOS (SwiftUI) only: stickers (send, receive, add packs from signal.art links), polls (create, vote, end), stories (view, reply, react, post), a per-chat media gallery and 1:1 voice calls.
+- macOS (SwiftUI) only: import the history of Signal Desktop on the same Mac (File → Import from Signal Desktop …), including attachments. Messages Corvus already has are skipped, so the import can be repeated.
 - Customisable chat colours and appearance.
 
 ### Voice calls (macOS)
@@ -42,7 +45,13 @@ sudo bin/virtual_audio.sh --setup --input-source signal_input --output-sink sign
 
 Corvus finds the tunnel in `~/.cargo/bin` or on `PATH`. Then choose File → Reconnect.
 
-Video calls and history transfer from a phone are not supported: signal-cli does not implement them.
+Video calls and history transfer from a phone are not supported: signal-cli does not implement them. To get older history, link Signal Desktop (which can transfer it from the phone) and then use the Signal Desktop import.
+
+### Signal Desktop import (macOS)
+
+The import reads Signal Desktop's database with its key from the "Signal Safe Storage" keychain item (macOS asks once; choose *Always Allow*). Signal Desktop's data is not changed. Attachments are copied still encrypted with their Signal Desktop keys into `imported-attachments/` in the Corvus data folder and are decrypted only when shown. A count-only `import-report.json` (messages per chat, no content) is written for checking the result. Disappearing-timer notices are not imported; shared contact cards become text messages.
+
+Builds signed ad hoc look like a new app to the keychain after every rebuild. Set `CORVUS_SIGN_IDENTITY` to your signing identity when running `macos/scripts/build-app.sh` to keep keychain approvals across rebuilds.
 
 Corvus is a graphical client, not a replacement for `signal-cli`. You must have `signal-cli` installed and linked to your Signal account. The Windows installer can download it for you.
 
