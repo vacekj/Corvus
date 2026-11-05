@@ -317,7 +317,7 @@ struct ForwardSheet: View {
                         Image(systemName: on ? "checkmark.circle.fill" : "circle")
                             .foregroundStyle(on ? Theme.signalBlue : .secondary)
                         AvatarView(image: model.avatarImage(c), size: 28)
-                        Text(c.title).lineLimit(1)
+                        Text(model.title(c)).lineLimit(1)
                         Spacer()
                     }
                     .contentShape(Rectangle())

@@ -79,9 +79,9 @@ public enum Records {
     }
 
     /// Text edit of a message: an "update" record with the extra "ed"; ts = original timestamp.
-    /// The empty "lp" removes the preview, which belongs to the old text (same as the Qt app).
+    /// "lp" is the preview sent with the edit; empty removes the old one (same as the Qt app).
     public static func edit(_ conv: String, _ m: Message) -> JSON {
-        ["t": "u", "c": conv, "ts": m.ts, "au": m.authorKey, "d": ["ed": editToJson(m), "lp": JSON()] as JSON]
+        ["t": "u", "c": conv, "ts": m.ts, "au": m.authorKey, "d": ["ed": editToJson(m), "lp": linkPreviewExtra(m) ?? JSON()] as JSON]
     }
 
     /// Delete for everyone: an "update" record with the extra "dl"; ts = original timestamp.

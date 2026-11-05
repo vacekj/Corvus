@@ -170,7 +170,8 @@ public struct ChatState {
     }
 
     public mutating func applyEdit(_ key: String, targetTs: Int64, authors: [String], text: String, newTs: Int64,
-                                   styles: [TextStyleRange] = [], mentions: [MentionRange] = []) -> JSON? {
+                                   styles: [TextStyleRange] = [], mentions: [MentionRange] = [],
+                                   linkPreview: LinkPreview = LinkPreview()) -> JSON? {
         guard let c = convs[key], let i = findMessage(c, ts: targetTs, authors: authors) else { return nil }
         if c.msgs[i].deleted || newTs <= c.msgs[i].latestTs { return nil } // deleted / already applied / outdated revision
         convs[key]!.msgs[i].text = text
@@ -178,7 +179,7 @@ public struct ChatState {
         convs[key]!.msgs[i].mentions = mentions
         convs[key]!.msgs[i].editTs = newTs
         convs[key]!.msgs[i].editCount += 1
-        convs[key]!.msgs[i].linkPreview = LinkPreview()
+        convs[key]!.msgs[i].linkPreview = linkPreview.isValid ? linkPreview : LinkPreview() // the edit carries its own preview
         return Records.edit(key, convs[key]!.msgs[i])
     }
 

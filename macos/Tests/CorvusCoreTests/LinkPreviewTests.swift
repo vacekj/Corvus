@@ -182,6 +182,27 @@ final class LinkPreviewTests: XCTestCase {
         XCTAssertFalse(reloaded.convs["+49111"]!.msgs[0].linkPreview.isValid)
     }
 
+    func testEditKeepsPreviewSentWithIt() {
+        var m = Message()
+        m.ts = 100
+        m.outgoing = true
+        m.authorKey = "+49me"
+        m.text = "https://example.com/article"
+        m.linkPreview = sample()
+        var s = ChatState()
+        s.account = "+49me"
+        var records = s.addMessage("+49111", m)!.records
+        records.append(s.applyEdit("+49111", targetTs: 100, authors: ["+49me"], text: "see https://example.com/article",
+                                   newTs: 200, linkPreview: sample())!)
+        XCTAssertTrue(s.convs["+49111"]!.msgs[0].linkPreview.isValid)
+
+        var reloaded = ChatState()
+        reloaded.account = "+49me"
+        reloaded.loadHistory(records)
+        XCTAssertEqual(reloaded.convs["+49111"]!.msgs[0].text, "see https://example.com/article")
+        XCTAssertEqual(reloaded.convs["+49111"]!.msgs[0].linkPreview.url, sample().url)
+    }
+
     func testPreviewSurvivesCompaction() {
         var m = Message()
         m.ts = 100

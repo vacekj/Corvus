@@ -92,7 +92,7 @@ private struct ChatHeader: View {
         HStack(spacing: 10) {
             AvatarView(image: model.avatarImage(c), size: 30)
             VStack(alignment: .leading, spacing: 0) {
-                Text(c.title).font(.headline).lineLimit(1)
+                Text(model.title(c)).font(.headline).lineLimit(1)
                 HStack(spacing: 6) {
                     if c.isGroup { Text("Group") } else if c.title != c.key { Text(c.key) }
                     if c.expirationSeconds > 0 {
@@ -209,7 +209,7 @@ private struct Sidebar: View {
         let archivedUnread = archived.reduce(0) { $0 + $1.unread }
         let q = filter.trimmingCharacters(in: .whitespaces)
         let list = model.chats.sortedConversations(archived: model.showArchived).filter {
-            q.isEmpty || $0.title.localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q)
+            q.isEmpty || model.title($0).localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q)
         }
 
         VStack(spacing: 0) {
@@ -303,7 +303,7 @@ private struct ConversationRow: View {
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
-                    Text(c.title)
+                    Text(model.title(c))
                         .font(.system(size: 13, weight: c.unread > 0 ? .bold : .semibold))
                         .lineLimit(1)
                     if c.muted { Image(systemName: "bell.slash.fill").font(.system(size: 9)).foregroundStyle(.secondary) }

@@ -162,7 +162,7 @@ private struct EmptyChat: View {
     var body: some View {
         VStack(spacing: 10) {
             AvatarView(image: model.avatarImage(conversation), size: 72)
-            Text(conversation.title).font(.title2.weight(.semibold))
+            Text(model.title(conversation)).font(.title2.weight(.semibold))
             Text(conversation.isGroup ? "Group" : conversation.key)
                 .foregroundStyle(.secondary)
             Text("Messages are end-to-end encrypted by Signal.\nThis Mac keeps its own encrypted copy of the history.")

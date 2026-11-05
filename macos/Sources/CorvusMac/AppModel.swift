@@ -672,6 +672,9 @@ final class AppModel {
 
     func displayName(_ key: String) -> String { chats.displayName(key) }
 
+    /// Chat title as shown: the own number's chat is "Note to Self", like in the official clients.
+    func title(_ c: Conversation) -> String { !account.isEmpty && c.key == account ? "Note to Self" : c.title }
+
     /// Called after changes to the list (order, unread counters, …).
     func listChanged() {
         if showArchived && !chats.convs.values.contains(where: \.archived) { showArchived = false } // folder became empty
@@ -954,7 +957,7 @@ final class AppModel {
             // Like the official clients: an edit is only applied to a known message written by the same author.
             let author = pe.outgoing ? account : srcKey
             if let rec = chats.applyEdit(key, targetTs: pe.targetTs, authors: [author], text: pe.msg.text, newTs: pe.msg.ts,
-                                   styles: pe.msg.textStyles, mentions: pe.msg.mentions) {
+                                   styles: pe.msg.textStyles, mentions: pe.msg.mentions, linkPreview: pe.msg.linkPreview) {
                 persist(rec)
             }
             return
@@ -1293,6 +1296,12 @@ final class AppModel {
             p["quoteAuthor"] = m.quote.authorKey
             p["quoteMessage"] = m.quote.text
         }
+        // Like the official clients: the preview stays when its link is still in the edited text.
+        let keptPreview = m.linkPreview.isValid && formatted.text.contains(m.linkPreview.url) ? m.linkPreview : LinkPreview()
+        if keptPreview.isValid {
+            let image = keptPreview.imageThumb.isEmpty ? nil : (try? Media.writeTemp(keptPreview.imageThumb, name: "preview.jpg"))?.path
+            p.merge(LinkPreviews.sendParams(keptPreview, imagePath: image)) { $1 }
+        }
         addRecipient(&p, c)
         let key = c.key, origTs = m.ts
         Task { [p] in
@@ -1302,7 +1311,7 @@ final class AppModel {
                 var ts = jsonInt64(jsonObject(res)["timestamp"])
                 if ts <= 0 { ts = nowMs() }
                 if let rec = chats.applyEdit(key, targetTs: origTs, authors: [account], text: formatted.text, newTs: ts,
-                                       styles: formatted.styles, mentions: keptMentions) { persist(rec) }
+                                       styles: formatted.styles, mentions: keptMentions, linkPreview: keptPreview) { persist(rec) }
                 if editKey == key && editTs == origTs { cancelEdit(restoreDraft: true) }
             } catch {
                 // stay in edit mode with the typed text so nothing is lost
