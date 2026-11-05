@@ -17,7 +17,9 @@ struct AttachmentView: View {
         let att = attachment
         let token = model.attachmentToken(message, index)
         Group {
-            if att.isVideo {
+            if att.isSticker {
+                StickerView(attachment: att)
+            } else if att.isVideo {
                 VideoAttachment(token: token, attachment: att, foreground: foreground) { model.openAttachment(message, index) }
             } else if att.isAudio {
                 AudioAttachment(token: token, attachment: att, foreground: foreground) { model.toggleAudio(message, index) }

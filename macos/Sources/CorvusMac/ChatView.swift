@@ -280,8 +280,9 @@ private struct Bubble: View {
         let bg = m.outgoing ? a.outBgColor : a.inBgColor
         let shape = bubbleShape(radius: CGFloat(a.radius))
         let pending = model.chats.isPendingPreview(model.current ?? "", ts: m.ts)
-        let mediaOnly = m.text.isEmpty && !m.quote.valid && !m.attachments.isEmpty
-            && m.attachments.allSatisfy { $0.isImage && !$0.thumb.isEmpty }
+        let mediaOnly = m.text.isEmpty && !m.quote.valid && !m.attachments.isEmpty && !m.viewOnce
+            && m.attachments.allSatisfy { $0.isImage && !$0.thumb.isEmpty && !$0.isSticker }
+        let stickerOnly = m.text.isEmpty && !m.viewOnce && m.attachments.count == 1 && m.attachments[0].isSticker
         let showSender = isGroup && !m.outgoing && !grouping.joinedAbove
 
         Group {
@@ -298,6 +299,35 @@ private struct Bubble: View {
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
+                .background(shape.fill(bg))
+            } else if stickerOnly {
+                VStack(alignment: m.outgoing ? .trailing : .leading, spacing: 2) {
+                    if showSender { senderLabel }
+                    if m.quote.valid { QuoteView(quote: m.quote, foreground: .primary, outgoing: m.outgoing) }
+                    StickerView(attachment: m.attachments[0])
+                    MetaRow(message: m, pending: pending, color: .secondary)
+                }
+            } else if m.viewOnce {
+                BubbleContentLayout(spacing: 3) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if showSender { senderLabel }
+                        ViewOnceBubbleContent(message: m, foreground: fg)
+                    }
+                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(shape.fill(bg))
+            } else if m.isPoll {
+                BubbleContentLayout(spacing: 3) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        if showSender { senderLabel }
+                        PollView(message: m, foreground: fg)
+                    }
+                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7))
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
                 .background(shape.fill(bg))
             } else if mediaOnly {
                 VStack(spacing: 2) {
@@ -440,7 +470,8 @@ private struct QuoteView: View {
                 RoundedRectangle(cornerRadius: 2).fill(accent).frame(width: 3)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(author).font(.caption.weight(.semibold)).foregroundStyle(accent)
-                    Text(quote.text.isEmpty ? (quote.attachmentNote.hasPrefix("image/") ? "📷 Photo" : "📎 Attachment") : quote.text)
+                    Text(quote.attachmentNote == "story" ? "📖 " + quote.text
+                         : quote.text.isEmpty ? (quote.attachmentNote.hasPrefix("image/") ? "📷 Photo" : "📎 Attachment") : quote.text)
                         .font(.callout)
                         .lineLimit(3)
                         .foregroundStyle(foreground.opacity(0.9))
@@ -494,6 +525,13 @@ private struct MessageMenu: View {
             if m.outgoing && m.authorKey == model.account && m.canEdit(nowMs: nowMs()) {
                 Button { model.startEdit(m.id) } label: { Label("Edit", systemImage: "pencil") }
             }
+            if !m.viewOnce && !m.isPoll && !(m.text.isEmpty && m.attachments.isEmpty) {
+                Button { model.forwardMessageId = m.id } label: { Label("Forward …", systemImage: "arrowshape.turn.up.right") }
+                    .disabled(!model.connected)
+            }
+            if m.isPoll && m.outgoing && !m.poll.ended {
+                Button { model.endPoll(m.id) } label: { Label("End poll", systemImage: "stop.circle") }
+            }
             Menu {
                 ForEach(EmojiCatalog.quickReactions, id: \.self) { e in
                     Button(m.reactions[model.account] == e ? "\(e)  (remove)" : e) { model.sendReaction(m.id, e) }
@@ -501,13 +539,13 @@ private struct MessageMenu: View {
             } label: { Label("React", systemImage: "face.smiling") }
             Divider()
         }
-        if !m.text.isEmpty {
+        if !m.text.isEmpty && !m.isPoll {
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(m.text, forType: .string)
             } label: { Label("Copy text", systemImage: "doc.on.doc") }
         }
-        ForEach(Array(m.attachments.enumerated()), id: \.offset) { i, a in
+        ForEach(Array(m.attachments.enumerated()).filter { !$0.element.isSticker && !m.viewOnce }, id: \.offset) { i, a in
             Button { model.saveAttachment(m, i) } label: {
                 Label("Save “\(a.filename.isEmpty ? "attachment" : a.filename)” …", systemImage: "square.and.arrow.down")
             }

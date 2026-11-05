@@ -6,6 +6,7 @@ import SwiftUI
 struct ComposerArea: View {
     @Environment(AppModel.self) private var model
     @State private var emojiShown = false
+    @State private var stickersShown = false
 
     var body: some View {
         @Bindable var model = model
@@ -25,6 +26,9 @@ struct ComposerArea: View {
                     if model.pendingFiles.isEmpty { model.pendingGifAnalyticsUrl = nil }
                 }
             }
+            if model.isRecording {
+                RecordingBar()
+            } else {
             HStack(alignment: .bottom, spacing: 8) {
                 // The field with the emoji button inside, like the Signal clients.
                 HStack(alignment: .bottom, spacing: 2) {
@@ -53,10 +57,42 @@ struct ComposerArea: View {
                         .frame(width: 30, height: 34)
                 }
                 .help("Search GIPHY GIFs")
-                Button { model.chooseAttachments() } label: {
-                    Image(systemName: "paperclip").font(.system(size: 17)).frame(width: 30, height: 34)
+                Button { stickersShown.toggle() } label: {
+                    Image(systemName: "seal").font(.system(size: 17)).frame(width: 30, height: 34)
                 }
-                .help("Attach files")
+                .help("Stickers")
+                .popover(isPresented: $stickersShown, arrowEdge: .top) {
+                    StickerPicker { stickersShown = false }
+                }
+                Menu {
+                    Button { model.chooseAttachments() } label: { Label("Attach files …", systemImage: "paperclip") }
+                    Button { model.pollComposerShown = true } label: { Label("Poll …", systemImage: "chart.bar.xaxis") }
+                } label: {
+                    Image(systemName: "paperclip").font(.system(size: 17))
+                } primaryAction: {
+                    model.chooseAttachments()
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .frame(width: 30, height: 34)
+                .help("Attach files (hold for more: poll)")
+                if model.canSendViewOnce {
+                    Button { model.viewOnceNext.toggle() } label: {
+                        Text("1×").font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(model.viewOnceNext ? Color.white : Color.secondary)
+                            .frame(width: 28, height: 28)
+                            .background(Circle().fill(model.viewOnceNext ? Theme.signalBlue : Color.clear))
+                            .overlay(Circle().strokeBorder(Color.secondary.opacity(0.5)))
+                    }
+                    .help(model.viewOnceNext ? "View once: on" : "Send as view once")
+                }
+                if !canSend && model.editKey.isEmpty {
+                    Button { model.startRecording() } label: {
+                        Image(systemName: "mic").font(.system(size: 17)).frame(width: 30, height: 34)
+                    }
+                    .help("Record a voice message")
+                }
                 Button { model.sendMessage() } label: {
                     Image(systemName: model.editKey.isEmpty ? "arrow.up" : "checkmark")
                         .font(.system(size: 15, weight: .bold))
@@ -71,7 +107,10 @@ struct ComposerArea: View {
             .buttonStyle(.borderless)
             .foregroundStyle(.secondary)
             .disabled(!model.connected)
+            }
         }
+        .sheet(isPresented: $model.pollComposerShown) { PollComposerSheet() }
+        .onChange(of: model.canSendViewOnce) { _, ok in if !ok { model.viewOnceNext = false } }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(Theme.chrome)

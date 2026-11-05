@@ -438,3 +438,145 @@ final class AttachmentPolicyTests: XCTestCase {
         XCTAssertEqual(AttachmentPolicy.mediaSuffix(filename: "x.terminal", contentType: "text/plain", fallback: "m4a"), "m4a")
     }
 }
+
+final class DesktopParityTests: XCTestCase {
+    func testStickerViewOnceAndStoryContext() {
+        let st = parseEnvelope(["sourceNumber": "+49111", "dataMessage": [
+            "timestamp": 5, "sticker": ["packId": "abcd", "stickerId": 7],
+        ] as JSON])
+        XCTAssertEqual(st.kind, .message)
+        XCTAssertTrue(st.msg.attachments[0].isSticker)
+        XCTAssertEqual(st.msg.attachments[0].stickerPackId, "abcd")
+        XCTAssertEqual(st.msg.attachments[0].stickerId, 7)
+        XCTAssertEqual(st.msg.attachments[0].filename, "signal-sticker:abcd:7.webp") // same as the Qt app
+
+        let vo = parseEnvelope(["sourceNumber": "+49111", "dataMessage": [
+            "timestamp": 6, "viewOnce": true, "attachments": [["id": "a1", "contentType": "image/jpeg"]],
+        ] as JSON])
+        XCTAssertTrue(vo.msg.viewOnce)
+
+        let reply = parseEnvelope(["sourceNumber": "+49111", "dataMessage": [
+            "timestamp": 7, "message": "nice",
+            "storyContext": ["authorNumber": "+49222", "sentTimestamp": 99],
+        ] as JSON])
+        XCTAssertEqual(reply.kind, .message)
+        XCTAssertEqual(reply.msg.quote.id, 99)
+        XCTAssertEqual(reply.msg.quote.attachmentNote, "story")
+
+        let react = parseEnvelope(["sourceNumber": "+49111", "dataMessage": [
+            "timestamp": 8, "reaction": ["emoji": "❤️", "targetSentTimestamp": 99, "isRemove": false],
+            "storyContext": ["authorNumber": "+49222", "sentTimestamp": 99],
+        ] as JSON])
+        XCTAssertEqual(react.kind, .message)
+        XCTAssertTrue(react.isStoryReaction)
+        XCTAssertEqual(react.msg.text, "❤️")
+    }
+
+    func testStories() {
+        let pe = parseEnvelope(["sourceNumber": "+49111", "sourceName": "Alice", "timestamp": 1000, "storyMessage": [
+            "allowsReplies": false, "fileAttachment": ["id": "s1", "contentType": "image/jpeg"],
+        ] as JSON])
+        XCTAssertEqual(pe.kind, .story)
+        XCTAssertEqual(pe.story.ts, 1000)
+        XCTAssertFalse(pe.story.allowsReplies)
+        XCTAssertEqual(pe.story.attachment?.id, "s1")
+        XCTAssertEqual(pe.story.authorName, "Alice")
+
+        let text = parseEnvelope(["sourceNumber": "+49111", "timestamp": 2000, "storyMessage": [
+            "allowsReplies": true, "groupId": "G1",
+            "textAttachment": ["text": "hello", "textForegroundColor": "#FFFFFFFF", "backgroundColor": "#FF112233"],
+        ] as JSON])
+        XCTAssertEqual(text.kind, .story)
+        XCTAssertEqual(text.story.text, "hello")
+        XCTAssertEqual(text.story.groupId, "G1")
+        XCTAssertTrue(text.story.isExpired(now: 2000 + 25 * 3600 * 1000))
+        XCTAssertFalse(text.story.isExpired(now: 2000 + 23 * 3600 * 1000))
+
+        let own = parseEnvelope(["sourceNumber": "+49000", "timestamp": 3000, "syncMessage": [
+            "sentStoryMessage": ["allowsReplies": true, "fileAttachment": ["id": "s2", "contentType": "video/mp4"]],
+        ] as JSON])
+        XCTAssertEqual(own.kind, .story)
+        XCTAssertTrue(own.story.outgoing)
+    }
+
+    func testPollsEndToEnd() {
+        let create = parseEnvelope(["sourceNumber": "+49111", "dataMessage": [
+            "timestamp": 10, "pollCreate": ["question": "Lunch?", "allowMultiple": false, "options": ["Pizza", "Sushi"]],
+        ] as JSON])
+        XCTAssertEqual(create.kind, .message)
+        XCTAssertTrue(create.msg.isPoll)
+        XCTAssertEqual(create.msg.text, "📊 Lunch?") // fallback text for clients without polls
+        XCTAssertFalse(create.msg.poll.allowMultiple)
+
+        var s = ChatState()
+        s.account = "+49000"
+        var m = create.msg
+        m.authorKey = "+49111"
+        _ = s.addMessage("+49111", m)
+
+        let vote = parseEnvelope(["sourceNumber": "+49222", "dataMessage": [
+            "timestamp": 11, "groupInfo": ["groupId": ""],
+            "pollVote": ["authorNumber": "+49111", "targetSentTimestamp": 10, "optionIndexes": [1, 0], "voteCount": 2],
+        ] as JSON])
+        XCTAssertEqual(vote.kind, .pollVote)
+        XCTAssertEqual(vote.pollOptions, [1, 0])
+        XCTAssertNotNil(s.applyPollVote("+49111", targetTs: 10, authors: ["+49111"], voter: "+49222", options: vote.pollOptions, voteCount: 2))
+        // Single choice: only the first option counts.
+        XCTAssertEqual(s.convs["+49111"]!.msgs[0].poll.votes["+49222"], [1])
+        // An older vote does not replace a newer one.
+        XCTAssertNil(s.applyPollVote("+49111", targetTs: 10, authors: ["+49111"], voter: "+49222", options: [0], voteCount: 1))
+        let rec = s.applyPollVote("+49111", targetTs: 10, authors: ["+49111"], voter: "+49000", options: [0], voteCount: 1)!
+
+        let term = parseEnvelope(["sourceNumber": "+49111", "dataMessage": ["timestamp": 12, "pollTerminate": ["targetSentTimestamp": 10]] as JSON])
+        XCTAssertEqual(term.kind, .pollTerminate)
+        // Only the author can end a poll.
+        XCTAssertNil(s.applyPollTerminate("+49111", targetTs: 10, authors: ["+49222"]))
+        let endRec = s.applyPollTerminate("+49111", targetTs: 10, authors: ["+49111"])!
+        XCTAssertNil(s.applyPollVote("+49111", targetTs: 10, authors: ["+49111"], voter: "+49333", options: [0], voteCount: 1))
+
+        // History: message + updates reproduce the state.
+        var r = ChatState()
+        r.account = "+49000"
+        r.loadHistory([Records.message("+49111", m), rec, endRec])
+        let p = r.convs["+49111"]!.msgs[0].poll
+        XCTAssertEqual(p.votes["+49000"], [0])
+        XCTAssertTrue(p.ended)
+        // Compaction keeps everything.
+        var r2 = ChatState()
+        r2.loadHistory(s.allRecords())
+        XCTAssertEqual(r2.convs["+49111"]!.msgs[0].poll, s.convs["+49111"]!.msgs[0].poll)
+    }
+
+    func testViewOnceIsNeverKeptOnceOpened() {
+        var m = Message()
+        m.ts = 20
+        m.authorKey = "+49111"
+        m.viewOnce = true
+        var a = Attachment()
+        a.id = "secret"
+        a.contentType = "image/jpeg"
+        a.thumb = Data([1, 2, 3])
+        m.attachments = [a]
+        // Unopened incoming: only the reference, never a preview.
+        let rec = Records.message("+49111", m)
+        let at = jsonArray(jsonObject(rec["d"])["at"])
+        XCTAssertEqual(jsonString(jsonObject(at.first)["id"]), "secret")
+        XCTAssertNil(jsonObject(at.first)["th"])
+
+        var s = ChatState()
+        s.loadHistory([rec])
+        let upd = s.markViewOnceViewed("+49111", ts: 20, authors: ["+49111"])!
+        XCTAssertTrue(s.convs["+49111"]!.msgs[0].attachments.isEmpty)
+        XCTAssertNil(jsonObject(s.allRecords().first { jsonString($0["t"]) == "m" }?["d"])["at"])
+
+        var r = ChatState()
+        r.loadHistory([rec, upd])
+        XCTAssertTrue(r.convs["+49111"]!.msgs[0].viewOnceConsumed)
+        XCTAssertTrue(r.convs["+49111"]!.msgs[0].attachments.isEmpty)
+
+        // Sent View Once media is never stored.
+        var out = m
+        out.outgoing = true
+        XCTAssertNil(jsonObject(Records.message("+49111", out)["d"])["at"])
+    }
+}

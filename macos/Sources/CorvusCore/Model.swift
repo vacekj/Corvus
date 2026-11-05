@@ -51,6 +51,62 @@ public struct Attachment: Equatable, Hashable {
     public var isGif: Bool {
         contentType.caseInsensitiveCompare("image/gif") == .orderedSame || filename.lowercased().hasSuffix(".gif")
     }
+
+    /// Stickers are stored like the Qt app does: a pseudo attachment named "signal-sticker:<packId>:<stickerId>.webp".
+    public static let stickerPrefix = "signal-sticker:"
+
+    public static func sticker(packId: String, stickerId: Int) -> Attachment {
+        var a = Attachment()
+        a.contentType = "image/webp"
+        a.filename = "\(stickerPrefix)\(packId):\(stickerId).webp"
+        return a
+    }
+
+    public var isSticker: Bool { filename.hasPrefix(Attachment.stickerPrefix) }
+
+    public var stickerPackId: String {
+        guard isSticker else { return "" }
+        let rest = filename.dropFirst(Attachment.stickerPrefix.count)
+        return rest.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
+    }
+
+    public var stickerId: Int {
+        guard isSticker else { return -1 }
+        let parts = filename.dropFirst(Attachment.stickerPrefix.count).split(separator: ":", maxSplits: 1)
+        guard parts.count == 2 else { return -1 }
+        return Int(parts[1].split(separator: ".").first ?? "") ?? -1
+    }
+}
+
+/// A Signal poll (sendPollCreate). Votes are keyed by voter (number/UUID); a voter's newer vote
+/// (higher voteCount) replaces the older one, like the official clients.
+public struct Poll: Equatable, Hashable {
+    public var question = ""
+    public var options: [String] = []
+    public var allowMultiple = true
+    public var ended = false
+    public var votes: [String: [Int]] = [:]       // voter -> chosen option indexes
+    public var voteCounts: [String: Int] = [:]    // voter -> voteCount of the stored vote
+
+    public init() {}
+
+    public var isValid: Bool { !question.isEmpty && options.count >= 2 }
+
+    public func voters(for option: Int) -> [String] {
+        votes.filter { $0.value.contains(option) }.map(\.key).sorted()
+    }
+
+    public var totalVoters: Int { votes.values.filter { !$0.isEmpty }.count }
+
+    /// Applies a vote; false if it is older than the vote already known.
+    @discardableResult
+    public mutating func applyVote(voter: String, options chosen: [Int], voteCount: Int) -> Bool {
+        if let known = voteCounts[voter], voteCount > 0, known >= voteCount { return false }
+        let valid = chosen.filter { $0 >= 0 && $0 < options.count }
+        votes[voter] = allowMultiple ? Array(Set(valid)).sorted() : Array(valid.prefix(1))
+        voteCounts[voter] = voteCount
+        return true
+    }
 }
 
 public struct Quote: Equatable, Hashable {
@@ -86,6 +142,14 @@ public struct Message: Equatable, Identifiable {
     public var expirationStartMs: Int64 = 0
     public var deleted = false        // deleted for everyone: only a placeholder is left
 
+    // Signal View Once media (same rules as the Qt app): the attachment reference is kept only
+    // until the media is opened; sent View Once media is never kept.
+    public var viewOnce = false
+    public var viewOnceViewed = false
+    public var viewOnceExpired = false
+
+    public var poll = Poll()          // valid for poll messages
+
     public init() {}
 
     public var id: String { "\(ts)|\(authorKey)|\(outgoing)" }
@@ -107,10 +171,19 @@ public struct Message: Equatable, Identifiable {
         reactions = [:]
         editTs = 0
         editCount = 0
+        viewOnce = false
+        viewOnceViewed = false
+        viewOnceExpired = false
+        poll = Poll()
     }
 
+    /// View Once media that has been opened (or was sent by us): only a placeholder remains.
+    public var viewOnceConsumed: Bool { viewOnce && (outgoing || viewOnceViewed || viewOnceExpired) }
+
+    public var isPoll: Bool { poll.isValid }
+
     public func canEdit(nowMs: Int64) -> Bool {
-        outgoing && !deleted && !text.isEmpty && editCount < Message.maxEdits && nowMs - ts <= Message.editWindowMs
+        outgoing && !deleted && !isPoll && !text.isEmpty && editCount < Message.maxEdits && nowMs - ts <= Message.editWindowMs
     }
 }
 

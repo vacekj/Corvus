@@ -517,7 +517,7 @@ for line in sys.stdin:
             payload = png()
         res = {"data": base64.b64encode(payload).decode()}
     elif m == "listStickerPacks":
-        res = [{"packId": STICKER_PACK_ID, "title": "Corvus Animation", "author": "Corvus Test",
+        res = [{"packId": STICKER_PACK_ID, "title": "Corvus Animation", "author": "Corvus Test", "installed": True,
                 "stickers": [{"id": 0, "emoji": "\U0001F642"}, {"id": 1, "emoji": "\u2B50"},
                              {"id": 2, "emoji": "\U0001F422"}]}]
     elif m == "getSticker":
@@ -531,6 +531,16 @@ for line in sys.stdin:
         else:
             payload = STICKER_WEBP_STATIC     # single-frame sticker
         res = {"data": base64.b64encode(payload).decode()}
+    elif m in ("sendPollCreate", "sendPollVote", "sendPollTerminate", "sendStory"):
+        sent += 1
+        res = {"timestamp": int(time.time() * 1000) + sent, "results": []}
+    elif m == "subscribeCallEvents":
+        res = 1
+    elif m == "startCall":
+        res = {"callId": 4242, "state": "RINGING_OUTGOING", "inputDeviceName": "signal_input",
+               "outputDeviceName": "signal_output", "codec": "opus", "sampleRate": 48000, "channels": 1, "ptimeMs": 20}
+    elif m in ("acceptCall", "hangupCall", "rejectCall", "addStickerPack"):
+        res = {}
     else:
         emit({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(m)}})
         continue

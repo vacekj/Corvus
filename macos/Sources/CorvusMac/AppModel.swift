@@ -93,6 +93,34 @@ final class AppModel {
     @ObservationIgnored private var linkContinuation: CheckedContinuation<Bool, Never>?
     var giphyApiKey: String?        // non-nil = GIF picker shown
 
+    // stickers
+    var stickerPacks: [StickerPack] = []
+    var stickerImages: [String: Data] = [:]     // "packId:stickerId" -> image data
+    @ObservationIgnored var stickerPending: Set<String> = []
+
+    // stories (memory only)
+    var stories: [Story] = []
+    var storiesShown = false
+
+    // sheets of the new features
+    var safetyNumberKey: String?               // conversation whose safety number is shown
+    var forwardMessageId: String?              // message to forward (in the current conversation)
+    var galleryShown = false
+    var pollComposerShown = false
+
+    // composer extras
+    var viewOnceNext = false                    // send the single attached photo/video as View Once
+    @ObservationIgnored var voiceNoteNext = false
+    var isRecording = false
+    var recordingStarted: Date?
+    @ObservationIgnored var recorder: AVAudioRecorder?
+
+    // voice calls
+    var call: CallSession?
+    @ObservationIgnored var callSubscribed = false
+    @ObservationIgnored let audioBridge = CallAudioBridge()
+    @ObservationIgnored var ringTimer: Timer?
+
     // MARK: Services
 
     @ObservationIgnored let cli = SignalCli()
@@ -111,6 +139,7 @@ final class AppModel {
 
     init() {
         cli.onEnvelope = { [weak self] env in self?.onEnvelope(env) }
+        cli.onCallEvent = { [weak self] ev in self?.onCallEvent(ev) }
         cli.onStopped = { [weak self] reason in self?.setConnected(false, info: reason) }
         cli.onLogLine = { [weak self] line in self?.showFlash(line, seconds: 5) }
         notifier.onActivate = { [weak self] key in self?.activateConversation(key) }
@@ -262,6 +291,8 @@ final class AppModel {
         guard cli.isRunning else { return }
         setConnected(true)
         loadContactsAndGroups()
+        subscribeCallEvents()
+        loadStickerPacks()
         checkForUpdates(silent: true) // silent: only a hint in the status bar
     }
 
@@ -279,6 +310,7 @@ final class AppModel {
 
     func setConnected(_ on: Bool, info: String = "") {
         connected = on
+        if !on { callConnectionLost() }
         if on {
             statusText = "Connected · signal-cli \(version)"
         } else {
@@ -609,7 +641,7 @@ final class AppModel {
     func displayName(_ key: String) -> String { chats.displayName(key) }
 
     /// Called after changes to the list (order, unread counters, …).
-    private func listChanged() {
+    func listChanged() {
         if showArchived && !chats.convs.values.contains(where: \.archived) { showArchived = false } // folder became empty
         updateBadge()
         fetchMissingAvatars()
@@ -885,6 +917,21 @@ final class AppModel {
             // Like the official clients: only the author can delete a message for everyone.
             applyDelete(key, ts: pe.targetTs, authors: [pe.outgoing ? account : srcKey])
             return
+        case .pollVote:
+            let voter = pe.outgoing ? account : srcKey
+            if let rec = chats.applyPollVote(key, targetTs: pe.targetTs, authors: [pe.targetNumber, pe.targetUuid].map(chats.resolveKey),
+                                             voter: voter, options: pe.pollOptions, voteCount: pe.voteCount) {
+                persist(rec)
+            }
+            return
+        case .pollTerminate:
+            if let rec = chats.applyPollTerminate(key, targetTs: pe.targetTs, authors: [pe.outgoing ? account : srcKey]) {
+                persist(rec)
+            }
+            return
+        case .story:
+            receiveStory(pe, srcKey: srcKey)
+            return
         default:
             break
         }
@@ -892,6 +939,7 @@ final class AppModel {
         var m = pe.msg
         m.outgoing = pe.outgoing
         m.authorKey = pe.outgoing ? account : srcKey
+        if m.isPoll && m.outgoing { m.poll.votes = [:] }
         if m.outgoing && m.expiresInSeconds > 0 { m.expirationStartMs = m.ts }
         if m.quote.valid { m.quote.authorKey = chats.resolveKey(m.quote.authorKey) }
         if !pe.outgoing {
@@ -920,7 +968,7 @@ final class AppModel {
     }
 
     @discardableResult
-    private func addMessage(_ key: String, _ m0: Message, title: String = "", group: Bool = false) -> Bool {
+    func addMessage(_ key: String, _ m0: Message, title: String = "", group: Bool = false) -> Bool {
         var m = m0
         let looking = key == current && MainWindowTracker.shared.window?.isVisible == true
             && MainWindowTracker.shared.window?.isMiniaturized == false
@@ -935,7 +983,7 @@ final class AppModel {
         return true
     }
 
-    private func alertIncoming(_ key: String, _ m: Message) {
+    func alertIncoming(_ key: String, _ m: Message) {
         guard let c = chats.convs[key], !c.muted else { return }
         // Nothing to announce while the user is looking at this very conversation.
         if key == current && userIsLooking() { return }
@@ -944,7 +992,11 @@ final class AppModel {
         if notify.notifications {
             var preview = m.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             if preview.count > 240 { preview = String(preview.prefix(240)) + "…" }
-            if preview.isEmpty, let a = m.attachments.first { preview = a.isImage ? "[Image]" : "[File] \(a.filename)" }
+            if m.isPoll { preview = "📊 " + m.poll.question }
+            if m.viewOnce { preview = "View once media" }
+            if preview.isEmpty, let a = m.attachments.first {
+                preview = a.isSticker ? "[Sticker]" : a.isImage ? "[Image]" : a.isAudio ? "[Voice message]" : "[File] \(a.filename)"
+            }
             var title = c.title, body: String
             switch notify.content {
             case .hidden:
@@ -969,7 +1021,7 @@ final class AppModel {
 
     // MARK: - Sending
 
-    private func addRecipient(_ params: inout JSON, _ c: Conversation) {
+    func addRecipient(_ params: inout JSON, _ c: Conversation) {
         if c.isGroup { params["groupId"] = String(c.key.dropFirst(2)) } else { params["recipient"] = [c.key] }
     }
 
@@ -989,18 +1041,24 @@ final class AppModel {
         composerFocusRequest += 1
     }
 
-    func sendMessage() {
-        if !editKey.isEmpty {
+    func sendMessage(sticker: Attachment? = nil) {
+        if !editKey.isEmpty && sticker == nil {
             sendEdit(composerText.trimmingCharacters(in: .whitespacesAndNewlines))
             return
         }
-        let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let key = current, let c = chats.convs[key], !(text.isEmpty && pendingFiles.isEmpty) else { return }
+        let text = sticker == nil ? composerText.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        guard let key = current, let c = chats.convs[key], !(text.isEmpty && pendingFiles.isEmpty && sticker == nil) else { return }
         guard connected else {
             showFlash("Not connected to signal-cli.", seconds: 5)
             return
         }
-        let files = pendingFiles, quote = replyQuote, gifAnalytics = pendingGifAnalyticsUrl
+        let files = sticker == nil ? pendingFiles : [], quote = replyQuote, gifAnalytics = pendingGifAnalyticsUrl
+        let voiceNote = voiceNoteNext && sticker == nil
+        voiceNoteNext = false
+        // View Once: exactly one photo or video, no text (like the official clients).
+        let viewOnce = viewOnceNext && sticker == nil && files.count == 1 && text.isEmpty
+            && ["image/", "video/"].contains { Media.mimeType(forFile: files[0]).hasPrefix($0) }
+        viewOnceNext = false
 
         var p: JSON = [:]
         if !text.isEmpty { p["message"] = text }
@@ -1022,6 +1080,9 @@ final class AppModel {
         }
         let staged = Media.stageForSignalCli(files)
         if !files.isEmpty { p["attachments"] = staged.paths }
+        if voiceNote { p["voiceNote"] = true }
+        if viewOnce { p["viewOnce"] = true }
+        if let sticker { p["sticker"] = "\(sticker.stickerPackId):\(sticker.stickerId)" }
         if quote.valid && !quote.authorKey.isEmpty {
             p["quoteTimestamp"] = quote.id
             p["quoteAuthor"] = quote.authorKey
@@ -1040,7 +1101,8 @@ final class AppModel {
         preview.authorKey = account
         preview.expiresInSeconds = c.expirationSeconds
         preview.quote = quote
-        preview.attachments = atts
+        preview.attachments = sticker.map { [$0] } ?? atts
+        preview.viewOnce = viewOnce
 
         let pendingId = UUID().uuidString
         var pending = PendingSend()
@@ -1050,8 +1112,10 @@ final class AppModel {
         chats.pendingSends[pendingId] = pending
         chats.convs[key]!.insertSorted(preview)
 
-        composerText = ""
-        pendingFiles = []
+        if sticker == nil {
+            composerText = ""
+            pendingFiles = []
+        }
         replyQuote = Quote()
         if !files.isEmpty { showFlash("Sending …", seconds: 120) }
         scrollToMessage(index: chats.convs[key]!.msgs.firstIndex { $0.id == preview.id } ?? 0)
@@ -1315,9 +1379,10 @@ final class AppModel {
 
     func attachmentToken(_ m: Message, _ i: Int) -> String { "\(m.id)#\(i)" }
 
-    private func fetchThumbnails(_ key: String, ts: Int64, author: String, attempt: Int = 0) {
+    func fetchThumbnails(_ key: String, ts: Int64, author: String, attempt: Int = 0) {
         guard let c = chats.convs[key], let mi = chats.findMessage(c, ts: ts, authors: [author]) else { return }
         let m = c.msgs[mi]
+        if m.viewOnce { return } // View Once media never gets a stored preview
         for (a, att) in m.attachments.enumerated() {
             if !att.isImage || !att.thumb.isEmpty || att.id.isEmpty || att.size > Media.maxThumbSource { continue }
             let token = "\(key)|\(ts)|\(author)|\(a)"

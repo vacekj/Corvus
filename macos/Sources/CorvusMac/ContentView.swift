@@ -26,6 +26,18 @@ struct ContentView: View {
                     if let c = model.currentConversation { ChatHeader(conversation: c) }
                 }
                 ToolbarItem(placement: .automatic) {
+                    if let c = model.currentConversation, !c.isGroup {
+                        Button { Task { await model.startCall(c.key) } } label: { Label("Voice call", systemImage: "phone") }
+                            .help("Voice call")
+                            .disabled(!model.connected || model.call?.isActive == true)
+                    }
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button { model.galleryShown = true } label: { Label("Media", systemImage: "photo.on.rectangle") }
+                        .help("Media, files and links of this chat")
+                        .disabled(model.current == nil)
+                }
+                ToolbarItem(placement: .automatic) {
                     Button { model.searchVisible ? model.closeSearch() : model.openSearch() } label: {
                         Label("Search", systemImage: "magnifyingglass")
                     }
@@ -46,6 +58,14 @@ struct ContentView: View {
                 GiphyPicker(apiKey: key) { url, analytics in model.sendGif(url: url, analytics: analytics) }
             }
         }
+        .sheet(isPresented: Binding(get: { model.safetyNumberKey != nil }, set: { if !$0 { model.safetyNumberKey = nil } })) {
+            if let key = model.safetyNumberKey { SafetyNumberSheet(key: key) }
+        }
+        .sheet(isPresented: Binding(get: { model.forwardMessageId != nil }, set: { if !$0 { model.forwardMessageId = nil } })) {
+            if let id = model.forwardMessageId { ForwardSheet(messageId: id) }
+        }
+        .sheet(isPresented: $model.galleryShown) { MediaGallerySheet() }
+        .sheet(isPresented: $model.storiesShown) { StoriesSheet() }
         .onAppear {
             model.openMainWindow = {
                 openWindow(id: "main")
@@ -198,6 +218,15 @@ private struct Sidebar: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(Capsule().fill(Theme.field))
+                Button { model.storiesShown = true } label: {
+                    Image(systemName: "circle.dashed.inset.filled").font(.system(size: 15))
+                        .overlay(alignment: .topTrailing) {
+                            if model.unviewedStories > 0 { Circle().fill(Theme.signalBlue).frame(width: 7, height: 7).offset(x: 3, y: -2) }
+                        }
+                }
+                .buttonStyle(.borderless)
+                .help("Stories")
+                .disabled(!model.historyReady)
                 Button { Task { await model.newConversation() } } label: {
                     Image(systemName: "square.and.pencil").font(.system(size: 15))
                 }
@@ -300,8 +329,10 @@ private struct ConversationRow: View {
     private func preview(_ m: Message) -> String {
         if m.deleted { return m.deletedText }
         var t = m.text.replacingOccurrences(of: "\n", with: " ")
+        if m.viewOnce { t = "1️⃣ View once media" }
         if t.isEmpty, let a = m.attachments.first {
-            t = a.isGif ? "GIF" : a.isImage ? "📷 Photo" : a.isVideo ? "🎬 Video" : a.isAudio ? "🎤 Audio" : "📎 " + a.filename
+            t = a.isSticker ? "Sticker" : a.isGif ? "GIF" : a.isImage ? "📷 Photo" : a.isVideo ? "🎬 Video"
+                : a.isAudio ? "🎤 Voice message" : "📎 " + a.filename
         }
         return (m.outgoing ? "You: " : (conversation.isGroup && !m.sender.isEmpty ? m.sender + ": " : "")) + t
     }
@@ -323,6 +354,13 @@ private struct ConversationMenu: View {
     var body: some View {
         let c = conversation
         if !c.isGroup {
+            Button { Task { await model.startCall(c.key) } } label: { Label("Voice call", systemImage: "phone") }
+                .disabled(!model.connected || model.call?.isActive == true)
+            Button { model.openConversation(c.key); model.safetyNumberKey = c.key } label: {
+                Label("View safety number …", systemImage: "checkmark.shield")
+            }
+            .disabled(!model.connected)
+            Divider()
             Button { Task { await model.editNickname(c.key) } } label: {
                 Label(c.localNickname.isEmpty ? "Set nickname …" : "Change nickname …", systemImage: "person.text.rectangle")
             }

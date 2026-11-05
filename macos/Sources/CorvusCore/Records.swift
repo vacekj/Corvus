@@ -46,7 +46,20 @@ public enum Records {
         if m.quote.valid && !m.deleted {
             d["q"] = ["id": m.quote.id, "a": m.quote.authorKey, "t": m.quote.text, "n": m.quote.attachmentNote] as JSON
         }
-        if !m.attachments.isEmpty && !m.deleted { d["at"] = m.attachments.map(attachmentToJson) }
+        if m.viewOnce {
+            d["vo"] = true
+            if m.viewOnceViewed { d["vv"] = true }
+            if m.viewOnceExpired { d["ve"] = true }
+        }
+        // Never keep sent or consumed View Once media in the history. For an unopened incoming item only
+        // the opaque signal-cli attachment reference is stored (same rule as src/Records.cpp).
+        let keepViewOnceRef = !m.viewOnce || (!m.outgoing && !m.viewOnceViewed && !m.viewOnceExpired)
+        if !m.attachments.isEmpty && !m.deleted && keepViewOnceRef {
+            var atts = m.attachments
+            if m.viewOnce { for i in atts.indices { atts[i].thumb = Data(); atts[i].path = "" } }
+            d["at"] = atts.map(attachmentToJson)
+        }
+        if m.poll.isValid && !m.deleted { d["pl"] = pollToJson(m.poll) }
         var rec: JSON = ["t": "m", "c": conv, "ts": m.ts, "s": m.sender, "x": m.deleted ? "" : m.text,
                          "o": m.outgoing, "au": m.authorKey]
         if m.editCount > 0 && !m.deleted { d["ed"] = editToJson(m) }
@@ -67,6 +80,38 @@ public enum Records {
     public static func expirationUpdate(_ conv: String, _ m: Message) -> JSON {
         ["t": "u", "c": conv, "ts": m.ts, "au": m.authorKey,
          "d": ["ex": m.expiresInSeconds, "es": m.expirationStartMs] as JSON]
+    }
+
+    /// The View Once media was opened: drop the attachment reference for good.
+    public static func viewOnceUpdate(_ conv: String, _ m: Message) -> JSON {
+        ["t": "u", "c": conv, "ts": m.ts, "au": m.authorKey,
+         "d": ["vv": m.viewOnceViewed, "ve": m.viewOnceExpired, "at": [Any]()] as JSON]
+    }
+
+    /// Poll state after a vote or after the poll was closed (the whole poll is stored again).
+    public static func pollUpdate(_ conv: String, _ m: Message) -> JSON {
+        ["t": "u", "c": conv, "ts": m.ts, "au": m.authorKey, "d": ["pl": pollToJson(m.poll)] as JSON]
+    }
+
+    // Poll: q = question, o = options, m = multiple choice, e = ended, v = votes {voter: [idx]}, n = vote counts.
+    // Not used by the Qt app, which ignores unknown extras and shows the fallback text of the message.
+    static func pollToJson(_ p: Poll) -> JSON {
+        var o: JSON = ["q": p.question, "o": p.options, "m": p.allowMultiple]
+        if p.ended { o["e"] = true }
+        if !p.votes.isEmpty { o["v"] = p.votes }
+        if !p.voteCounts.isEmpty { o["n"] = p.voteCounts }
+        return o
+    }
+
+    static func pollFromJson(_ o: JSON) -> Poll {
+        var p = Poll()
+        p.question = jsonString(o["q"])
+        p.options = jsonArray(o["o"]).map(jsonString)
+        p.allowMultiple = o["m"] == nil ? true : jsonBool(o["m"])
+        p.ended = jsonBool(o["e"])
+        for (k, v) in jsonObject(o["v"]) { p.votes[k] = jsonArray(v).map(jsonInt) }
+        for (k, v) in jsonObject(o["n"]) { p.voteCounts[k] = jsonInt(v) }
+        return p
     }
 
     public static func attachmentsUpdate(_ conv: String, _ m: Message) -> JSON {
@@ -92,9 +137,14 @@ public enum Records {
             m.expiresInSeconds = jsonInt(d["ex"])
             m.expirationStartMs = jsonInt64(d["es"])
         }
+        if d["vo"] != nil { m.viewOnce = jsonBool(d["vo"]) }
+        if d["vv"] != nil { m.viewOnceViewed = jsonBool(d["vv"]) }
+        if d["ve"] != nil { m.viewOnceExpired = jsonBool(d["ve"]) }
+        if let pl = d["pl"] as? JSON { m.poll = pollFromJson(pl) }
         if d["at"] != nil {
             m.attachments = jsonArray(d["at"]).map { attachmentFromJson(jsonObject($0)) }
         }
+        if m.viewOnce && (m.viewOnceViewed || m.viewOnceExpired) { m.attachments = [] }
         if jsonBool(d["dl"]) { // last: wins over anything else in the same record
             m.markDeleted()
         }

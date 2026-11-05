@@ -22,11 +22,27 @@ Corvus is a desktop interface for [signal-cli](https://github.com/AsamK/signal-c
 - Edit or delete messages, manage archived chats and disappearing messages.
 - Desktop notifications, notification sounds and a tray/menu-bar icon.
 - Encrypted local chat history, protected by the system keychain or a passphrase.
-- View a contact's safety number and mark the contact as verified (Qt version; right-click a chat → *View safety number …*).
-- Record and send voice messages (Qt version; 🎤 button next to the attach button; needs signal-cli 0.14.2 or newer to arrive as a voice note).
-- Send and receive Signal View Once photos (Qt version; select exactly one image and press **1×**; requires signal-cli 0.13.18 or newer).
-- Forward text messages, attachments and stickers to up to five chats at once (Qt version; right-click a message → **Forward…**).
+- View a contact's safety number (with QR code) and mark the contact as verified.
+- Record and send voice messages (needs signal-cli 0.14.2 or newer to arrive as a voice note).
+- Send and receive Signal View Once photos and videos (select exactly one image or video and press **1×**; requires signal-cli 0.13.18 or newer).
+- Forward messages and attachments to up to five chats at once (right-click a message → **Forward…**).
+- macOS (SwiftUI) only: stickers (send, receive, add packs from signal.art links), polls (create, vote, end), stories (view, reply, react, post), a per-chat media gallery and 1:1 voice calls.
 - Customisable chat colours and appearance.
+
+### Voice calls (macOS)
+
+signal-cli relays call audio through [signal-call-tunnel](https://github.com/visigoth/signal-call-tunnel) and two virtual audio devices. Corvus bridges them to your microphone and speakers. To enable calls:
+
+```sh
+git clone --recurse-submodules https://github.com/visigoth/signal-call-tunnel.git
+cargo install --path signal-call-tunnel/signal-call-tunnel
+cd signal-call-tunnel/third-party/ringrtc
+sudo bin/virtual_audio.sh --setup --input-source signal_input --output-sink signal_output
+```
+
+Corvus finds the tunnel in `~/.cargo/bin` or on `PATH`. Then choose File → Reconnect.
+
+Video calls and history transfer from a phone are not supported: signal-cli does not implement them.
 
 Corvus is a graphical client, not a replacement for `signal-cli`. You must have `signal-cli` installed and linked to your Signal account. The Windows installer can download it for you.
 

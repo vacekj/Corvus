@@ -177,6 +177,32 @@ public struct ChatState {
         return Records.edit(key, convs[key]!.msgs[i])
     }
 
+    /// A vote on a poll (from anyone in the chat, including our other devices). Returns the record to persist.
+    public mutating func applyPollVote(_ key: String, targetTs: Int64, authors: [String], voter: String,
+                                       options: [Int], voteCount: Int) -> JSON? {
+        guard let c = convs[key], let i = findMessage(c, ts: targetTs, authors: authors) ?? findMessage(c, ts: targetTs, authors: []),
+              c.msgs[i].isPoll, !c.msgs[i].deleted, !c.msgs[i].poll.ended else { return nil }
+        guard convs[key]!.msgs[i].poll.applyVote(voter: voter, options: options, voteCount: voteCount) else { return nil }
+        return Records.pollUpdate(key, convs[key]!.msgs[i])
+    }
+
+    /// The author closed the poll: no more votes.
+    public mutating func applyPollTerminate(_ key: String, targetTs: Int64, authors: [String]) -> JSON? {
+        guard let c = convs[key], let i = findMessage(c, ts: targetTs, authors: authors),
+              c.msgs[i].isPoll, !c.msgs[i].poll.ended else { return nil }
+        convs[key]!.msgs[i].poll.ended = true
+        return Records.pollUpdate(key, convs[key]!.msgs[i])
+    }
+
+    /// View Once media was opened: the reference is dropped for good. Returns the record to persist.
+    public mutating func markViewOnceViewed(_ key: String, ts: Int64, authors: [String]) -> JSON? {
+        guard let c = convs[key], let i = findMessage(c, ts: ts, authors: authors), c.msgs[i].viewOnce,
+              !c.msgs[i].viewOnceViewed else { return nil }
+        convs[key]!.msgs[i].viewOnceViewed = true
+        convs[key]!.msgs[i].attachments = []
+        return Records.viewOnceUpdate(key, convs[key]!.msgs[i])
+    }
+
     /// Delete for everyone (ours or the author's): the message turns into a placeholder.
     /// Authors empty => match by timestamp only. Returns the record for the history, nil if nothing changed.
     public mutating func applyDelete(_ key: String, targetTs: Int64, authors: [String]) -> JSON? {

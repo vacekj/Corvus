@@ -199,6 +199,15 @@ struct AppCommands: Commands {
             Button("Search this conversation") { model.openSearch() }
                 .keyboardShortcut("f")
                 .disabled(model.current == nil)
+            Button("Media, files and links") { model.galleryShown = true }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(model.current == nil)
+            Button("New poll …") { model.pollComposerShown = true }
+                .disabled(model.current == nil || !model.connected)
+            Button("Stories") { model.storiesShown = true }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+            Button("Add sticker pack …") { Task { await model.addStickerPack() } }
+                .disabled(!model.connected)
         }
         CommandMenu("Conversation") {
             ForEach(1..<10) { n in

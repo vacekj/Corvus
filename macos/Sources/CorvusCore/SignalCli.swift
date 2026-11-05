@@ -40,6 +40,7 @@ public final class SignalCli {
     public var executable = ""
 
     public var onEnvelope: ((JSON) -> Void)?
+    public var onCallEvent: ((JSON) -> Void)?
     public var onStopped: ((String) -> Void)?
     public var onLogLine: ((String) -> Void)?
 
@@ -89,7 +90,9 @@ public final class SignalCli {
     nonisolated public static func childEnvironment(_ base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var env = base
         var path = (env["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":").map(String.init)
-        for extra in ["/opt/homebrew/bin", "/usr/local/bin"] where !path.contains(extra) {
+        // ~/.cargo/bin: `cargo install` puts signal-call-tunnel (needed for voice calls) there.
+        let cargo = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".cargo/bin").path
+        for extra in ["/opt/homebrew/bin", "/usr/local/bin", cargo] where !path.contains(extra) {
             path.append(extra)
         }
         env["PATH"] = path.joined(separator: ":")
@@ -348,6 +351,11 @@ public final class SignalCli {
             var env = jsonObject(params["envelope"])
             if env.isEmpty { env = jsonObject(jsonObject(params["result"])["envelope"]) }
             if !env.isEmpty { onEnvelope?(env) }
+        } else if jsonString(o["method"]) == "callEvent" {
+            // Voice calls (signal-cli 0.14.2+, after subscribeCallEvents): {"subscription": n, "result": {...}}
+            let params = jsonObject(o["params"])
+            let ev = jsonObject(params["result"])
+            if !ev.isEmpty { onCallEvent?(ev) }
         }
     }
 
