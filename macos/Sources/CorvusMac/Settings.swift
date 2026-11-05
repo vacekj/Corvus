@@ -53,6 +53,7 @@ struct Appearance: Equatable {
     var inText: String?
     var radius = 16           // bubble corner radius in points
     var showAvatars = true    // contact avatars in the chat list
+    var generateLinkPreviews = true // preview card for the first https link of a message you send
 
     static let colorKeys: [(String, WritableKeyPath<Appearance, String?>)] = [
         ("background", \.background), ("outBg", \.outBg), ("outText", \.outText), ("inBg", \.inBg), ("inText", \.inText),
@@ -103,6 +104,9 @@ struct Appearance: Equatable {
         }
         if d.object(forKey: prefix + "radius") != nil { a.radius = min(28, max(0, d.integer(forKey: prefix + "radius"))) }
         if d.object(forKey: prefix + "showAvatars") != nil { a.showAvatars = d.bool(forKey: prefix + "showAvatars") }
+        if d.object(forKey: prefix + "generateLinkPreviews") != nil {
+            a.generateLinkPreviews = d.bool(forKey: prefix + "generateLinkPreviews")
+        }
         return a
     }
 
@@ -114,6 +118,7 @@ struct Appearance: Equatable {
         }
         if radius == 16 { d.removeObject(forKey: p + "radius") } else { d.set(radius, forKey: p + "radius") }
         if showAvatars { d.removeObject(forKey: p + "showAvatars") } else { d.set(false, forKey: p + "showAvatars") }
+        if generateLinkPreviews { d.removeObject(forKey: p + "generateLinkPreviews") } else { d.set(false, forKey: p + "generateLinkPreviews") }
     }
 }
 

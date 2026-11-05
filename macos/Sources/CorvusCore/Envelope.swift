@@ -229,6 +229,7 @@ private func parseBody(_ dm: JSON, _ out: inout ParsedEnvelope, envelopeTs: Int6
     out.msg.text = jsonString(dm["message"])
     out.mentions = parseMentions(dm)
     out.msg.attachments = parseAttachments(dm)
+    if !out.msg.viewOnce { out.msg.linkPreview = parseLinkPreview(dm) }
     // Sticker: {"sticker": {"packId": "<hex>", "stickerId": 3}}
     let sticker = jsonObject(dm["sticker"])
     if !sticker.isEmpty {

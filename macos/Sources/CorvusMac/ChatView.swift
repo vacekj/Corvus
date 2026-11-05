@@ -368,6 +368,7 @@ private struct Bubble: View {
                                 .tint(m.outgoing ? fg : Theme.signalBlue)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
+                        if m.linkPreview.isValid { LinkPreviewCard(preview: m.linkPreview, foreground: fg) }
                     }
                     MetaRow(message: m, pending: pending, color: fg.opacity(0.7))
                 }

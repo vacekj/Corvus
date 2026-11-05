@@ -50,6 +50,7 @@ final class AppModel {
     var composerFocusRequest = 0    // incremented to put the caret into the composer
     var composerCursorToEnd = 0
     private var drafts: [String: Draft] = [:]
+    let linkDraft = LinkPreviewDraft()  // preview of the link in the composer text
 
     // search in the current conversation
     var searchVisible = false
@@ -1052,6 +1053,10 @@ final class AppModel {
             showFlash("Not connected to signal-cli.", seconds: 5)
             return
         }
+        if sticker == nil && linkDraft.isPending(for: text) { // the link preview is still loading
+            deferSendForLinkPreview()
+            return
+        }
         let files = sticker == nil ? pendingFiles : [], quote = replyQuote, gifAnalytics = pendingGifAnalyticsUrl
         let voiceNote = voiceNoteNext && sticker == nil
         voiceNoteNext = false
@@ -1088,6 +1093,8 @@ final class AppModel {
             p["quoteAuthor"] = quote.authorKey
             p["quoteMessage"] = quote.text
         }
+        let linkPreview = viewOnce ? nil : linkPreviewForSend(text: text, stageDir: staged.dir)
+        if let linkPreview { p.merge(linkPreview.params) { $1 } }
         addRecipient(&p, c)
 
         // Insert a temporary local message before waiting for signal-cli. It is kept out of
@@ -1103,6 +1110,7 @@ final class AppModel {
         preview.quote = quote
         preview.attachments = sticker.map { [$0] } ?? atts
         preview.viewOnce = viewOnce
+        if let linkPreview { preview.linkPreview = linkPreview.preview }
 
         let pendingId = UUID().uuidString
         var pending = PendingSend()
@@ -1115,6 +1123,7 @@ final class AppModel {
         if sticker == nil {
             composerText = ""
             pendingFiles = []
+            linkDraft.reset()
         }
         replyQuote = Quote()
         if !files.isEmpty { showFlash("Sending …", seconds: 120) }
@@ -1383,6 +1392,7 @@ final class AppModel {
         guard let c = chats.convs[key], let mi = chats.findMessage(c, ts: ts, authors: [author]) else { return }
         let m = c.msgs[mi]
         if m.viewOnce { return } // View Once media never gets a stored preview
+        fetchLinkPreviewThumbnail(key, ts: ts, author: author, attempt: attempt)
         for (a, att) in m.attachments.enumerated() {
             if !att.isImage || !att.thumb.isEmpty || att.id.isEmpty || att.size > Media.maxThumbSource { continue }
             let token = "\(key)|\(ts)|\(author)|\(a)"

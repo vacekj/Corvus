@@ -20,6 +20,9 @@ struct ComposerArea: View {
                              title: "Replying to \(model.displayName(model.replyQuote.authorKey))",
                              text: replyText, accent: Theme.senderColor(model.replyQuote.authorKey)) { model.replyQuote = Quote() }
             }
+            if let lp = model.linkDraft.visiblePreview {
+                LinkPreviewChip(preview: lp) { model.linkDraft.dismiss() }
+            }
             if !model.pendingFiles.isEmpty {
                 AttachmentTray(files: model.pendingFiles) { f in
                     model.pendingFiles.removeAll { $0 == f }
@@ -110,6 +113,7 @@ struct ComposerArea: View {
             }
         }
         .sheet(isPresented: $model.pollComposerShown) { PollComposerSheet() }
+        .modifier(LinkPreviewTriggers())
         .onChange(of: model.canSendViewOnce) { _, ok in if !ok { model.viewOnceNext = false } }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
