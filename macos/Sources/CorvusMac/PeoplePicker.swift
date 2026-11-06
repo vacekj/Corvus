@@ -9,10 +9,19 @@ struct PickerPerson: Identifiable, Equatable {
     let detail: String      // phone number / username, empty when the title already shows it
     let avatar: NSImage
     let lastTs: Int64       // last message in the chat, 0 if none
+    var activity: Double = 0 // how much the user has been writing with them lately (PickerRanking.activity)
     var id: String { key }
 
     static func == (a: PickerPerson, b: PickerPerson) -> Bool {
         a.key == b.key && a.title == b.title && a.detail == b.detail && a.avatar === b.avatar && a.lastTs == b.lastTs
+            && a.activity == b.activity
+    }
+
+    /// Most written with lately first, then most recent, then by name.
+    static func busierFirst(_ a: PickerPerson, _ b: PickerPerson) -> Bool {
+        if a.activity != b.activity { return a.activity > b.activity }
+        if a.lastTs != b.lastTs { return a.lastTs > b.lastTs }
+        return a.title.localizedStandardCompare(b.title) == .orderedAscending
     }
 
     func matches(_ q: String, digits: String) -> Bool {
@@ -23,29 +32,41 @@ struct PickerPerson: Identifiable, Equatable {
 }
 
 extension AppModel {
-    /// Most recently contacted first, then by name.
+    /// The people the user writes with most lately first (see `PickerPerson.busierFirst`). A person known
+    /// both by number and by UUID (a chat from before the number was known) is listed once.
     func pickerPeople() -> [PickerPerson] {
         func detail(_ key: String, title: String) -> String {
-            let uuidLike = key.count == 36 && key.filter({ $0 == "-" }).count == 4
-            return key == title || uuidLike ? "" : key
+            key == title || People.isServiceId(key) ? "" : key
         }
+        let now = nowMs()
+        var numberOf: [String: String] = [:]
+        for e in roster.contacts where !e.uuid.isEmpty && !e.number.isEmpty { numberOf[e.uuid] = e.number }
         var out: [String: PickerPerson] = [:]
+        func add(_ p: PickerPerson) {
+            let k = numberOf[p.key] ?? p.key
+            guard let other = out[k] else { out[k] = p; return }
+            // The chat written in most is the one to open; it takes the activity of both.
+            let (main, rest) = PickerPerson.busierFirst(p, other) ? (p, other) : (other, p)
+            out[k] = PickerPerson(key: main.key, title: main.title, detail: main.detail.isEmpty ? rest.detail : main.detail,
+                                  avatar: main.avatar, lastTs: max(main.lastTs, rest.lastTs), activity: main.activity + rest.activity)
+        }
         for c in chats.convs.values where !c.isGroup && !c.key.isEmpty && c.key != account && !isBlocked(c.key) {
             let t = title(c)
-            out[c.key] = PickerPerson(key: c.key, title: t, detail: detail(c.key, title: t), avatar: avatarImage(c),
-                                      lastTs: c.msgs.last?.ts ?? 0)
+            add(PickerPerson(key: c.key, title: t, detail: detail(c.key, title: t), avatar: avatarImage(c),
+                             lastTs: c.msgs.last?.ts ?? 0, activity: PickerRanking.activity(c.msgs.reversed().lazy.map(\.ts), now: now)))
         }
         for e in roster.pickableContacts {
             let k = chats.resolveKey(e.key)
-            guard !k.isEmpty, out[k] == nil, k != account, !isBlocked(k) else { continue }
+            guard !k.isEmpty, out[k] == nil, out[numberOf[k] ?? k] == nil, chats.convs[k] == nil, k != account, !isBlocked(k)
+            else { continue }
             let named = chats.displayName(k)
             let t = named.isEmpty ? e.title : named
-            out[k] = PickerPerson(key: k, title: t, detail: detail(k, title: t),
-                                  avatar: avatars[k] ?? Media.placeholderAvatar(key: k, title: t), lastTs: 0)
+            // A contact known only by UUID with the same name as someone the user has a chat with is that person.
+            if People.isServiceId(k), out.values.contains(where: { $0.title == t }) { continue }
+            add(PickerPerson(key: k, title: t, detail: detail(k, title: t),
+                             avatar: avatars[k] ?? Media.placeholderAvatar(key: k, title: t), lastTs: 0))
         }
-        return out.values.sorted { a, b in
-            a.lastTs != b.lastTs ? a.lastTs > b.lastTs : a.title.localizedStandardCompare(b.title) == .orderedAscending
-        }
+        return out.values.sorted(by: PickerPerson.busierFirst)
     }
 }
 

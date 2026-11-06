@@ -44,14 +44,14 @@ extension AppModel {
     func switcherEntries() -> [PickerPerson] {
         var list = pickerPeople()
         for c in chats.convs.values where c.isGroup && !isBlocked(c.key) {
-            list.append(PickerPerson(key: c.key, title: title(c), detail: "Group", avatar: avatarImage(c), lastTs: c.msgs.last?.ts ?? 0))
+            list.append(PickerPerson(key: c.key, title: title(c), detail: "Group", avatar: avatarImage(c), lastTs: c.msgs.last?.ts ?? 0,
+                                     activity: PickerRanking.activity(c.msgs.reversed().lazy.map(\.ts), now: nowMs())))
         }
         if !account.isEmpty, let me = chats.convs[account] {
-            list.append(PickerPerson(key: me.key, title: title(me), detail: "", avatar: avatarImage(me), lastTs: me.msgs.last?.ts ?? 0))
+            list.append(PickerPerson(key: me.key, title: title(me), detail: "", avatar: avatarImage(me), lastTs: me.msgs.last?.ts ?? 0,
+                                     activity: PickerRanking.activity(me.msgs.reversed().lazy.map(\.ts), now: nowMs())))
         }
-        return list.sorted { a, b in
-            a.lastTs != b.lastTs ? a.lastTs > b.lastTs : a.title.localizedStandardCompare(b.title) == .orderedAscending
-        }
+        return list.sorted(by: PickerPerson.busierFirst)
     }
 
     /// Opens a chat picked by keyboard (switcher, search): an archived chat opens in the archive folder,
@@ -130,16 +130,24 @@ private struct QuickSwitcherPanel: View {
     private func matches(_ q: String) -> [PickerPerson] {
         if q.isEmpty { return Array(entries.prefix(Self.limit)) }
         let digits = q.filter(\.isNumber)
-        let scored = entries.compactMap { p -> (PickerPerson, Int)? in
+        // Match quality only coarsely (a name or word starting with the query beats one containing it, which
+        // beats a scattered match), then who the user writes with most: "domi" finds the Dominik you talk to.
+        let scored = entries.compactMap { p -> (p: PickerPerson, tier: Int, score: Int)? in
             var best = FuzzyMatch.score(q, p.title)
-            if let d = FuzzyMatch.score(q, p.detail), p.detail != "Group" { best = max(best ?? d, d - 100) }
-            if best == nil, digits.count >= 3, p.key.filter(\.isNumber).contains(digits) { best = 1 }
-            return best.map { (p, $0) }
+            var tier = best == nil ? -1 : PickerRanking.tier(q, p.title)
+            if p.detail != "Group", let d = FuzzyMatch.score(q, p.detail) {
+                best = max(best ?? d, d - 100)
+                tier = max(tier, PickerRanking.tier(q, p.detail))
+            }
+            if best == nil, digits.count >= 3, p.key.filter(\.isNumber).contains(digits) { best = 1; tier = 1 }
+            return best.map { (p, tier, $0) }
         }
-        // Equal scores keep the recency order (`entries` is sorted, the sort is stable enough for ties).
-        return scored.enumerated().sorted { a, b in
-            a.element.1 != b.element.1 ? a.element.1 > b.element.1 : a.offset < b.offset
-        }.prefix(Self.limit).map(\.element.0)
+        return scored.sorted { a, b in
+            if a.tier != b.tier { return a.tier > b.tier }
+            if a.p.activity != b.p.activity { return a.p.activity > b.p.activity }
+            if a.p.lastTs != b.p.lastTs { return a.p.lastTs > b.p.lastTs }
+            return a.score > b.score
+        }.prefix(Self.limit).map(\.p)
     }
 
     var body: some View {
