@@ -53,7 +53,7 @@ extension AppModel {
         for c in chats.convs.values where !c.isGroup && !c.key.isEmpty && c.key != account && !isBlocked(c.key) {
             let t = title(c)
             add(PickerPerson(key: c.key, title: t, detail: detail(c.key, title: t), avatar: avatarImage(c),
-                             lastTs: c.msgs.last?.ts ?? 0, activity: PickerRanking.activity(c.msgs.reversed().lazy.map(\.ts), now: now)))
+                             lastTs: c.msgs.last?.ts ?? 0, activity: PickerRanking.activity(c.msgs.reversed().lazy.map { ($0.ts, $0.outgoing) }, now: now)))
         }
         for e in roster.pickableContacts {
             let k = chats.resolveKey(e.key)
@@ -65,6 +65,16 @@ extension AppModel {
             if People.isServiceId(k), out.values.contains(where: { $0.title == t }) { continue }
             add(PickerPerson(key: k, title: t, detail: detail(k, title: t),
                              avatar: avatars[k] ?? Media.placeholderAvatar(key: k, title: t), lastTs: 0))
+        }
+        // A chat kept under a UUID (from before the number was known) next to the numbered chat of a
+        // person with the same name: one person.
+        for (k, p) in out where People.isServiceId(p.key) {
+            guard let (ok, other) = out.first(where: { $0.key != k && !People.isServiceId($0.value.key) && $0.value.title == p.title })
+            else { continue }
+            out.removeValue(forKey: k)
+            let (main, rest) = PickerPerson.busierFirst(p, other) ? (p, other) : (other, p)
+            out[ok] = PickerPerson(key: main.key, title: main.title, detail: other.detail, avatar: other.avatar,
+                                   lastTs: max(main.lastTs, rest.lastTs), activity: main.activity + rest.activity)
         }
         return out.values.sorted(by: PickerPerson.busierFirst)
     }

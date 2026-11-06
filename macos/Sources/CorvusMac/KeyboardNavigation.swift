@@ -45,11 +45,11 @@ extension AppModel {
         var list = pickerPeople()
         for c in chats.convs.values where c.isGroup && !isBlocked(c.key) {
             list.append(PickerPerson(key: c.key, title: title(c), detail: "Group", avatar: avatarImage(c), lastTs: c.msgs.last?.ts ?? 0,
-                                     activity: PickerRanking.activity(c.msgs.reversed().lazy.map(\.ts), now: nowMs())))
+                                     activity: PickerRanking.activity(c.msgs.reversed().lazy.map { ($0.ts, $0.outgoing) }, now: nowMs())))
         }
         if !account.isEmpty, let me = chats.convs[account] {
             list.append(PickerPerson(key: me.key, title: title(me), detail: "", avatar: avatarImage(me), lastTs: me.msgs.last?.ts ?? 0,
-                                     activity: PickerRanking.activity(me.msgs.reversed().lazy.map(\.ts), now: nowMs())))
+                                     activity: PickerRanking.activity(me.msgs.reversed().lazy.map { ($0.ts, $0.outgoing) }, now: nowMs())))
         }
         return list.sorted(by: PickerPerson.busierFirst)
     }

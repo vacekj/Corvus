@@ -105,14 +105,15 @@ public enum PickerRanking {
         return n.contains(q) ? 1 : 0
     }
 
-    /// Recent messaging: every message of the last 90 days counts, newer ones more (half-life 14 days).
-    /// `times` are message timestamps (ms), newest first; at most 400 are looked at.
-    public static func activity<S: Sequence>(_ times: S, now: Int64) -> Double where S.Element == Int64 {
+    /// Recent messaging: every message of the last 90 days counts, newer ones more (half-life 14 days),
+    /// and the user's own messages count most (who the user writes to, not who writes the most).
+    /// `messages` are (timestamp ms, outgoing), newest first; at most 2000 are looked at.
+    public static func activity<S: Sequence>(_ messages: S, now: Int64) -> Double where S.Element == (Int64, Bool) {
         let day = 86_400_000.0, horizon = now - 90 * 86_400_000
         var sum = 0.0
-        for (i, t) in times.enumerated() {
-            if i >= 400 || t < horizon { break }
-            sum += pow(0.5, max(0, Double(now - t)) / (14 * day))
+        for (i, (t, outgoing)) in messages.enumerated() {
+            if i >= 2000 || t < horizon { break }
+            sum += (outgoing ? 1 : 0.25) * pow(0.5, max(0, Double(now - t)) / (14 * day))
         }
         return sum
     }
