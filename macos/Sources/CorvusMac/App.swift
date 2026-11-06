@@ -217,8 +217,8 @@ struct AppCommands: Commands {
                 .disabled(model.current == nil || !model.connected)
             Button("Stories") { model.storiesShown = true }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-            Button("Add sticker pack …") { Task { await model.addStickerPack() } }
-                .disabled(!model.connected)
+            Button("Add sticker pack …") { model.requestStickerPackAdd() }
+                .disabled(!model.connected || model.current == nil)
         }
         CommandMenu("Conversation") {
             ForEach(1..<10) { n in
@@ -232,13 +232,9 @@ struct AppCommands: Commands {
             Button("Group info …") { if let key = model.current { model.showGroupInfo(key) } }
                 .disabled(model.currentConversation?.isGroup != true)
         }
-        CommandGroup(after: .appSettings) {
-            Button("History protection …") { Task { await model.changeHistoryProtection() } }
-            Button("GIPHY API key …") { Task { await model.configureGiphyApiKey() } }
-            Button("Path to signal-cli …") { model.chooseExecutable() }
-        }
         CommandGroup(replacing: .help) {
             Button("Check for signal-cli update") { model.checkForUpdates(silent: false) }
+            Button("Voice call setup …") { Task { await model.showCallSetup() } }
             Button("signal-cli on GitHub") { NSWorkspace.shared.open(URL(string: "https://github.com/AsamK/signal-cli")!) }
         }
     }

@@ -7,6 +7,7 @@ struct ComposerArea: View {
     @Environment(AppModel.self) private var model
     @State private var emojiShown = false
     @State private var stickersShown = false
+    @State private var gifsShown = false
 
     var body: some View {
         @Bindable var model = model
@@ -51,7 +52,7 @@ struct ComposerArea: View {
                 .padding(.trailing, 4)
                 .background(RoundedRectangle(cornerRadius: 17, style: .continuous).fill(Theme.field))
 
-                Button { Task { await model.searchGifs() } } label: {
+                Button { gifsShown.toggle() } label: {
                     Text("GIF")
                         .font(.system(size: 10, weight: .heavy))
                         .padding(.horizontal, 4)
@@ -60,6 +61,9 @@ struct ComposerArea: View {
                         .frame(width: 30, height: 34)
                 }
                 .help("Search GIPHY GIFs")
+                .popover(isPresented: $gifsShown, arrowEdge: .top) {
+                    GifPopover { gifsShown = false }
+                }
                 Button { stickersShown.toggle() } label: {
                     Image(systemName: "seal").font(.system(size: 17)).frame(width: 30, height: 34)
                 }
@@ -67,6 +71,7 @@ struct ComposerArea: View {
                 .popover(isPresented: $stickersShown, arrowEdge: .top) {
                     StickerPicker { stickersShown = false }
                 }
+                .onChange(of: model.stickerPackAddRequest) { stickersShown = true }
                 Menu {
                     Button { model.chooseAttachments() } label: { Label("Attach files …", systemImage: "paperclip") }
                     Button { model.pollComposerShown = true } label: { Label("Poll …", systemImage: "chart.bar.xaxis") }
@@ -115,6 +120,7 @@ struct ComposerArea: View {
         .sheet(isPresented: $model.pollComposerShown) { PollComposerSheet() }
         .modifier(LinkPreviewTriggers())
         .onChange(of: model.canSendViewOnce) { _, ok in if !ok { model.viewOnceNext = false } }
+        .onChange(of: model.composerText) { old, new in model.composerTextChanged(old: old, new: new) }
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .background(Theme.chrome)

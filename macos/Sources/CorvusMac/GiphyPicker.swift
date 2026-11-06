@@ -5,7 +5,7 @@ import SwiftUI
 struct GiphyPicker: View {
     let apiKey: String
     let onSelect: (URL, URL?) -> Void
-    @Environment(\.dismiss) private var dismiss
+    var onChangeKey: (() -> Void)?
 
     struct Gif: Identifiable {
         let id: String
@@ -30,10 +30,9 @@ struct GiphyPicker: View {
                 .onChange(of: query) { _, _ in run(debounce: true) }
             Text(status).font(.caption).foregroundStyle(.secondary)
             ScrollView {
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(150), spacing: 6), count: 3), spacing: 6) {
+                LazyVGrid(columns: Array(repeating: GridItem(.fixed(140), spacing: 6), count: 3), spacing: 6) {
                     ForEach(gifs) { g in
                         Button {
-                            dismiss()
                             onSelect(g.original, g.sentAnalytics)
                         } label: {
                             ZStack {
@@ -44,7 +43,7 @@ struct GiphyPicker: View {
                                     ProgressView().controlSize(.small)
                                 }
                             }
-                            .frame(width: 150, height: 120)
+                            .frame(width: 140, height: 110)
                             .clipShape(RoundedRectangle(cornerRadius: 6))
                         }
                         .buttonStyle(.plain)
@@ -57,11 +56,13 @@ struct GiphyPicker: View {
             HStack {
                 Link("Powered by GIPHY", destination: URL(string: "https://giphy.com")!).font(.caption)
                 Spacer()
-                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                if let onChangeKey {
+                    Button("Change API key …", action: onChangeKey).buttonStyle(.link).font(.caption)
+                }
             }
         }
-        .padding()
-        .frame(width: 500, height: 520)
+        .padding(12)
+        .frame(width: 456, height: 440)
         .onAppear { run(debounce: false) }
         .onDisappear { searchTask?.cancel() }
     }

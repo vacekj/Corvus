@@ -79,7 +79,7 @@ struct PickerRow: View {
 }
 
 /// Arrow keys move, Return picks: shared by both pickers.
-private struct PickerKeys: ViewModifier {
+struct PickerKeys: ViewModifier {
     let count: Int
     @Binding var index: Int
     let pick: () -> Void

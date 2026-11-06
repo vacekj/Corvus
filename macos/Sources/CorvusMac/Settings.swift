@@ -160,3 +160,23 @@ enum AppPaths {
         return dir
     }()
 }
+
+/// Settings → Privacy. Both are off unless the user turns them on (Corvus never sent them before).
+struct PrivacySettings: Equatable {
+    var readReceipts = false          // tell senders when their messages were read
+    var typingIndicators = false      // show others when you are typing
+
+    private static let prefix = "privacy."
+
+    static func load(_ d: UserDefaults = .standard) -> PrivacySettings {
+        var p = PrivacySettings()
+        p.readReceipts = d.bool(forKey: prefix + "readReceipts")
+        p.typingIndicators = d.bool(forKey: prefix + "typingIndicators")
+        return p
+    }
+
+    func save(_ d: UserDefaults = .standard) {
+        d.set(readReceipts, forKey: PrivacySettings.prefix + "readReceipts")
+        d.set(typingIndicators, forKey: PrivacySettings.prefix + "typingIndicators")
+    }
+}

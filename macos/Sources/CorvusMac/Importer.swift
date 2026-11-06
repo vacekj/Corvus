@@ -110,22 +110,22 @@ extension AppModel {
                                     + "Signal Desktop's data is not changed. macOS may ask you to allow access to the \u{201C}Signal Safe Storage\u{201D} keychain item.\n\n"
                                     + "Imported attachments stay encrypted in the Corvus data folder.",
                                     ok: "Import") else { return }
-        showFlash("Importing the Signal Desktop history …", seconds: 600)
+        importProgress = .running
         do {
             let account = chats.account
             let (records, _) = try await Task.detached(priority: .userInitiated) { try await DesktopImport.run(account: account) }.value
             let sum = chats.mergeImported(records)
             listChanged()
-            guard rewriteHistory("save the imported history") else { return }
+            guard rewriteHistory("save the imported history") else {
+                importProgress = .failed("The imported history could not be saved.")
+                return
+            }
             DesktopImport.writeReport(chats)
-            showFlash("Imported \(sum.messagesAdded) messages", seconds: 4)
-            await Dialogs.info("Import finished",
-                               "\(sum.messagesAdded) messages and \(sum.reactionsAdded) reactions were added "
-                               + "(\(sum.messagesKnown) messages were already in Corvus, \(sum.receiptsUpdated) of them got their delivery or read state); "
-                               + "\(sum.conversationsAdded) new chats.")
+            importProgress = .finished("\(sum.messagesAdded) messages and \(sum.reactionsAdded) reactions were added "
+                + "(\(sum.messagesKnown) messages were already in Corvus, \(sum.receiptsUpdated) of them got their delivery or read state); "
+                + "\(sum.conversationsAdded) new chats.")
         } catch {
-            showFlash("Import failed", seconds: 3)
-            await Dialogs.error("Import from Signal Desktop", error.localizedDescription)
+            importProgress = .failed(error.localizedDescription)
         }
     }
 }

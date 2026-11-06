@@ -79,20 +79,21 @@ extension AppModel {
         sendMessage(sticker: Attachment.sticker(packId: packId, stickerId: stickerId))
     }
 
-    func addStickerPack() async {
-        guard let uri = await Dialogs.text("Add sticker pack",
-                                           "Paste a sticker pack link (https://signal.art/addstickers/#pack_id=…&pack_key=…):")?
-            .trimmingCharacters(in: .whitespacesAndNewlines), !uri.isEmpty else { return }
-        guard uri.hasPrefix("https://signal.art/addstickers/") || uri.hasPrefix("sgnl://addstickers/") else {
-            showFlash("That is not a Signal sticker pack link.", seconds: 6)
-            return
-        }
+    /// Opens the sticker picker of the composer with the "add pack" field shown (menu command).
+    func requestStickerPackAdd() {
+        stickerPackAddPending = true
+        stickerPackAddRequest += 1
+    }
+
+    /// Installs a pack from a signal.art link; returns an error message on failure.
+    func addStickerPack(_ link: StickerPackLink) async -> String? {
         do {
-            try await cli.call("addStickerPack", ["uri": uri])
+            try await cli.call("addStickerPack", ["uri": link.uri])
             showFlash("Sticker pack added.", seconds: 5)
             loadStickerPacks()
+            return nil
         } catch {
-            showFlash("Could not add the sticker pack: \(error.localizedDescription)")
+            return "Could not add the sticker pack: \(error.localizedDescription)"
         }
     }
 
@@ -181,9 +182,10 @@ extension AppModel {
                 if att.isVideo {
                     let suffix = AttachmentPolicy.mediaSuffix(filename: att.filename, contentType: att.contentType, fallback: "mp4")
                     let url = try Media.writeAttachmentTemp(data, name: "view-once." + suffix)
-                    ViewOnceWindow.showVideo(url)
+                    ImageViewerWindow.showViewOnce(video: url)
                 } else {
-                    ViewOnceWindow.showImage(data)
+                    guard NSImage(data: data) != nil else { throw RpcError("The picture could not be shown.") }
+                    ImageViewerWindow.showViewOnce(image: data)
                 }
                 if let rec = chats.markViewOnceViewed(key, ts: m.ts, authors: [author]) {
                     // Rewrite instead of append, so the attachment reference is really gone from the file.
@@ -515,58 +517,6 @@ extension AppModel {
         panel.allowedContentTypes = [.image, .movie]
         panel.allowsMultipleSelection = false
         return panel.runModal() == .OK ? panel.url?.path : nil
-    }
-}
-
-// MARK: - View Once viewer
-
-/// View Once media is shown in a window that cannot save or copy it; closing it ends the view.
-@MainActor
-enum ViewOnceWindow {
-    private static var windows: [NSWindow] = []
-
-    static func showImage(_ data: Data) {
-        guard let image = NSImage(data: data) else { return }
-        present(NSHostingView(rootView: Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
-            .frame(maxWidth: .infinity, maxHeight: .infinity).background(Color.black)), size: image.size)
-    }
-
-    static func showVideo(_ url: URL) {
-        let player = AVPlayer(url: url)
-        let view = NSHostingView(rootView: ViewOnceVideo(player: player))
-        present(view, size: NSSize(width: 720, height: 480)) {
-            player.pause()
-            try? FileManager.default.removeItem(at: url)
-        }
-        player.play()
-    }
-
-    private static func present(_ view: NSView, size: NSSize, onClose: (() -> Void)? = nil) {
-        let screen = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1200, height: 800)
-        let scale = min(1, screen.width * 0.8 / max(size.width, 1), screen.height * 0.8 / max(size.height, 1))
-        let s = NSSize(width: max(320, size.width * scale), height: max(240, size.height * scale))
-        let w = NSWindow(contentRect: NSRect(origin: .zero, size: s), styleMask: [.titled, .closable, .resizable],
-                         backing: .buffered, defer: false)
-        w.title = "View once"
-        w.sharingType = .none // keep the media out of screenshots and screen sharing
-        w.contentView = view
-        w.isReleasedWhenClosed = false
-        w.center()
-        w.makeKeyAndOrderFront(nil)
-        windows.append(w)
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
-            MainActor.assumeIsolated {
-                onClose?()
-                windows.removeAll { $0 === w }
-            }
-        }
-    }
-}
-
-private struct ViewOnceVideo: View {
-    let player: AVPlayer
-    var body: some View {
-        AVPlayerViewRepresentable(player: player).background(Color.black)
     }
 }
 

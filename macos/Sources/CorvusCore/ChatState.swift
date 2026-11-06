@@ -131,6 +131,12 @@ public struct ChatState {
                 ensure(key, title: key, group: group)
                 convs[key]!.archived = jsonBool(o["v"])
                 convs[key]!.sigArchived = jsonBool(o["s"])
+            case "pin":
+                ensure(key, title: key, group: group)
+                convs[key]!.pinned = jsonBool(o["v"])
+            case "mu":
+                ensure(key, title: key, group: group)
+                convs[key]!.markedUnread = jsonBool(o["v"])
             default:
                 break
             }
@@ -146,6 +152,8 @@ public struct ChatState {
             if !c.localNickname.isEmpty { out.append(Records.nickname(c.key, c.localNickname)) }
             if c.archived || c.sigArchived { out.append(Records.archive(c.key, archived: c.archived, sigArchived: c.sigArchived)) }
             if c.muted { out.append(Records.mute(c.key, true)) }
+            if c.pinned { out.append(Records.pin(c.key, true)) }
+            if c.markedUnread { out.append(Records.markedUnread(c.key, true)) }
             out.append(Records.expiration(c.key, c.expirationSeconds))
             for m in c.msgs where !isPendingPreview(c.key, ts: m.ts) {
                 out.append(Records.message(c.key, m))
@@ -367,9 +375,10 @@ public struct ChatState {
 
     // MARK: - Sorting for the chat list
 
-    /// Conversations of one folder, newest activity first.
+    /// Conversations of one folder: pinned chats first, then newest activity first.
     public func sortedConversations(archived: Bool) -> [Conversation] {
         convs.values.filter { $0.archived == archived }.sorted { a, b in
+            if a.pinned != b.pinned { return a.pinned }
             if a.lastTs != b.lastTs { return a.lastTs > b.lastTs }
             return a.title.localizedStandardCompare(b.title) == .orderedAscending
         }

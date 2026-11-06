@@ -195,4 +195,6 @@ public enum Records {
     public static func expiration(_ conv: String, _ seconds: Int) -> JSON { ["t": "e", "c": conv, "v": seconds] }
     public static func name(_ conv: String, _ n: String) -> JSON { ["t": "n", "c": conv, "n": n] }
     public static func nickname(_ conv: String, _ n: String) -> JSON { ["t": "p", "c": conv, "n": n] }
+    public static func pin(_ conv: String, _ pinned: Bool) -> JSON { ["t": "pin", "c": conv, "v": pinned] }
+    public static func markedUnread(_ conv: String, _ marked: Bool) -> JSON { ["t": "mu", "c": conv, "v": marked] }
 }

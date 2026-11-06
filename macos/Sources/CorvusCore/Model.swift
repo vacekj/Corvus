@@ -214,6 +214,8 @@ public struct Conversation: Identifiable {
     public var archived = false       // shown in the "Archived chats" folder
     public var sigArchived = false    // archive state last reported by signal-cli
     public var muted = false          // local "mute notifications"
+    public var pinned = false         // kept at the top of the chat list (local, persisted)
+    public var markedUnread = false   // "Mark as unread" (local, persisted); cleared when the chat is opened
     public var expirationSeconds = 0  // Signal disappearing-message timer; 0 = disabled
 
     public init(key: String = "", title: String = "", isGroup: Bool = false) {
