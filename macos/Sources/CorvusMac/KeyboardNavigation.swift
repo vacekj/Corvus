@@ -62,18 +62,12 @@ extension AppModel {
     func openMessageHit(_ hit: MessageSearchHit, query: String) {
         openPicked(hit.key)
         guard current == hit.key else { return }
-        openSearch()
-        searchText = query
         guard let c = currentConversation,
-              let i = c.msgs.firstIndex(where: { $0.ts == hit.ts && $0.authorKey == hit.authorKey && $0.outgoing == hit.outgoing })
+              let m = c.msgs.first(where: { $0.ts == hit.ts && $0.authorKey == hit.authorKey && $0.outgoing == hit.outgoing })
         else { return }
-        if let pos = searchResults.firstIndex(of: i) { searchPosition = pos }
-        // A list that is being created for this chat scrolls to its end first: ask again once it exists.
-        scrollToMessage(index: i)
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
-            guard let self, self.current == hit.key, self.searchVisible else { return }
-            self.scrollToMessage(index: i)
-        }
+        searchVisible = true
+        searchText = query
+        updateSearch(prefer: m.id)
     }
 }
 

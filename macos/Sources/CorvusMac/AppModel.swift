@@ -1044,7 +1044,7 @@ final class AppModel {
 
     /// Searches the current conversation off the main thread (on a copy of its messages); a newer search
     /// cancels an older one. `selectFirst` jumps to the newest match, otherwise the selected match is kept.
-    func updateSearch(selectFirst: Bool = false, debounce: Bool = false) {
+    func updateSearch(selectFirst: Bool = false, debounce: Bool = false, prefer: String? = nil) {
         searchTask?.cancel()
         let needle = searchText.trimmingCharacters(in: .whitespaces)
         guard !needle.isEmpty, let key = current, let msgs = chats.convs[key]?.msgs else {
@@ -1054,7 +1054,7 @@ final class AppModel {
             if searchBusy { searchBusy = false }
             return
         }
-        let selected = selectFirst ? nil : searchMatchId
+        let selected = prefer ?? (selectFirst ? nil : searchMatchId)
         searchTask = Task { [weak self] in
             if debounce { try? await Task.sleep(for: .milliseconds(150)) }
             guard !Task.isCancelled else { return }
@@ -1070,7 +1070,16 @@ final class AppModel {
             guard let found, current == key else { return }
             searchResults = found
             searchPosition = ChatSearch.position(in: found, keeping: selected)
-            if selectFirst, searchPosition >= 0 { scrollToMessage(id: found[searchPosition]) }
+            if selectFirst || prefer != nil, searchPosition >= 0 {
+                scrollToMessage(id: found[searchPosition])
+                if prefer != nil { // a list that is just being created scrolls to its end first: ask again
+                    let id = found[searchPosition]
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                        guard let self, self.current == key, self.searchVisible, self.searchMatchId == id else { return }
+                        self.scrollToMessage(id: id)
+                    }
+                }
+            }
         }
     }
 

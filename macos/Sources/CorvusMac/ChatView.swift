@@ -412,7 +412,6 @@ private struct MessageRow: View {
     let avatar: NSImage?
     @State private var hovering = false
     @State private var reactionsShown = false
-    @State private var infoShown = false
 
     private var showAvatarColumn: Bool { isGroup && !message.outgoing }
 
@@ -454,7 +453,6 @@ private struct MessageRow: View {
         .frame(width: 70, height: 22)
         .padding(.bottom, 6)
         .animation(.easeOut(duration: 0.12), value: hovering)
-        .sheet(isPresented: $infoShown) { MessageInfoSheet(messageId: message.id) }
     }
 
     private var hoverButtons: some View {
@@ -480,7 +478,7 @@ private struct MessageRow: View {
                 .help("Reply")
             // The same items as the context menu; built only while the pointer is over this message.
             Menu {
-                MessageMenu(message: message) { infoShown = true }
+                MessageMenu(message: message)
             } label: { Image(systemName: "ellipsis") }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
