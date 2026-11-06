@@ -244,6 +244,8 @@ private struct MessageList: View, Equatable {
 
     var body: some View {
         let msgs = conversation.msgs
+        let scrollState = ChatScrollState.of(conversation.key)
+        let divider = scrollState.divider
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
@@ -259,6 +261,7 @@ private struct MessageList: View, Equatable {
                                                 joinedBelow: i + 1 < msgs.count && sameRun(m, msgs[i + 1]))
                         VStack(spacing: 0) {
                             if newDay { DateSeparator(date: m.time) }
+                            if let divider, m.ts == divider.ts && m.authorKey == divider.authorKey { UnreadDivider() }
                             MessageRow(message: m, isGroup: conversation.isGroup, grouping: g,
                                        pending: pendingTs.contains(m.ts),
                                        avatar: conversation.isGroup && !m.outgoing && !g.joinedBelow ? authorAvatar(m) : nil)
@@ -266,15 +269,26 @@ private struct MessageList: View, Equatable {
                         }
                         .id(m.id)
                     }
+                    TypingBubbleRow(key: conversation.key, isGroup: conversation.isGroup)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 12)
+                .background(ScrollPositionObserver(key: conversation.key))
             }
             .defaultScrollAnchor(.bottom)
+            .overlay(alignment: .bottomTrailing) {
+                JumpToBottomButton(state: scrollState) {
+                    guard let id = conversation.msgs.last?.id else { return }
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
+                }
+            }
             .environment(\.conversationKey, conversation.key)
             .background(model.appearance.backgroundColor)
-            .onChange(of: msgs.last?.id) { _, id in
-                guard let id else { return }
+            // New messages scroll into view only while the end of the list is in view (own messages always);
+            // otherwise "↓ N new" counts them.
+            .onChange(of: LastMessageMark(msgs.last)) { old, new in
+                guard scrollState.lastMessageChanged(from: old, to: new) == .scrollToBottom,
+                      let id = conversation.msgs.last?.id else { return }
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
             }
             .onChange(of: model.scrollRequest?.serial) { _, _ in
@@ -394,6 +408,7 @@ private struct MessageRow: View {
     let avatar: NSImage?
     @State private var hovering = false
     @State private var reactionsShown = false
+    @State private var infoShown = false
 
     private var showAvatarColumn: Bool { isGroup && !message.outgoing }
 
@@ -432,9 +447,10 @@ private struct MessageRow: View {
         ZStack {
             if (hovering || reactionsShown) && model.connected && !message.deleted { hoverButtons.transition(.opacity) }
         }
-        .frame(width: 46, height: 22)
+        .frame(width: 70, height: 22)
         .padding(.bottom, 6)
         .animation(.easeOut(duration: 0.12), value: hovering)
+        .sheet(isPresented: $infoShown) { MessageInfoSheet(messageId: message.id) }
     }
 
     private var hoverButtons: some View {
@@ -458,6 +474,14 @@ private struct MessageRow: View {
             Button { model.startReply(message.id) } label: { Image(systemName: "arrowshape.turn.up.left") }
                 .buttonStyle(.borderless)
                 .help("Reply")
+            // The same items as the context menu; built only while the pointer is over this message.
+            Menu {
+                MessageMenu(message: message) { infoShown = true }
+            } label: { Image(systemName: "ellipsis") }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("More")
         }
         .foregroundStyle(.secondary)
     }
@@ -724,12 +748,19 @@ private struct MetaRow: View {
     let message: Message
     let pending: Bool
     let color: Color
+    @Environment(\.messageHovered) private var hovered
 
     var body: some View {
         HStack(spacing: 3) {
             if message.expiresInSeconds > 0 { Image(systemName: "timer") }
             if message.isEdited { Text("Edited") }
-            Text(message.time.formatted(date: .omitted, time: .shortened))
+            // The full date as a tooltip, installed only under the pointer (a tooltip per row costs scrolling).
+            if hovered {
+                Text(message.time.formatted(date: .omitted, time: .shortened))
+                    .help(message.time.formatted(date: .complete, time: .standard))
+            } else {
+                Text(message.time.formatted(date: .omitted, time: .shortened))
+            }
             if message.outgoing {
                 DeliveryTicks(message: message, pending: pending)
             }
@@ -773,6 +804,7 @@ private struct QuoteView: View {
 private struct ReactionsView: View {
     @Environment(AppModel.self) private var model
     let message: Message
+    @State private var whoShown = false
 
     var body: some View {
         let counts = Dictionary(grouping: message.reactions, by: \.value).map { ($0.key, $0.value.map(\.key)) }
@@ -780,7 +812,7 @@ private struct ReactionsView: View {
         HStack(spacing: 4) {
             ForEach(counts, id: \.0) { emoji, who in
                 let mine = who.contains(model.account)
-                Button { model.sendReaction(message.id, emoji) } label: {
+                Button { whoShown = true } label: {
                     HStack(spacing: 3) {
                         Text(emoji).font(.system(size: 14))
                         if who.count > 1 { Text("\(who.count)").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
@@ -794,6 +826,47 @@ private struct ReactionsView: View {
                 .help(who.map(model.displayName).joined(separator: ", "))
             }
         }
+        .popover(isPresented: $whoShown, arrowEdge: .bottom) {
+            ReactorsList(message: message, counts: counts) { whoShown = false }
+        }
+    }
+}
+
+/// Who reacted with what; an own reaction can be taken back here.
+private struct ReactorsList: View {
+    @Environment(AppModel.self) private var model
+    let message: Message
+    let counts: [(String, [String])]
+    let close: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(counts, id: \.0) { emoji, who in
+                    ForEach(who.sorted { model.displayName($0) < model.displayName($1) }, id: \.self) { key in
+                        let mine = key == model.account
+                        HStack(spacing: 8) {
+                            Text(emoji).font(.system(size: 18)).frame(width: 26)
+                            AvatarView(image: model.avatars[key] ?? Media.placeholderAvatar(key: key, title: model.displayName(key)), size: 22)
+                            Text(mine ? "You" : model.displayName(key)).lineLimit(1)
+                            Spacer(minLength: 12)
+                            if mine && model.connected {
+                                Button("Remove") {
+                                    close()
+                                    model.sendReaction(message.id, emoji)
+                                }
+                                .buttonStyle(.link)
+                                .font(.caption)
+                            }
+                        }
+                        .padding(.vertical, 3)
+                    }
+                }
+            }
+            .padding(10)
+        }
+        .frame(minWidth: 220, maxHeight: 300)
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 
