@@ -12,8 +12,26 @@ struct ChatPane: View {
     var body: some View {
         VStack(spacing: 0) {
             if model.searchVisible { SearchBar() }
-            MessageList(conversation: conversation)
-                .id(conversation.key) // fresh paging state per chat
+            // In an overlay the list's changing content size never re-runs the layout of the window around it
+            // (composer, toolbar): a VStack measures its children, and a scroll view measures its content.
+            // Recently used chats keep their message list alive, hidden, each in its own hosting view: building
+            // a list is the slow part of opening a chat, and in one shared view graph every switch would make
+            // SwiftUI revisit all kept lists. Switching to a kept chat only flips which list is visible.
+            Color.clear.overlay {
+                if WarmListsContainer.hosted {
+                    WarmMessageLists(model: model, keys: model.warmChats, current: conversation.key)
+                } else {
+                    ZStack {
+                        ForEach(model.warmChats, id: \.self) { key in
+                            let on = key == conversation.key
+                            MessageListHost(key: key)
+                                .opacity(on ? 1 : 0)
+                                .allowsHitTesting(on)
+                                .accessibilityHidden(!on)
+                        }
+                    }
+                }
+            }
                 .overlay {
                     if dropTargeted {
                         ZStack {
@@ -109,38 +127,134 @@ struct MessageGrouping {
     var joinedBelow = false
 }
 
-private struct MessageList: View {
+private struct WarmMessageLists: NSViewRepresentable {
+    let model: AppModel
+    let keys: [String]
+    let current: String
+
+    func makeNSView(context: Context) -> WarmListsContainer { WarmListsContainer() }
+    func updateNSView(_ view: WarmListsContainer, context: Context) { view.update(model: model, keys: keys, current: current) }
+}
+
+final class WarmListsContainer: NSView {
+    static let hosted = ProcessInfo.processInfo.environment["CORVUS_WARM_HOSTS"] != "0"
+    // SwiftUI's hover tracking in the hosted lists expects flipped coordinates; unflipped, the row mirrored
+    // vertically from the pointer was treated as hovered.
+    override var isFlipped: Bool { true }
+    private var hosts: [String: NSHostingView<AnyView>] = [:]
+    private var model: AppModel?
+    private var keys: [String] = []
+    private var current = ""
+
+    func update(model: AppModel, keys: [String], current: String) {
+        self.model = model
+        self.keys = keys
+        self.current = current
+        reconcile()
+    }
+
+    /// Lists are created only at the final size: one laid out at zero size first would not open at the
+    /// newest message.
+    private func reconcile() {
+        guard let model, bounds.width > 0, bounds.height > 0 else { return }
+        for k in hosts.keys where !keys.contains(k) {
+            hosts[k]?.removeFromSuperview()
+            hosts[k] = nil
+        }
+        for k in keys where hosts[k] == nil {
+            let h = NSHostingView(rootView: AnyView(MessageListHost(key: k).environment(model)))
+            h.sizingOptions = [] // the container decides the size; no constraints from the content
+            h.frame = bounds
+            h.autoresizingMask = []
+            h.isHidden = k != current
+            addSubview(h)
+            hosts[k] = h
+            scrollToBottom(h, passes: 4)
+        }
+        for (k, h) in hosts {
+            let on = k == current
+            if on && h.frame != bounds { h.frame = bounds } // hidden lists follow window resizes when shown
+            if h.isHidden == on { h.isHidden = !on }
+        }
+    }
+
+    override func layout() {
+        super.layout()
+        reconcile()
+    }
+
+    /// A new list opens at the newest message. The lazy stack only estimates the height of rows it has
+    /// not built, so the end moves while the last rows are built: repeat for a few run loop passes.
+    private func scrollToBottom(_ h: NSView, passes: Int) {
+        DispatchQueue.main.async { [weak self, weak h] in
+            guard let h, let sv = Self.scrollView(in: h), let doc = sv.documentView else { return }
+            let clip = sv.contentView
+            let maxY = max(0, doc.frame.height - clip.bounds.height)
+            let y = doc.isFlipped ? maxY : 0
+            if abs(clip.bounds.origin.y - y) > 0.5 {
+                clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+                sv.reflectScrolledClipView(clip)
+            }
+            if passes > 1 { self?.scrollToBottom(h, passes: passes - 1) }
+        }
+    }
+
+    private static func scrollView(in v: NSView) -> NSScrollView? {
+        if let s = v as? NSScrollView { return s }
+        for c in v.subviews { if let s = scrollView(in: c) { return s } }
+        return nil
+    }
+}
+
+/// Root of a kept list's own view graph.
+private struct MessageListHost: View {
+    @Environment(AppModel.self) private var model
+    let key: String
+
+    var body: some View {
+        if let c = model.chats.convs[key] {
+            MessageList(conversation: c, pendingTs: model.chats.pendingTimestamps(key))
+                .equatable()
+                // `searchVisible` first: while no search is open, switching chats does not touch this view
+                .environment(\.searchHighlightId, model.searchVisible && model.current == key ? model.searchMatchId : nil)
+                .tint(Theme.signalBlue)
+        }
+    }
+}
+
+private struct MessageList: View, Equatable {
     @Environment(AppModel.self) private var model
     let conversation: Conversation
-    /// Only the newest messages are laid out; older ones are added in pages while scrolling up, so a chat
-    /// with thousands of messages opens as fast as a short one.
-    @State private var shown = MessageList.page
-    static let page = 120
+    /// Messages still being sent (shown dimmed).
+    let pendingTs: Set<Int64>
+
+    /// A hidden list must not be rebuilt when another chat changes. The message array is compared by
+    /// identity: the model changes it copy-on-write while this view holds the previous value.
+    static func == (a: MessageList, b: MessageList) -> Bool {
+        let ca = a.conversation, cb = b.conversation
+        return a.pendingTs == b.pendingTs && ca.key == cb.key && ca.isGroup == cb.isGroup
+            && ca.title == cb.title && ca.msgs.count == cb.msgs.count
+            && ca.msgs.withUnsafeBufferPointer { pa in cb.msgs.withUnsafeBufferPointer { pa.baseAddress == $0.baseAddress } }
+    }
 
     private func sameRun(_ a: Message, _ b: Message) -> Bool {
         a.outgoing == b.outgoing && a.authorKey == b.authorKey && abs(a.ts - b.ts) <= Theme.groupGapMs
-            && Calendar.current.isDate(a.time, inSameDayAs: b.time)
+            && LocalDay.of(a.ts) == LocalDay.of(b.ts)
     }
 
     var body: some View {
         let msgs = conversation.msgs
-        let start = max(0, msgs.count - shown)
-        // Read the shared model here once, not in every row: a row that reads `model.chats` is rebuilt
-        // whenever any chat changes.
-        let pendingTs = Set(model.chats.pendingSends.values.lazy
-            .filter { $0.conversationKey == conversation.key }.map(\.temporaryTimestamp))
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(spacing: 0) {
                     if msgs.isEmpty {
                         EmptyChat(conversation: conversation).padding(.top, 60)
                     }
-                    if start > 0 {
-                        ProgressView().controlSize(.small).padding(8)
-                            .onAppear { loadOlder(msgs, start: start, proxy: proxy) }
-                    }
-                    ForEach(Array(zip(msgs.indices[start...], msgs[start...])), id: \.1.id) { i, m in
-                        let newDay = i == 0 || !Calendar.current.isDate(msgs[i - 1].time, inSameDayAs: m.time)
+                    // The whole history: the lazy stack builds only what is on screen. (Adding older messages in
+                    // pages made every page stall scrolling while the stack re-measured to keep the position.)
+                    ForEach(IndexedMessages(base: msgs)) { row in
+                        let i = row.index, m = row.message
+                        let newDay = i == 0 || LocalDay.of(msgs[i - 1].ts) != LocalDay.of(m.ts)
                         let g = MessageGrouping(joinedAbove: i > 0 && sameRun(msgs[i - 1], m),
                                                 joinedBelow: i + 1 < msgs.count && sameRun(m, msgs[i + 1]))
                         VStack(spacing: 0) {
@@ -157,39 +271,73 @@ private struct MessageList: View {
                 .padding(.vertical, 12)
             }
             .defaultScrollAnchor(.bottom)
+            .environment(\.conversationKey, conversation.key)
             .background(model.appearance.backgroundColor)
             .onChange(of: msgs.last?.id) { _, id in
                 guard let id else { return }
                 withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
             }
             .onChange(of: model.scrollRequest?.serial) { _, _ in
-                guard let id = model.scrollRequest?.id else { return }
-                // A quote or search hit further back: lay out the messages up to it first.
-                if let i = msgs.firstIndex(where: { $0.id == id }), i < start {
-                    shown = msgs.count - i + 20
-                    DispatchQueue.main.async {
-                        withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
-                    }
-                } else {
-                    withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
-                }
-            }
-            .onAppear {
-                if let id = msgs.last?.id { proxy.scrollTo(id, anchor: .bottom) }
+                // only the visible one of the kept lists (read here, not in `body`, so switching chats does
+                // not rebuild the lists)
+                guard model.current == conversation.key, let id = model.scrollRequest?.id else { return }
+                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
             }
         }
     }
 
+    /// Not via `model.chats`: a list reading it is rebuilt whenever any chat changes.
     private func authorAvatar(_ m: Message) -> NSImage {
-        if let c = model.chats.convs[m.authorKey] { return model.avatarImage(c) }
-        return Media.placeholderAvatar(key: m.authorKey, title: m.sender)
+        model.avatars[m.authorKey] ?? Media.placeholderAvatar(key: m.authorKey, title: m.sender.isEmpty ? m.authorKey : m.sender)
     }
+}
 
-    private func loadOlder(_ msgs: [Message], start: Int, proxy: ScrollViewProxy) {
-        let keep = msgs[start].id // stays where it is on screen
-        shown += Self.page
-        DispatchQueue.main.async { proxy.scrollTo(keep, anchor: .top) }
+/// Calendar day of a timestamp in the local time zone, as a number. `Calendar.isDate(_:inSameDayAs:)`
+/// is slow, and the list compares neighbouring messages for every row it lays out.
+@MainActor
+enum LocalDay {
+    private static var offsets: [Int64: Int64] = [:] // hour -> seconds from GMT (changes only with DST)
+    private static var observer: NSObjectProtocol?
+
+    static func of(_ ms: Int64) -> Int64 {
+        if observer == nil {
+            observer = NotificationCenter.default.addObserver(forName: .NSSystemTimeZoneDidChange, object: nil, queue: .main) { _ in
+                MainActor.assumeIsolated { offsets.removeAll() }
+            }
+        }
+        let s = ms / 1000
+        let hour = s / 3600
+        let off: Int64
+        if let o = offsets[hour] { off = o } else {
+            off = Int64(TimeZone.current.secondsFromGMT(for: Date(timeIntervalSince1970: TimeInterval(s))))
+            if offsets.count > 50_000 { offsets.removeAll() }
+            offsets[hour] = off
+        }
+        return (s + off).floorDiv(86_400)
     }
+}
+
+private extension Int64 {
+    func floorDiv(_ d: Int64) -> Int64 { self >= 0 ? self / d : (self - d + 1) / d }
+}
+
+/// Messages with their positions, without building an array of pairs on every update.
+private struct IndexedMessages: RandomAccessCollection {
+    /// Same identity as `Message.id`, without formatting a string for each of thousands of messages.
+    struct Key: Hashable {
+        let ts: Int64
+        let author: String
+        let outgoing: Bool
+    }
+    struct Row: Identifiable {
+        let index: Int
+        let message: Message
+        var id: Key { Key(ts: message.ts, author: message.authorKey, outgoing: message.outgoing) }
+    }
+    let base: [Message]
+    var startIndex: Int { 0 }
+    var endIndex: Int { base.count }
+    subscript(i: Int) -> Row { Row(index: i, message: base[i]) }
 }
 
 private struct EmptyChat: View {
@@ -245,13 +393,13 @@ private struct MessageRow: View {
     let pending: Bool
     let avatar: NSImage?
     @State private var hovering = false
+    @State private var reactionsShown = false
 
     private var showAvatarColumn: Bool { isGroup && !message.outgoing }
 
     var body: some View {
         let m = message
-        HStack(alignment: .bottom, spacing: 8) {
-            if m.outgoing { Spacer(minLength: 80) }
+        MessageRowLayout(outgoing: m.outgoing, hasAvatar: showAvatarColumn) {
             if showAvatarColumn {
                 // One avatar per run of messages, next to its last bubble.
                 Group {
@@ -264,16 +412,15 @@ private struct MessageRow: View {
                 .frame(width: 28, height: 28)
                 .padding(.bottom, m.reactions.isEmpty ? 0 : 14)
             }
-            if m.outgoing { hoverActions }
             Bubble(message: m, isGroup: isGroup, grouping: grouping, pending: pending)
+                .environment(\.messageHovered, hovering)
                 .padding(.bottom, m.reactions.isEmpty ? 0 : 14)
                 .overlay(alignment: m.outgoing ? .bottomTrailing : .bottomLeading) {
                     if !m.reactions.isEmpty {
                         ReactionsView(message: m).padding(.horizontal, 10)
                     }
                 }
-            if !m.outgoing { hoverActions }
-            if !m.outgoing { Spacer(minLength: 80) }
+            hoverActions
         }
         .onHover { hovering = $0 }
     }
@@ -283,7 +430,7 @@ private struct MessageRow: View {
     /// scrolling through long chats drop frames.
     private var hoverActions: some View {
         ZStack {
-            if hovering && model.connected && !message.deleted { hoverButtons.transition(.opacity) }
+            if (hovering || reactionsShown) && model.connected && !message.deleted { hoverButtons.transition(.opacity) }
         }
         .frame(width: 46, height: 22)
         .padding(.bottom, 6)
@@ -292,23 +439,95 @@ private struct MessageRow: View {
 
     private var hoverButtons: some View {
         HStack(spacing: 2) {
-            Menu {
-                ForEach(EmojiCatalog.quickReactions, id: \.self) { e in
-                    Button(e) { model.sendReaction(message.id, e) }
+            // A plain button with a popover: a `Menu` is an AppKit pop-up button and costly to build.
+            Button { reactionsShown = true } label: { Image(systemName: "face.smiling") }
+                .buttonStyle(.borderless)
+                .help("React")
+                .popover(isPresented: $reactionsShown, arrowEdge: .top) {
+                    HStack(spacing: 4) {
+                        ForEach(EmojiCatalog.quickReactions, id: \.self) { e in
+                            Button {
+                                reactionsShown = false
+                                model.sendReaction(message.id, e)
+                            } label: { Text(e).font(.system(size: 22)) }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                    .padding(8)
                 }
-            } label: {
-                Image(systemName: "face.smiling").foregroundStyle(.secondary)
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .tint(.secondary)
-            .fixedSize()
-            .help("React")
             Button { model.startReply(message.id) } label: { Image(systemName: "arrowshape.turn.up.left") }
                 .buttonStyle(.borderless)
                 .help("Reply")
         }
         .foregroundStyle(.secondary)
+    }
+}
+
+extension EnvironmentValues {
+    /// The pointer is over this message (its text is selectable only then: a selectable text is backed by an
+    /// AppKit text field, too costly to create for every message scrolling into view).
+    @Entry var messageHovered = false
+    /// The current search hit, outlined (passed down instead of read from the model in every bubble:
+    /// a bubble reading model state updates whenever that state is written).
+    @Entry var searchHighlightId: String? = nil
+    /// The chat a message list shows (the kept hidden lists are not the current chat).
+    @Entry var conversationKey = ""
+}
+
+/// One message row, laid out in a single pass: [avatar] bubble [actions] for incoming messages,
+/// [actions] bubble for outgoing ones, bottom aligned, with 80 pt kept free on the far side.
+/// An HStack with spacers measures the bubble (its text) several times with different widths.
+private struct MessageRowLayout: Layout {
+    let outgoing: Bool
+    let hasAvatar: Bool
+    private let spacing: CGFloat = 8
+    private let freeSide: CGFloat = 80
+
+    struct Cache { var width: CGFloat = -1; var sizes: [CGSize] = [] }
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+    func updateCache(_ cache: inout Cache, subviews: Subviews) { cache.width = -1 }
+
+    /// Subviews: [avatar], bubble, actions.
+    private func measure(_ width: CGFloat, _ subviews: Subviews, _ cache: inout Cache) -> [CGSize] {
+        if cache.width == width { return cache.sizes }
+        var sizes = Array(repeating: CGSize.zero, count: subviews.count)
+        let bubble = hasAvatar ? 1 : 0, actions = subviews.count - 1
+        var used = freeSide
+        if hasAvatar {
+            sizes[0] = subviews[0].sizeThatFits(.unspecified)
+            used += sizes[0].width + spacing
+        }
+        sizes[actions] = subviews[actions].sizeThatFits(.unspecified)
+        used += sizes[actions].width + spacing
+        sizes[bubble] = subviews[bubble].sizeThatFits(ProposedViewSize(width: max(0, width - used), height: nil))
+        cache.width = width
+        cache.sizes = sizes
+        return sizes
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+        let width = proposal.width ?? 600
+        let sizes = measure(width, subviews, &cache)
+        return CGSize(width: width, height: sizes.map(\.height).max() ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+        let sizes = measure(bounds.width, subviews, &cache)
+        let bubble = hasAvatar ? 1 : 0, actions = subviews.count - 1
+        func place(_ i: Int, _ x: CGFloat) {
+            subviews[i].place(at: CGPoint(x: x, y: bounds.maxY - sizes[i].height),
+                              proposal: ProposedViewSize(width: sizes[i].width, height: sizes[i].height))
+        }
+        if outgoing {
+            let x = bounds.maxX - sizes[bubble].width
+            place(bubble, x)
+            place(actions, x - spacing - sizes[actions].width)
+        } else {
+            var x = bounds.minX
+            if hasAvatar { place(0, x); x += sizes[0].width + spacing }
+            place(bubble, x)
+            place(actions, x + sizes[bubble].width + spacing)
+        }
     }
 }
 
@@ -320,6 +539,7 @@ private struct Bubble: View {
     let grouping: MessageGrouping
     let pending: Bool
     @State private var infoShown = false
+    @Environment(\.searchHighlightId) private var searchHighlightId
 
     var body: some View {
         let m = message
@@ -423,7 +643,7 @@ private struct Bubble: View {
             }
         }
         .overlay {
-            if model.searchMatchId == m.id {
+            if searchHighlightId == m.id {
                 shape.strokeBorder(Color.yellow, lineWidth: 2.5)
             }
         }

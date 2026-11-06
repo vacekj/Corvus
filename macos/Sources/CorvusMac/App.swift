@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         model.start()
+        ScrollBench.shared.arm(model)
         #if DEBUG
         DebugHooks.start(model)
         #endif

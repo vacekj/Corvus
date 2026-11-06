@@ -12,6 +12,7 @@ struct AttachmentView: View {
     let foreground: Color
     /// Photo-only bubbles: the image fills the bubble, which clips it.
     var edgeToEdge = false
+    @Environment(\.conversationKey) private var conversationKey
 
     var body: some View {
         let att = attachment
@@ -25,7 +26,7 @@ struct AttachmentView: View {
             } else if att.isAudio {
                 AudioAttachment(token: token, attachment: att, foreground: foreground) { model.toggleAudio(message, index) }
             } else if att.isImage {
-                FullImageView(conversation: model.current ?? "", message: message, index: index,
+                FullImageView(conversation: conversationKey, message: message, index: index,
                               maxSide: edgeToEdge ? 340 : 300, cornerRadius: edgeToEdge ? 0 : 10)
             } else {
                 FileRow(attachment: att, foreground: foreground) { model.openAttachment(message, index) }
@@ -64,6 +65,7 @@ private struct FileRow: View {
 
 private struct VideoAttachment: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.conversationKey) private var conversationKey
     @Environment(\.displayScale) private var displayScale
     let message: Message
     let index: Int
@@ -106,8 +108,8 @@ private struct VideoAttachment: View {
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .task(id: token) {
-            if poster == nil, let key = model.current {
-                poster = await model.videoPoster(key, message, index, maxPixel: Int(maxSide * max(displayScale, 2)))
+            if poster == nil, !conversationKey.isEmpty {
+                poster = await model.videoPoster(conversationKey, message, index, maxPixel: Int(maxSide * max(displayScale, 2)))
             }
         }
         .onChange(of: model.videoURLs[token]) { _, url in

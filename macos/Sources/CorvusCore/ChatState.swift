@@ -76,6 +76,10 @@ public struct ChatState {
         return nil
     }
 
+    public func pendingTimestamps(_ key: String) -> Set<Int64> {
+        Set(pendingSends.values.lazy.filter { $0.conversationKey == key }.map(\.temporaryTimestamp))
+    }
+
     public func isPendingPreview(_ key: String, ts: Int64) -> Bool {
         pendingSends.values.contains { $0.conversationKey == key && $0.temporaryTimestamp == ts }
     }
@@ -234,6 +238,10 @@ public struct ChatState {
     }
 
     /// Starts the local timer of incoming disappearing messages (when the chat is looked at).
+    public func hasIncomingExpirationToStart(_ key: String) -> Bool {
+        convs[key]?.msgs.contains { !$0.outgoing && $0.expiresInSeconds > 0 && $0.expirationStartMs == 0 } ?? false
+    }
+
     public mutating func startIncomingExpirationTimers(_ key: String, now: Int64) -> [JSON] {
         guard convs[key] != nil else { return [] }
         var recs: [JSON] = []

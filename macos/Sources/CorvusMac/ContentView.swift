@@ -205,11 +205,12 @@ private struct Sidebar: View {
             default: model.openConversation(key)
             }
         })
-        let archived = model.chats.convs.values.filter(\.archived)
+        let archived = model.chatListItems(archived: true)
         let archivedUnread = archived.reduce(0) { $0 + $1.unread }
         let q = filter.trimmingCharacters(in: .whitespaces)
-        let list = model.chats.sortedConversations(archived: model.showArchived).filter {
-            q.isEmpty || model.title($0).localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q)
+        let all = model.chatListItems(archived: model.showArchived)
+        let list = q.isEmpty ? all : all.filter {
+            $0.title.localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q)
         }
 
         VStack(spacing: 0) {
@@ -270,11 +271,7 @@ private struct Sidebar: View {
                     .padding(.vertical, 2)
                     .tag("::archived")
                 }
-                ForEach(list) { c in
-                    ConversationRow(conversation: c, selected: c.key == model.current)
-                        .tag(c.key)
-                        .contextMenu { ConversationMenu(conversation: c) }
-                }
+                ChatListRows(items: list)
                 if list.isEmpty && model.historyReady {
                     Text(q.isEmpty ? "No chats yet" : "No chats match “\(q)”")
                         .foregroundStyle(.secondary)
@@ -290,34 +287,81 @@ private struct Sidebar: View {
     }
 }
 
-private struct ConversationRow: View {
-    @Environment(AppModel.self) private var model
-    let conversation: Conversation
-    let selected: Bool
+/// What a chat list row shows, compared by value: a row is rebuilt only when this changes, not whenever
+/// any chat changes (a `Conversation` carries all its messages).
+struct ChatListItem: Equatable {
+    var key: String
+    var title: String
+    var isGroup: Bool
+    var unread: Int
+    var muted: Bool
+    var blocked: Bool
+    var time: String
+    var preview: String
+    var avatar: NSImage?
+
+    @MainActor init(_ c: Conversation, _ model: AppModel) {
+        key = c.key
+        title = model.title(c)
+        isGroup = c.isGroup
+        unread = c.unread
+        muted = c.muted
+        blocked = model.isBlocked(c.key)
+        time = c.msgs.last.map { ChatListItem.shortTime($0.time) } ?? ""
+        preview = model.isMessageRequest(c.key) ? "Message request"
+            : c.msgs.last.map { ChatListItem.preview($0, isGroup: c.isGroup) } ?? (c.isGroup ? "Group" : " ")
+        avatar = model.appearance.showAvatars ? model.avatarImage(c) : nil
+    }
+
+    static func == (a: ChatListItem, b: ChatListItem) -> Bool {
+        a.key == b.key && a.title == b.title && a.isGroup == b.isGroup && a.unread == b.unread && a.muted == b.muted
+            && a.blocked == b.blocked && a.time == b.time && a.preview == b.preview && a.avatar === b.avatar
+    }
+
+    private static func preview(_ m: Message, isGroup: Bool) -> String {
+        if m.deleted { return m.deletedText }
+        var t = m.text.prefix(200).replacingOccurrences(of: "\n", with: " ")
+        if m.viewOnce { t = "1️⃣ View once media" }
+        if t.isEmpty, let a = m.attachments.first {
+            t = a.isSticker ? "Sticker" : a.isGif ? "GIF" : a.isImage ? "📷 Photo" : a.isVideo ? "🎬 Video"
+                : a.isAudio ? "🎤 Voice message" : "📎 " + a.filename
+        }
+        return (m.outgoing ? "You: " : (isGroup && !m.sender.isEmpty ? m.sender + ": " : "")) + t
+    }
+
+    /// Time for today, weekday within a week, else the date.
+    static func shortTime(_ d: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(d) { return d.formatted(date: .omitted, time: .shortened) }
+        if cal.isDateInYesterday(d) { return "Yesterday" }
+        if let days = cal.dateComponents([.day], from: d, to: Date()).day, days < 7 { return d.formatted(.dateTime.weekday(.abbreviated)) }
+        return d.formatted(.dateTime.day().month(.abbreviated))
+    }
+}
+
+private struct ConversationRow: View, Equatable {
+    let item: ChatListItem
 
     var body: some View {
-        let c = conversation
+        let c = item
         HStack(spacing: 10) {
-            if model.appearance.showAvatars {
-                AvatarView(image: model.avatarImage(c), size: 40)
+            if let avatar = c.avatar {
+                AvatarView(image: avatar, size: 40)
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
-                    Text(model.title(c))
+                    Text(c.title)
                         .font(.system(size: 13, weight: c.unread > 0 ? .bold : .semibold))
                         .lineLimit(1)
                     if c.muted { Image(systemName: "bell.slash.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
-                    if model.isBlocked(c.key) { Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.red) }
+                    if c.blocked { Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.red) }
                     Spacer(minLength: 4)
-                    if let last = c.msgs.last {
-                        Text(Self.shortTime(last.time))
-                            .font(.caption2)
-                            .foregroundStyle(c.unread > 0 ? Theme.signalBlue : .secondary)
-                    }
+                    Text(c.time)
+                        .font(.caption2)
+                        .foregroundStyle(c.unread > 0 ? Theme.signalBlue : .secondary)
                 }
                 HStack(spacing: 4) {
-                    Text(model.isMessageRequest(c.key) ? "Message request"
-                            : c.msgs.last.map(preview) ?? (c.isGroup ? "Group" : " "))
+                    Text(c.preview)
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -335,25 +379,28 @@ private struct ConversationRow: View {
         }
         .padding(.vertical, 4)
     }
+}
 
-    private func preview(_ m: Message) -> String {
-        if m.deleted { return m.deletedText }
-        var t = m.text.replacingOccurrences(of: "\n", with: " ")
-        if m.viewOnce { t = "1️⃣ View once media" }
-        if t.isEmpty, let a = m.attachments.first {
-            t = a.isSticker ? "Sticker" : a.isGif ? "GIF" : a.isImage ? "📷 Photo" : a.isVideo ? "🎬 Video"
-                : a.isAudio ? "🎤 Voice message" : "📎 " + a.filename
+/// The chat rows; skipped entirely while the rows are unchanged (e.g. when only the selection moves).
+private struct ChatListRows: View, Equatable {
+    let items: [ChatListItem]
+
+    var body: some View {
+        ForEach(items, id: \.key) { c in
+            ConversationRow(item: c)
+                .tag(c.key)
+                .contextMenu { ConversationMenuFor(key: c.key) }
         }
-        return (m.outgoing ? "You: " : (conversation.isGroup && !m.sender.isEmpty ? m.sender + ": " : "")) + t
     }
+}
 
-    /// Time for today, weekday within a week, else the date.
-    static func shortTime(_ d: Date) -> String {
-        let cal = Calendar.current
-        if cal.isDateInToday(d) { return d.formatted(date: .omitted, time: .shortened) }
-        if cal.isDateInYesterday(d) { return "Yesterday" }
-        if let days = cal.dateComponents([.day], from: d, to: Date()).day, days < 7 { return d.formatted(.dateTime.weekday(.abbreviated)) }
-        return d.formatted(.dateTime.day().month(.abbreviated))
+/// Context menu of a chat list row, looked up when it opens.
+private struct ConversationMenuFor: View {
+    @Environment(AppModel.self) private var model
+    let key: String
+
+    var body: some View {
+        if let c = model.chats.convs[key] { ConversationMenu(conversation: c) }
     }
 }
 

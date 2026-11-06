@@ -14,9 +14,23 @@ struct FormattedMessageText: View {
     private static let spoilerScheme = "corvus-spoiler:"
     private static let size = NSFont.systemFontSize + 1
 
+    @Environment(\.messageHovered) private var hovered
+    /// Stays on once the pointer was over the message, so a selection survives moving the pointer away.
+    @State private var selectable = false
+
     var body: some View {
-        Text(attributed)
-            .textSelection(.enabled)
+        Group {
+            if selectable || hovered {
+                styled(Text(attributed)).textSelection(.enabled)
+            } else {
+                styled(Text(attributed))
+            }
+        }
+        .onChange(of: hovered) { _, h in if h { selectable = true } }
+    }
+
+    private func styled(_ t: Text) -> some View {
+        t
             .foregroundStyle(foreground)
             .tint(message.outgoing ? foreground : Theme.signalBlue)
             .fixedSize(horizontal: false, vertical: true)

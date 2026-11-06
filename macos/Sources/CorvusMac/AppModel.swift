@@ -25,8 +25,16 @@ struct UpdateHint: Equatable {
 final class AppModel {
     // MARK: State shown by the views
 
-    var chats = ChatState()
+    var chats = ChatState() {
+        didSet {
+            chatListCache.removeAll()
+            if chats.account != accountKey { accountKey = chats.account }
+        }
+    }
     var current: String?            // selected conversation
+    /// Chats whose message list stays built while hidden, most recently opened first (see `ChatPane`).
+    var warmChats: [String] = []
+    static let warmLimit = 8
     var showArchived = false
     var connected = false
     var statusText = "Not connected"
@@ -36,7 +44,7 @@ final class AppModel {
     var historyProtectionMode = ""  // "keychain" | "passphrase"
     var historyReady = false
 
-    var appearance = Appearance.load()
+    var appearance = Appearance.load() { didSet { chatListCache.removeAll() } }
     var notify = NotificationSettings.load()
 
     // composer (for the current conversation; other conversations keep a Draft)
@@ -61,7 +69,7 @@ final class AppModel {
     private var scrollSerial = 0
 
     // avatars (cached in memory only)
-    var avatars: [String: NSImage] = [:]
+    var avatars: [String: NSImage] = [:] { didSet { chatListCache.removeAll() } }
     @ObservationIgnored private var avatarTried: Set<String> = []
     @ObservationIgnored private var avatarBusy: Set<String> = []
     @ObservationIgnored private var avatarInFlight = 0
@@ -112,7 +120,9 @@ final class AppModel {
     var pollComposerShown = false
 
     // groups, blocking and message requests (Groups.swift, MessageRequests.swift)
-    var roster = Roster()
+    var roster = Roster() { didSet { chatListCache.removeAll() } }
+    /// Chat list rows (per folder), rebuilt only after a change to what they show.
+    @ObservationIgnored private var chatListCache: [Bool: (day: Int, items: [ChatListItem])] = [:]
     var groupInfoKey: String?                  // group whose info sheet is shown
     var newGroupShown = false
 
@@ -145,7 +155,10 @@ final class AppModel {
     @ObservationIgnored private var started = false
     @ObservationIgnored var openMainWindow: (() -> Void)?
 
-    var account: String { chats.account }
+    /// The own number, kept apart from `chats`: views showing "mine" would otherwise update on every
+    /// change to any chat.
+    var account: String { accountKey }
+    private(set) var accountKey = ""
 
     init() {
         cli.onEnvelope = { [weak self] env in
@@ -788,6 +801,16 @@ final class AppModel {
     /// Chat title as shown: the own number's chat is "Note to Self", like in the official clients.
     func title(_ c: Conversation) -> String { !account.isEmpty && c.key == account ? "Note to Self" : c.title }
 
+    /// Rows of the chat list, newest first. Reading it registers the same dependencies as building it.
+    func chatListItems(archived: Bool) -> [ChatListItem] {
+        _ = chats.convs.count; _ = avatars.count; _ = appearance.showAvatars; _ = roster
+        let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0 // "Yesterday" changes at midnight
+        if let c = chatListCache[archived], c.day == day { return c.items }
+        let items = chats.sortedConversations(archived: archived).map { ChatListItem($0, self) }
+        chatListCache[archived] = (day, items)
+        return items
+    }
+
     /// Called after changes to the list (order, unread counters, …).
     func listChanged() {
         if showArchived && !chats.convs.values.contains(where: \.archived) { showArchived = false } // folder became empty
@@ -898,6 +921,11 @@ final class AppModel {
     /// Selecting a chat: stashes the old chat's draft, restores this chat's draft, marks it read.
     func openConversation(_ key: String) {
         guard chats.convs[key] != nil else { return }
+        if warmChats.first != key {
+            warmChats.removeAll { $0 == key }
+            warmChats.insert(key, at: 0)
+            if warmChats.count > Self.warmLimit { warmChats.removeLast(warmChats.count - Self.warmLimit) }
+        }
         if key != current {
             cancelEdit() // an edit in progress is dropped and the text typed before it comes back
             saveDraft()
@@ -905,8 +933,9 @@ final class AppModel {
             loadDraft(key)
             closeSearch()
         }
-        chats.convs[key]!.unread = 0
-        persist(chats.startIncomingExpirationTimers(key, now: nowMs()))
+        // Only real changes: any write to `chats` makes every view showing chats update.
+        if chats.convs[key]!.unread != 0 { chats.convs[key]!.unread = 0 }
+        if chats.hasIncomingExpirationToStart(key) { persist(chats.startIncomingExpirationTimers(key, now: nowMs())) }
         notifier.close(key) // the notification for this chat is obsolete now
         composerFocusRequest += 1
         listChanged()
@@ -985,7 +1014,7 @@ final class AppModel {
     }
 
     func closeSearch() {
-        searchVisible = false
+        if searchVisible { searchVisible = false } // a write alone makes every view reading it update
         if !searchText.isEmpty { searchText = "" }
         composerFocusRequest += 1
     }
