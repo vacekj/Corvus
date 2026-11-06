@@ -29,6 +29,7 @@ struct ComposerArea: View {
                     if model.pendingFiles.isEmpty { model.pendingGifAnalyticsUrl = nil }
                 }
             }
+            MentionSuggestionList()
             if model.isRecording {
                 RecordingBar()
             } else {
@@ -225,7 +226,8 @@ private struct PendingImageThumb: View {
 }
 
 /// Multi-line message field: Return sends, Shift/Option+Return inserts a line break, ↑ in an empty field
-/// edits the last message, Esc cancels an edit, and pasting a screenshot or files attaches them.
+/// edits the last message, Esc cancels an edit, then a reply, then closes the search, ⌘B / ⌘I add bold /
+/// italic markers, "@" in a group suggests members, and pasting a screenshot or files attaches them.
 struct MessageInput: NSViewRepresentable {
     static let insertText = Notification.Name("MessageInput.insertText")
 
@@ -265,6 +267,7 @@ struct MessageInput: NSViewRepresentable {
         context.coordinator.textView = tv
         context.coordinator.scroll = scroll
         context.coordinator.observeInsertions()
+        MentionAutocomplete.shared.insert = { [weak coordinator = context.coordinator] in coordinator?.insertMention($0) }
         DispatchQueue.main.async { tv.window?.makeFirstResponder(tv) }
         return scroll
     }
@@ -276,6 +279,7 @@ struct MessageInput: NSViewRepresentable {
         if tv.string != text {
             tv.string = text
             tv.needsDisplay = true
+            MentionAutocomplete.shared.hide() // sent, or another chat's draft
         }
         tv.isEditable = model.connected && model.canCompose
         // Settings → General: spell checking, grammar and autocorrect follow one switch.
@@ -324,6 +328,29 @@ struct MessageInput: NSViewRepresentable {
             guard let tv = textView else { return }
             if parent.text != tv.string { parent.text = tv.string }
             updateHeight()
+            updateMentions()
+            parent.model.composerEdited()
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) { updateMentions() }
+
+        /// Shows the members matching the "@…" before the caret (groups only).
+        func updateMentions() {
+            let ac = MentionAutocomplete.shared
+            let model = parent.model
+            guard let tv = textView, let key = model.current, model.chats.convs[key]?.isGroup == true,
+                  tv.selectedRange().length == 0,
+                  let q = mentionQuery(text: tv.string, caret: tv.selectedRange().location)
+            else { ac.hide(); return }
+            ac.show(range: q.range, mentionSuggestions(q.query, model.mentionCandidates(key)))
+        }
+
+        func insertMention(_ c: MentionCandidate) {
+            guard let tv = textView, let r = MentionAutocomplete.shared.range,
+                  r.location + r.length <= (tv.string as NSString).length else { return }
+            tv.insertText("@" + c.name + " ", replacementRange: r)
+            MentionAutocomplete.shared.hide()
+            tv.window?.makeFirstResponder(tv)
         }
 
         /// 1 … 6 lines high.
@@ -344,6 +371,18 @@ struct MessageInput: NSViewRepresentable {
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
             let model = parent.model
             let flags = NSApp.currentEvent?.modifierFlags ?? []
+            let mentions = MentionAutocomplete.shared
+            if mentions.active {
+                switch selector {
+                case #selector(NSResponder.moveUp(_:)): mentions.move(-1); return true
+                case #selector(NSResponder.moveDown(_:)): mentions.move(1); return true
+                case #selector(NSResponder.insertNewline(_:)), #selector(NSResponder.insertTab(_:)):
+                    if let c = mentions.selected { insertMention(c) }
+                    return true
+                case #selector(NSResponder.cancelOperation(_:)): mentions.dismiss(); return true
+                default: break
+                }
+            }
             switch selector {
             case #selector(NSResponder.insertNewline(_:)):
                 if flags.contains(.shift) || flags.contains(.option) {
@@ -355,6 +394,14 @@ struct MessageInput: NSViewRepresentable {
             case #selector(NSResponder.cancelOperation(_:)):
                 if !model.editKey.isEmpty {
                     model.cancelEdit()
+                    return true
+                }
+                if model.replyQuote.valid {
+                    model.replyQuote = Quote()
+                    return true
+                }
+                if model.searchVisible {
+                    model.closeSearch()
                     return true
                 }
                 return false
@@ -395,6 +442,19 @@ final class InputTextView: NSTextView {
     override func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
         if let coordinator, MainActor.assumeIsolated({ coordinator.paste(from: pboard) }) { return true }
         return super.readSelection(from: pboard, type: type)
+    }
+
+    /// ⌘B / ⌘I: the composer is plain text with markdown markers (see `parseMarkdownStyles`).
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if isEditable, window?.firstResponder === self, flags == .command,
+           let key = event.charactersIgnoringModifiers?.lowercased(), key == "b" || key == "i" {
+            let r = toggleMarker(key == "b" ? "**" : "_", text: string, selection: selectedRange())
+            insertText(r.replacement, replacementRange: r.range)
+            setSelectedRange(r.selection)
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
     }
 
     override func draw(_ dirtyRect: NSRect) {

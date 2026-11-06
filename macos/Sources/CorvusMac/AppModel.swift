@@ -949,6 +949,7 @@ final class AppModel {
             if warmChats.count > Self.warmLimit { warmChats.removeLast(warmChats.count - Self.warmLimit) }
         }
         if key != current {
+            ChatScrollState.of(key).chatOpened(chats.convs[key]!) // before the unread counter is reset
             cancelEdit() // an edit in progress is dropped and the text typed before it comes back
             saveDraft()
             current = key
@@ -1114,6 +1115,10 @@ final class AppModel {
             handleReceipt(receipt)
             return
         }
+        if let typing = parseTyping(env) {
+            handleTyping(typing)
+            return
+        }
         var pe = parseEnvelope(env)
         if pe.kind == .none { return }
         if !pe.mentions.isEmpty {
@@ -1202,6 +1207,7 @@ final class AppModel {
         guard addMessage(key, m, title: title, group: group) else { return }
         if !pe.outgoing && !group && !pe.srcName.isEmpty { learnName(key, pe.srcName) }
         if !pe.outgoing {
+            typingEnded(key, typer: srcKey)
             alertIncoming(key, m)
             if !group { refreshAvatar(key) } // the contact may have changed the picture
         }
@@ -1311,6 +1317,8 @@ final class AppModel {
         let formatted = parseMarkdownStyles(text) // **bold**, _italic_, ~strike~, `mono`, ||spoiler||
         if !text.isEmpty { p["message"] = formatted.text }
         if !formatted.styles.isEmpty { p["textStyle"] = formatted.styles.map(\.cliString) }
+        let mentions = c.isGroup ? resolveMentions(text: formatted.text, candidates: mentionCandidates(key)) : []
+        if !mentions.isEmpty { p["mention"] = mentions.map { "\($0.start):\($0.length):\($0.uuid)" } }
         var atts: [Attachment] = []
         for f in files {
             var a = Attachment()
@@ -1348,6 +1356,7 @@ final class AppModel {
         preview.orderTs = max(preview.ts, (chats.convs[key]!.msgs.last?.sortTs ?? 0) + 1)
         preview.text = formatted.text
         preview.textStyles = formatted.styles
+        preview.mentions = mentions
         preview.outgoing = true
         preview.authorKey = account
         preview.expiresInSeconds = c.expirationSeconds
@@ -1370,6 +1379,7 @@ final class AppModel {
             linkDraft.reset()
         }
         replyQuote = Quote()
+        composerTypingReset()
         if !files.isEmpty { showFlash("Sending …", seconds: 120) }
         scrollToMessage(index: chats.convs[key]!.msgs.firstIndex { $0.id == preview.id } ?? 0)
 

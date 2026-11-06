@@ -204,7 +204,6 @@ struct AppCommands: Commands {
             Button("Reconnect") { model.reconnect() }
             Divider()
             Button("Import from Signal Desktop …") { Task { await model.importFromSignalDesktop() } }
-                .keyboardShortcut("r")
         }
         CommandGroup(after: .textEditing) {
             Button("Search this conversation") { model.openSearch() }
@@ -221,6 +220,12 @@ struct AppCommands: Commands {
                 .disabled(!model.connected)
         }
         CommandMenu("Conversation") {
+            Button("Go to conversation …") { KeyboardNavigation.shared.quickSwitcherShown = true }
+                .keyboardShortcut("k")
+                .disabled(!model.historyReady)
+            Button("Search chats") { KeyboardNavigation.shared.sidebarSearchFocus += 1 }
+                .keyboardShortcut("f", modifiers: [.command, .option])
+            Divider()
             ForEach(1..<10) { n in
                 Button("Conversation \(n)") {
                     let list = model.chats.sortedConversations(archived: model.showArchived)
