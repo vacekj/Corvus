@@ -139,7 +139,6 @@ final class AppModel {
     var successorPick: SuccessorPick?          // "choose a new admin" sheet while leaving a group
     @ObservationIgnored var successorContinuation: CheckedContinuation<String?, Never>?
     var newGroupShown = false
-    var newConversationShown = false
 
     // composer extras
     var viewOnceNext = false                    // send the single attached photo/video as View Once
@@ -934,7 +933,7 @@ final class AppModel {
         listChanged()
     }
 
-    func newConversation() async { newConversationShown = true }
+    func newConversation() async { KeyboardNavigation.shared.showSwitcher(newChat: true) }
 
     func startConversation(_ key: String) {
         let r = key.trimmingCharacters(in: .whitespaces)

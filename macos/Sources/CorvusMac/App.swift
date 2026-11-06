@@ -220,7 +220,7 @@ struct AppCommands: Commands {
                 .disabled(!model.connected || model.current == nil)
         }
         CommandMenu("Conversation") {
-            Button("Go to conversation …") { KeyboardNavigation.shared.quickSwitcherShown = true }
+            Button("Go to conversation …") { KeyboardNavigation.shared.showSwitcher(newChat: false) }
                 .keyboardShortcut("k")
                 .disabled(!model.historyReady)
             Button("Search chats") { KeyboardNavigation.shared.sidebarSearchFocus += 1 }

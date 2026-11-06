@@ -9,6 +9,13 @@ final class KeyboardNavigation {
     static let shared = KeyboardNavigation()
 
     var quickSwitcherShown = false
+    var switcherNewChat = false     // the switcher was opened as "New conversation": people, and any number / username
+
+    /// Opens the switcher (⌘K, or ⌘N for a new conversation).
+    func showSwitcher(newChat: Bool) {
+        switcherNewChat = newChat
+        quickSwitcherShown = true
+    }
     var sidebarSearchFocus = 0      // incremented by ⌥⌘F to put the caret into the chat list search
 
     @ObservationIgnored private var tabMonitor: Any?
@@ -98,10 +105,29 @@ private struct QuickSwitcherPanel: View {
     @State private var entries: [PickerPerson] = []
     @State private var index = 0
     @State private var keyMonitor: Any?
+    private let newChat = KeyboardNavigation.shared.switcherNewChat
 
     private static let limit = 60
 
+    /// What was typed, if it can be an address: "+420 123 …" or "name.12".
+    static func address(_ q: String) -> String? {
+        let compact = q.filter { !" -()".contains($0) }
+        if compact.hasPrefix("+"), compact.count >= 8, compact.dropFirst().allSatisfy(\.isNumber) { return compact }
+        if !q.contains(" "), let dot = q.lastIndex(of: "."), q[q.index(after: dot)...].count >= 2,
+           q[q.index(after: dot)...].allSatisfy(\.isNumber), q.distance(from: q.startIndex, to: dot) >= 3 { return q }
+        return nil
+    }
+
     private func results(_ q: String) -> [PickerPerson] {
+        var list = matches(q)
+        if newChat, let a = Self.address(q), !entries.contains(where: { $0.key == a }) {
+            list.insert(PickerPerson(key: a, title: "Message \(a)", detail: "New conversation",
+                                     avatar: Media.placeholderAvatar(key: a, title: "+"), lastTs: 0), at: 0)
+        }
+        return list
+    }
+
+    private func matches(_ q: String) -> [PickerPerson] {
         if q.isEmpty { return Array(entries.prefix(Self.limit)) }
         let digits = q.filter(\.isNumber)
         let scored = entries.compactMap { p -> (PickerPerson, Int)? in
@@ -119,7 +145,8 @@ private struct QuickSwitcherPanel: View {
     var body: some View {
         let list = results(filter.trimmingCharacters(in: .whitespaces))
         VStack(alignment: .leading, spacing: 8) {
-            SearchField(text: $filter, prompt: "Go to conversation")
+            if newChat { Text("New conversation").font(.headline) }
+            SearchField(text: $filter, prompt: newChat ? "Name, phone number (+…) or username" : "Go to conversation")
                 .onChange(of: filter) { index = 0 }
             ScrollViewReader { proxy in
                 ScrollView {
@@ -127,7 +154,8 @@ private struct QuickSwitcherPanel: View {
                         ForEach(Array(list.enumerated()), id: \.element.key) { i, p in
                             PickerRow(person: p, highlighted: i == index)
                                 .id(p.key)
-                                .onTapGesture { open(p.key) }
+                                // Opens on mouse down, like the chat list.
+                                .gesture(DragGesture(minimumDistance: 0).onChanged { _ in open(p.key) })
                         }
                     }
                 }
@@ -136,7 +164,10 @@ private struct QuickSwitcherPanel: View {
             .frame(height: 320)
             .overlay {
                 if list.isEmpty {
-                    Text(filter.isEmpty ? "No chats yet" : "No chats match “\(filter)”").foregroundStyle(.secondary)
+                    Text(filter.isEmpty ? "No chats yet"
+                         : newChat ? "No one matches “\(filter)”.\nType a phone number with + and country code, or a username like name.12."
+                         : "No chats match “\(filter)”")
+                        .multilineTextAlignment(.center).foregroundStyle(.secondary).padding()
                 }
             }
             Text("↑↓ to move, Return to open, Esc to close").font(.caption).foregroundStyle(.secondary)
@@ -147,13 +178,14 @@ private struct QuickSwitcherPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.separator))
         .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
         .onAppear {
-            entries = model.switcherEntries()
+            entries = newChat ? model.pickerPeople() : model.switcherEntries()
             installKeys()
         }
         .onDisappear { removeKeys() }
     }
 
     private func open(_ key: String) {
+        guard KeyboardNavigation.shared.quickSwitcherShown else { return }
         KeyboardNavigation.shared.quickSwitcherShown = false
         model.openPicked(key)
     }

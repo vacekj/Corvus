@@ -9,9 +9,6 @@ struct GroupSheets: ViewModifier {
     func body(content: Content) -> some View {
         content
             .sheet(isPresented: Binding(get: { model.newGroupShown }, set: { model.newGroupShown = $0 })) { NewGroupSheet() }
-            .sheet(isPresented: Binding(get: { model.newConversationShown }, set: { model.newConversationShown = $0 })) {
-                NewConversationSheet()
-            }
             .sheet(item: Binding(get: { model.successorPick }, set: { if $0 == nil { model.finishSuccessorPick(nil) } })) { pick in
                 SuccessorSheet(pick: pick)
             }

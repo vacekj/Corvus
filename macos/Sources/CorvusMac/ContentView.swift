@@ -90,6 +90,7 @@ struct ContentView: View {
         .modifier(GroupSheets())
         .onAppear {
             KeyboardNavigation.shared.installTabMonitor(model)
+            SheetOutsideClick.install()
             model.openMainWindow = {
                 openWindow(id: "main")
                 MainWindowTracker.shared.window?.makeKeyAndOrderFront(nil)
