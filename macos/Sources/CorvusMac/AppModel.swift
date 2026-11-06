@@ -62,9 +62,11 @@ final class AppModel {
 
     // search in the current conversation
     var searchVisible = false
-    var searchText = "" { didSet { updateSearch(selectFirst: true) } }
-    var searchResults: [Int] = []
+    var searchText = "" { didSet { if searchText != oldValue { updateSearch(selectFirst: true, debounce: true) } } }
+    var searchResults: [String] = []            // ids of the matching messages, oldest first
     var searchPosition = -1
+    var searchBusy = false                      // a search is taking long enough to say so
+    @ObservationIgnored private var searchTask: Task<Void, Never>?
     var scrollRequest: (id: String, serial: Int)?
     private var scrollSerial = 0
 
@@ -116,6 +118,7 @@ final class AppModel {
     // sheets of the new features
     var safetyNumberKey: String?               // conversation whose safety number is shown
     var forwardMessageId: String?              // message to forward (in the current conversation)
+    var messageInfoId: String?                 // message whose info sheet is shown (in the current conversation)
     var galleryShown = false
     var pollComposerShown = false
 
@@ -143,7 +146,8 @@ final class AppModel {
     // MARK: Services
 
     @ObservationIgnored let cli = SignalCli()
-    @ObservationIgnored let store = HistoryStore()
+    @ObservationIgnored let writer = HistoryWriter()   // every history write, off the main thread and in order
+    var store: HistoryStore { writer.store }
     @ObservationIgnored var autoReconnects = 0
     @ObservationIgnored var lastAutoReconnect: Date?
     @ObservationIgnored let notifier = Notifier()
@@ -242,6 +246,7 @@ final class AppModel {
 
     func shutdown() {
         cli.stop()
+        writer.drain()
         store.close()
         try? FileManager.default.removeItem(at: AppPaths.tempDir)
     }
@@ -686,42 +691,38 @@ final class AppModel {
         Perf.mark("history applied")
         // Older versions kept small preview copies of pictures in the history. Media is now shown from the
         // original files, so they are dropped once (stickers keep theirs: for imported ones it is the sticker).
-        if chats.stripAttachmentThumbnails() > 0 { _ = rewriteHistory("remove the stored picture previews") }
+        if chats.stripAttachmentThumbnails() > 0 { rewriteHistory("remove the stored picture previews") }
         listChanged()
     }
 
     func persist(_ record: JSON) {
-        do { try store.append(record) } catch {
-            showFlash("Could not save message: \(error.localizedDescription)")
+        writer.append(record) { [weak self] error in
+            if let error { self?.showFlash("Could not save message: \(error.localizedDescription)") }
         }
     }
 
     func persist(_ records: [JSON]) { records.forEach(persist) }
 
-    /// Compacts the file so the ciphertext of removed data is gone.
-    @discardableResult
-    func rewriteHistory(_ what: String) -> Bool {
-        do {
-            try store.rewrite(chats.allRecords())
-            return true
-        } catch {
-            showFlash("Could not \(what): \(error.localizedDescription)")
-            return false
+    /// Compacts the file so the ciphertext of removed data is gone. Runs in the background after the writes
+    /// queued before it, on a snapshot of the current state; `done` gets the outcome on the main thread.
+    func rewriteHistory(_ what: String, done: ((Bool) -> Void)? = nil) {
+        writer.rewrite(chats) { [weak self] error in
+            if let error { self?.showFlash("Could not \(what): \(error.localizedDescription)") }
+            done?(error == nil)
         }
     }
 
     private func changePassphrase(old: String, new: String) async -> HistoryStoreError? {
-        let store = self.store
-        return await Task.detached { () -> HistoryStoreError? in
-            do {
+        do {
+            let k = try await writer.perform { store in
                 try store.changePassphrase(old: old, new: new)
-                let k = RosterCache.deriveKey(from: new)
-                await MainActor.run { RosterCache.forget(); RosterCache.setKey(k) } // rewritten when signal-cli answers
-                return nil
-            } catch let e as HistoryStoreError { return e } catch {
-                return HistoryStoreError(code: 5)
+                return RosterCache.deriveKey(from: new)
             }
-        }.value
+            RosterCache.forget(); RosterCache.setKey(k) // rewritten when signal-cli answers
+            return nil
+        } catch let e as HistoryStoreError { return e } catch {
+            return HistoryStoreError(code: 5)
+        }
     }
 
     func changeHistoryProtection() async {
@@ -897,7 +898,7 @@ final class AppModel {
     /// Drops a conversation and its stored messages without asking.
     func removeConversation(_ key: String) {
         if key == editKey { cancelEdit() }
-        chats.convs.removeValue(forKey: key)
+        let removed = chats.convs.removeValue(forKey: key)
         drafts.removeValue(forKey: key)
         if key == current {
             current = nil
@@ -906,7 +907,12 @@ final class AppModel {
             pendingFiles = []
             pendingGifAnalyticsUrl = nil
         }
-        rewriteHistory("update history")
+        rewriteHistory("update history") { [weak self] ok in
+            // The file still holds the chat: show it again rather than lose it on the next start.
+            guard !ok, let self, let removed, chats.convs[key] == nil else { return }
+            chats.convs[key] = removed
+            listChanged()
+        }
         listChanged()
     }
 
@@ -1031,36 +1037,52 @@ final class AppModel {
         composerFocusRequest += 1
     }
 
-    func updateSearch(selectFirst: Bool = false) {
-        let old = searchPosition
-        searchResults = []
+    /// Searches the current conversation off the main thread (on a copy of its messages); a newer search
+    /// cancels an older one. `selectFirst` jumps to the newest match, otherwise the selected match is kept.
+    func updateSearch(selectFirst: Bool = false, debounce: Bool = false) {
+        searchTask?.cancel()
         let needle = searchText.trimmingCharacters(in: .whitespaces)
-        if !needle.isEmpty, let c = currentConversation {
-            for (i, m) in c.msgs.enumerated() {
-                var s = m.sender + "\n" + m.text + "\n" + m.quote.text
-                for a in m.attachments { s += "\n" + a.filename }
-                if s.localizedCaseInsensitiveContains(needle) { searchResults.append(i) }
-            }
-        }
-        if searchResults.isEmpty {
+        guard !needle.isEmpty, let key = current, let msgs = chats.convs[key]?.msgs else {
+            searchTask = nil
+            if !searchResults.isEmpty { searchResults = [] }
             searchPosition = -1
+            if searchBusy { searchBusy = false }
             return
         }
-        searchPosition = selectFirst || old < 0 ? 0 : min(old, searchResults.count - 1)
-        if selectFirst { scrollToMessage(index: searchResults[searchPosition]) }
+        let selected = selectFirst ? nil : searchMatchId
+        searchTask = Task { [weak self] in
+            if debounce { try? await Task.sleep(for: .milliseconds(150)) }
+            guard !Task.isCancelled else { return }
+            let work = Task.detached(priority: .userInitiated) { ChatSearch.matches(msgs, needle) }
+            let slow = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(200))
+                if !Task.isCancelled { self?.searchBusy = true }
+            }
+            let found = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+            slow.cancel()
+            guard let self, !Task.isCancelled else { return }
+            searchBusy = false
+            guard let found, current == key else { return }
+            searchResults = found
+            searchPosition = ChatSearch.position(in: found, keeping: selected)
+            if selectFirst, searchPosition >= 0 { scrollToMessage(id: found[searchPosition]) }
+        }
     }
 
     func navigateSearch(backwards: Bool) {
         guard !searchResults.isEmpty else { return }
-        let n = searchResults.count
-        searchPosition = (searchPosition + (backwards ? n - 1 : 1)) % n
-        scrollToMessage(index: searchResults[searchPosition])
+        searchPosition = ChatSearch.step(searchPosition, count: searchResults.count, backwards: backwards)
+        scrollToMessage(id: searchResults[searchPosition])
     }
 
     var searchMatchId: String? {
-        guard searchVisible, searchPosition >= 0, searchPosition < searchResults.count, let c = currentConversation,
-              searchResults[searchPosition] < c.msgs.count else { return nil }
-        return c.msgs[searchResults[searchPosition]].id
+        guard searchVisible, searchPosition >= 0, searchPosition < searchResults.count else { return nil }
+        return searchResults[searchPosition]
+    }
+
+    func scrollToMessage(id: String) {
+        scrollSerial += 1
+        scrollRequest = (id, scrollSerial)
     }
 
     func scrollToMessage(index: Int) {
@@ -1541,12 +1563,14 @@ final class AppModel {
         guard let c = chats.convs[key], let i = chats.findMessage(c, ts: ts, authors: []) else { return false }
         let removed = chats.convs[key]!.msgs.remove(at: i)
         if editKey == key && editTs == removed.ts { cancelEdit() }
-        do {
-            try store.rewrite(chats.allRecords())
-        } catch {
-            chats.convs[key]!.insertSorted(removed)
+        writer.rewrite(chats) { [weak self] error in
+            guard let error, let self else { return }
+            // The file still holds the message: show it again.
+            if chats.convs[key] != nil, chats.findMessage(chats.convs[key]!, ts: ts, authors: []) == nil {
+                _ = chats.convs[key]!.insertSorted(removed)
+                updateSearch()
+            }
             showFlash("Could not remove message from history: \(error.localizedDescription)")
-            return false
         }
         updateSearch()
         return true
@@ -1559,9 +1583,8 @@ final class AppModel {
         if editKey == key && editTs == c.msgs[i].ts && !c.msgs[i].deleted { cancelEdit() }
         guard let rec = chats.applyDelete(key, targetTs: ts, authors: authors) else { return false }
         // Rewrite instead of append: the old ciphertext of the message must not stay in the file.
-        do {
-            try store.rewrite(chats.allRecords())
-        } catch {
+        writer.rewrite(chats) { [weak self] error in
+            guard let error, let self else { return }
             showFlash("Could not remove message from history: \(error.localizedDescription)")
             persist(rec) // at least keep the placeholder after a restart
         }

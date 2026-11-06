@@ -93,7 +93,11 @@ private struct SearchBar: View {
                         model.closeSearch()
                         return .handled
                     }
-                if !model.searchText.isEmpty {
+                if model.searchBusy {
+                    Text("Searching …")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else if !model.searchText.isEmpty {
                     Text(model.searchResults.isEmpty ? "No results" : "\(model.searchPosition + 1) of \(model.searchResults.count)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -538,7 +542,6 @@ private struct Bubble: View {
     let isGroup: Bool
     let grouping: MessageGrouping
     let pending: Bool
-    @State private var infoShown = false
     @Environment(\.searchHighlightId) private var searchHighlightId
 
     var body: some View {
@@ -649,8 +652,7 @@ private struct Bubble: View {
         }
         .modifier(MaxWidth(480))
         .contentShape(shape)
-        .contextMenu { MessageMenu(message: m) { infoShown = true } }
-        .sheet(isPresented: $infoShown) { MessageInfoSheet(messageId: m.id) }
+        .contextMenu { MessageMenu(message: m) }
         .opacity(pending ? 0.7 : 1)
     }
 
@@ -800,7 +802,6 @@ private struct ReactionsView: View {
 private struct MessageMenu: View {
     @Environment(AppModel.self) private var model
     let message: Message
-    let onInfo: () -> Void
 
     var body: some View {
         let m = message
@@ -835,7 +836,7 @@ private struct MessageMenu: View {
             }
         }
         if !m.deleted {
-            Button(action: onInfo) { Label("Info …", systemImage: "info.circle") }
+            Button { model.messageInfoId = m.id } label: { Label("Info …", systemImage: "info.circle") }
         }
         Divider()
         Button(role: .destructive) { Task { await model.deleteMessage(m.id) } } label: { Label("Delete …", systemImage: "trash") }

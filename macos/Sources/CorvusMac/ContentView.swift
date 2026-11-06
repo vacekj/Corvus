@@ -72,6 +72,9 @@ struct ContentView: View {
         .sheet(isPresented: Binding(get: { model.forwardMessageId != nil }, set: { if !$0 { model.forwardMessageId = nil } })) {
             if let id = model.forwardMessageId { ForwardSheet(messageId: id) }
         }
+        .sheet(isPresented: Binding(get: { model.messageInfoId != nil }, set: { if !$0 { model.messageInfoId = nil } })) {
+            if let id = model.messageInfoId { MessageInfoSheet(messageId: id) }
+        }
         .sheet(isPresented: $model.galleryShown) { MediaGallerySheet() }
         .sheet(isPresented: $model.storiesShown) { StoriesSheet() }
         .modifier(GroupSheets())

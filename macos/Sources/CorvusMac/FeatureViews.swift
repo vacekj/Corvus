@@ -1,6 +1,7 @@
 import AppKit
 import AVKit
 import CoreImage
+import ImageIO
 import CorvusCore
 import SwiftUI
 
@@ -15,9 +16,9 @@ struct StickerView: View {
     var body: some View {
         let k = AppModel.stickerKey(attachment.stickerPackId, attachment.stickerId)
         Group {
-            if let data = model.stickerImages[k], NSImage(data: data) != nil {
+            if let data = model.stickerImages[k], StickerView.decodes(data, k) {
                 AnimatedImage(data: data)
-            } else if !attachment.thumb.isEmpty, NSImage(data: attachment.thumb) != nil {
+            } else if !attachment.thumb.isEmpty, StickerView.decodes(attachment.thumb, "thumb:" + k) {
                 AnimatedImage(data: attachment.thumb) // imported from Signal Desktop: the sticker itself
             } else {
                 RoundedRectangle(cornerRadius: 12).fill(Theme.field)
@@ -27,6 +28,16 @@ struct StickerView: View {
         .frame(width: size, height: size)
         .onAppear { model.loadSticker(packId: attachment.stickerPackId, stickerId: attachment.stickerId) }
         .help("Sticker")
+    }
+
+    /// Whether the data is an image, checked once per sticker (AnimatedImage decodes it for display).
+    private static var decodable: [String: Bool] = [:]
+    private static func decodes(_ data: Data, _ key: String) -> Bool {
+        let k = "\(key)#\(data.count)"
+        if let ok = decodable[k] { return ok }
+        let ok = CGImageSourceCreateWithData(data as CFData, nil).map { CGImageSourceGetCount($0) > 0 } ?? false
+        decodable[k] = ok
+        return ok
     }
 }
 
@@ -351,28 +362,17 @@ struct MediaGallerySheet: View {
     @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State private var tab = 0
+    @State private var gallery = MediaGallery()
+    @State private var loaded = false
 
-    private struct Item: Identifiable {
-        var message: Message
-        var index: Int
-        var id: String { "\(message.id)#\(index)" }
-        var attachment: Attachment { message.attachments[index] }
-    }
-
-    private struct LinkItem: Identifiable {
-        var url: URL
-        var message: Message
-        var id: String { message.id + url.absoluteString }
+    /// Changes when the conversation's messages do (cheap to compare, unlike the messages).
+    private var source: String {
+        guard let c = model.currentConversation else { return "" }
+        return "\(c.key)|\(c.msgs.count)|\(c.msgs.last?.id ?? "")"
     }
 
     var body: some View {
-        let msgs = model.currentConversation?.msgs.filter { !$0.deleted && !$0.viewOnce } ?? []
-        let items = msgs.reversed().flatMap { m in m.attachments.indices.map { Item(message: m, index: $0) } }
-            .filter { !$0.attachment.isSticker }
-        let media = items.filter { $0.attachment.isImage || $0.attachment.isVideo }
-        let audio = items.filter { $0.attachment.isAudio }
-        let files = items.filter { !$0.attachment.isImage && !$0.attachment.isVideo && !$0.attachment.isAudio }
-        let links = msgs.reversed().flatMap { m in MediaGallerySheet.links(in: m.text).map { LinkItem(url: $0, message: m) } }
+        let (media, audio, files, links) = (gallery.media, gallery.audio, gallery.files, gallery.links)
 
         VStack(spacing: 0) {
             HStack {
@@ -441,21 +441,16 @@ struct MediaGallerySheet: View {
                         }
                     }
                 }
-                if [media.count, audio.count, files.count, links.count][tab] == 0 {
+                if loaded && [media.count, audio.count, files.count, links.count][tab] == 0 {
                     Text("Nothing here yet").foregroundStyle(.secondary).padding(40)
                 }
             }
         }
         .frame(width: 680, height: 520)
-    }
-
-    private static let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
-
-    static func links(in text: String) -> [URL] {
-        guard !text.isEmpty, let detector else { return [] }
-        return detector.matches(in: text, range: NSRange(location: 0, length: (text as NSString).length)).compactMap { m in
-            guard let u = m.url, ["http", "https"].contains(u.scheme?.lowercased() ?? "") else { return nil }
-            return u
+        .task(id: source) {
+            let msgs = model.currentConversation?.msgs ?? []
+            gallery = await Task.detached(priority: .userInitiated) { MediaGallery(msgs) }.value
+            loaded = true
         }
     }
 }
@@ -534,8 +529,8 @@ struct StoriesSheet: View {
 private struct StoryViewer: View {
     @Environment(AppModel.self) private var model
     let story: Story
-    @State private var data: Data?
-    @State private var videoURL: URL?
+    @State private var image: NSImage?          // decoded once, not on every redraw
+    @State private var player: AVPlayer?        // kept, so a redraw doesn't restart the video
     @State private var error = ""
     @State private var reply = ""
 
@@ -544,10 +539,10 @@ private struct StoryViewer: View {
             ZStack {
                 Color.black
                 if let a = story.attachment {
-                    if a.isVideo, let videoURL {
-                        VideoPlayer(player: AVPlayer(url: videoURL))
-                    } else if let data, let img = NSImage(data: data) {
-                        Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
+                    if a.isVideo, let player {
+                        VideoPlayer(player: player)
+                    } else if let image {
+                        Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
                     } else if !error.isEmpty {
                         Text(error).foregroundStyle(.white.opacity(0.7)).padding()
                     } else {
@@ -589,9 +584,10 @@ private struct StoryViewer: View {
             guard !d.isEmpty else { throw RpcError("The story media is empty.") }
             if a.isVideo {
                 let suffix = AttachmentPolicy.mediaSuffix(filename: a.filename, contentType: a.contentType, fallback: "mp4")
-                videoURL = try Media.writeAttachmentTemp(d, name: "story." + suffix)
+                player = AVPlayer(url: try Media.writeAttachmentTemp(d, name: "story." + suffix))
             } else {
-                data = d
+                image = await Task.detached(priority: .userInitiated) { NSImage(data: d) }.value
+                if image == nil { error = "The story could not be shown." }
             }
         } catch {
             self.error = "The story could not be loaded: \(error.localizedDescription)"

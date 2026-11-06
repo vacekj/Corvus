@@ -187,7 +187,11 @@ extension AppModel {
                 }
                 if let rec = chats.markViewOnceViewed(key, ts: m.ts, authors: [author]) {
                     // Rewrite instead of append, so the attachment reference is really gone from the file.
-                    do { try store.rewrite(chats.allRecords()) } catch { persist(rec) }
+                    writer.rewrite(chats) { [self] error in
+                        guard let error else { return }
+                        showFlash("Could not update history: \(error.localizedDescription)")
+                        persist(rec)
+                    }
                 }
             } catch {
                 await Dialogs.warn("View once media", error.localizedDescription)

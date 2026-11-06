@@ -116,7 +116,8 @@ extension AppModel {
             let (records, _) = try await Task.detached(priority: .userInitiated) { try await DesktopImport.run(account: account) }.value
             let sum = chats.mergeImported(records)
             listChanged()
-            guard rewriteHistory("save the imported history") else { return }
+            let saved = await withCheckedContinuation { c in rewriteHistory("save the imported history") { c.resume(returning: $0) } }
+            guard saved else { return }
             DesktopImport.writeReport(chats)
             showFlash("Imported \(sum.messagesAdded) messages", seconds: 4)
             await Dialogs.info("Import finished",

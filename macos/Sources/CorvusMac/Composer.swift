@@ -167,10 +167,8 @@ private struct AttachmentTray: View {
                 ForEach(files, id: \.self) { f in
                     ZStack(alignment: .topTrailing) {
                         Group {
-                            if Media.mimeType(forFile: f).hasPrefix("image/"), let img = NSImage(contentsOfFile: f) {
-                                Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
-                                    .frame(width: 64, height: 64)
-                                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            if Media.mimeType(forFile: f).hasPrefix("image/") {
+                                PendingImageThumb(path: f)
                             } else {
                                 VStack(spacing: 4) {
                                     Image(systemName: "doc.fill").font(.title3)
@@ -196,6 +194,32 @@ private struct AttachmentTray: View {
             }
             .padding(.top, 6)
             .padding(.horizontal, 2)
+        }
+    }
+}
+
+/// A queued picture, decoded once off the main thread at thumbnail size.
+private struct PendingImageThumb: View {
+    let path: String
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else {
+                Rectangle().fill(Theme.field)
+            }
+        }
+        .frame(width: 64, height: 64)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .task(id: path) {
+            let path = path
+            image = await MediaImageCache.shared.image("pending:" + path) {
+                await Task.detached(priority: .userInitiated) {
+                    (try? Data(contentsOf: URL(fileURLWithPath: path))).flatMap { MediaDecode.image($0, maxPixel: 192) }
+                }.value
+            }
         }
     }
 }
