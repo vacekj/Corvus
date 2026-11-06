@@ -5,14 +5,25 @@ import SwiftUI
 /// Group management through signal-cli (`listGroups`, `updateGroup`, `quitGroup`). The parsing and the
 /// parameter shapes live in CorvusCore (Groups.swift); the Qt app does the same in src/GroupDialog.cpp.
 extension AppModel {
-    /// Name of a person for member lists: "You", the contact name, or the number.
+    /// Name of a person for member lists: "You", the contact name, the number, or "Unknown" (never a UUID).
     func memberName(_ id: String) -> String {
         let key = chats.resolveKey(id)
         if !account.isEmpty && (id == account || key == account) { return "You" }
-        if let c = chats.convs[key], !c.isGroup, c.title != key { return c.title }
-        if let name = chats.contactNames[key] ?? chats.contactNames[id] { return name }
-        if let c = roster.contact(id) ?? roster.contact(key), c.title != c.key { return c.title }
-        return id
+        var names: [String] = []
+        if let c = chats.convs[key], !c.isGroup, c.title != key { names.append(c.title) }
+        if let name = chats.contactNames[key] ?? chats.contactNames[id] { names.append(name) }
+        if let c = roster.contact(id) ?? roster.contact(key), c.title != c.key { names.append(c.title) }
+        return People.displayName(names: names, number: People.isPhoneNumber(key) ? key : id)
+    }
+
+    /// A group member as a picker/list row: name, number (if not the name), avatar.
+    func memberPerson(_ m: GroupMember) -> PickerPerson {
+        let key = chats.resolveKey(m.id)
+        let name = memberName(m.id)
+        let number = !m.number.isEmpty ? m.number : (People.isPhoneNumber(key) ? key : "")
+        let avatar = avatars[key] ?? chats.convs[key].map(avatarImage) ?? Media.placeholderAvatar(key: key, title: name)
+        return PickerPerson(key: key, title: name, detail: isSelf(m.id) ? "" : People.detail(title: name, address: number),
+                            avatar: avatar, lastTs: 0)
     }
 
     func isSelf(_ id: String) -> Bool { !account.isEmpty && (id == account || chats.resolveKey(id) == account) }
@@ -67,10 +78,8 @@ extension AppModel {
                                     ok: "Leave", destructive: true) else { return }
         var successor: String?
         if let g = roster.groups[key], g.needsSuccessor(leaving: account) {
-            let candidates = g.successors(leaving: account)
-            guard let i = await Dialogs.choose("Choose a new admin", "You are the only admin. Who should take over?",
-                                               options: candidates.map { memberName($0.id) }) else { return }
-            successor = candidates[i].id
+            guard let s = await chooseSuccessor(key, g.successors(leaving: account)) else { return }
+            successor = s
         }
         do { try await cli.call("quitGroup", GroupParams.quit(groupId: id, successor: successor)) } catch {
             showFlash("Could not leave the group: \(error.localizedDescription)", seconds: 8)
@@ -84,9 +93,38 @@ extension AppModel {
         showFlash("You left the group.", seconds: 4)
     }
 
+    /// Shows the sheet listing `candidates` and waits for the pick (nil: cancelled).
+    func chooseSuccessor(_ key: String, _ candidates: [GroupMember]) async -> String? {
+        finishSuccessorPick(nil)
+        return await withCheckedContinuation { cont in
+            successorContinuation = cont
+            successorPick = SuccessorPick(key: key, candidates: candidates)
+        }
+    }
+
+    func finishSuccessorPick(_ id: String?) {
+        successorPick = nil
+        let cont = successorContinuation
+        successorContinuation = nil
+        cont?.resume(returning: id)
+    }
+
     func showGroupInfo(_ key: String) {
         guard chats.convs[key]?.isGroup == true else { return }
         openConversation(key)
-        groupInfoKey = key
+        infoPanelShown = true
     }
+
+    /// ⌘I and a click on the chat header.
+    func toggleInfoPanel() {
+        guard current != nil else { return }
+        infoPanelShown.toggle()
+    }
+}
+
+/// The group being left and who could become its admin.
+struct SuccessorPick: Identifiable {
+    let key: String
+    let candidates: [GroupMember]
+    var id: String { key }
 }

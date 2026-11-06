@@ -229,8 +229,9 @@ struct AppCommands: Commands {
                 .keyboardShortcut(KeyEquivalent(Character("\(n)")))
             }
             Divider()
-            Button("Group info …") { if let key = model.current { model.showGroupInfo(key) } }
-                .disabled(model.currentConversation?.isGroup != true)
+            Button(model.infoPanelShown ? "Hide conversation info" : "Show conversation info") { model.toggleInfoPanel() }
+                .keyboardShortcut("i")
+                .disabled(model.current == nil)
         }
         CommandGroup(after: .appSettings) {
             Button("History protection …") { Task { await model.changeHistoryProtection() } }
