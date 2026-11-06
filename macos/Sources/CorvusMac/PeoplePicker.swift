@@ -176,6 +176,12 @@ struct SearchField: View {
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(RoundedRectangle(cornerRadius: 8).fill(Theme.field))
-        .onAppear { if autofocus { focused = true } }
+        .onAppear {
+            guard autofocus else { return }
+            // Take the caret from the composer (an AppKit text view keeps it unless the window lets go).
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            focused = true
+            DispatchQueue.main.async { focused = true }
+        }
     }
 }

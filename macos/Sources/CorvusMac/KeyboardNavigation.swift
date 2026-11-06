@@ -195,8 +195,16 @@ private struct QuickSwitcherPanel: View {
         removeKeys()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
             let code = e.keyCode
+            let typed = e.modifierFlags.intersection([.command, .control, .option]).isEmpty ? (e.characters ?? "") : ""
             let handled = MainActor.assumeIsolated { () -> Bool in
                 guard KeyboardNavigation.shared.quickSwitcherShown else { return false }
+                // Typing goes into the search even if the field did not get the caret.
+                let fieldFocused = (NSApp.keyWindow?.firstResponder as? NSTextView)?.isFieldEditor == true
+                if !fieldFocused, !typed.isEmpty, typed.unicodeScalars.allSatisfy({ !CharacterSet.controlCharacters.contains($0) }),
+                   ![53, 125, 126, 36, 76].contains(code) {
+                    filter += typed
+                    return true
+                }
                 let list = results(filter.trimmingCharacters(in: .whitespaces))
                 switch code {
                 case 53: // Esc
