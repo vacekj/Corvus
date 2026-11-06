@@ -71,7 +71,7 @@ enum DebugHooks {
             if let d = arg.data(using: .utf8), let o = (try? JSONSerialization.jsonObject(with: d)) as? JSON { model.onCallEvent(o) }
         case "accept": if let k = model.current { model.acceptRequest(k) }
         case "block": if let k = model.current { Task { await model.setBlocked(k, arg != "off") } }
-        case "group-info": model.groupInfoKey = arg == "off" ? nil : model.current
+        case "group-info", "info": model.infoPanelShown = arg != "off"
         case "new-group": model.newGroupShown = arg != "off"
         case "snapshot": snapshot(to: arg)
         case "quit": NSApp.terminate(nil)

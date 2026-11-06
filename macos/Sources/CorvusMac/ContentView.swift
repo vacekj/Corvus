@@ -21,6 +21,13 @@ struct ContentView: View {
                 if let flash = model.flash { Toast(text: flash).padding(.top, 10) }
             }
             .animation(.easeOut(duration: 0.2), value: model.flash)
+            .inspector(isPresented: Binding(get: { model.infoPanelShown && model.currentConversation != nil },
+                                            set: { model.infoPanelShown = $0 })) {
+                Group {
+                    if let c = model.currentConversation { ConversationInfoPanel(conversation: c) }
+                }
+                .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
+            }
             .toolbar {
                 ToolbarItem(placement: .navigation) {
                     if let c = model.currentConversation { ChatHeader(conversation: c) }
@@ -30,12 +37,6 @@ struct ContentView: View {
                         Button { Task { await model.startCall(c.key) } } label: { Label("Voice call", systemImage: "phone") }
                             .help("Voice call")
                             .disabled(!model.connected || model.call?.isActive == true)
-                    }
-                }
-                ToolbarItem(placement: .automatic) {
-                    if let c = model.currentConversation, c.isGroup {
-                        Button { model.showGroupInfo(c.key) } label: { Label("Group info", systemImage: "info.circle") }
-                            .help("Group info: members, admins, invite link")
                     }
                 }
                 ToolbarItem(placement: .automatic) {
@@ -49,6 +50,11 @@ struct ContentView: View {
                     }
                     .help("Search this conversation (⌘F)")
                     .disabled(model.current == nil)
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button { model.toggleInfoPanel() } label: { Label("Info", systemImage: "info.circle") }
+                        .help("Conversation info (⌘I)")
+                        .disabled(model.current == nil)
                 }
             }
         }
@@ -84,19 +90,26 @@ struct ContentView: View {
     }
 }
 
-/// Avatar, name and state of the open chat in the window's toolbar.
+/// Avatar, name and state of the open chat in the window's toolbar; a click shows the info panel.
 private struct ChatHeader: View {
     @Environment(AppModel.self) private var model
     let conversation: Conversation
 
     var body: some View {
         let c = conversation
+        let detail = model.chatDetail(c)
+        Button { model.toggleInfoPanel() } label: { content(c, detail: detail) }
+            .buttonStyle(.plain)
+            .help("Conversation info (⌘I)")
+    }
+
+    private func content(_ c: Conversation, detail: String) -> some View {
         HStack(spacing: 10) {
             AvatarView(image: model.avatarImage(c), size: 30)
             VStack(alignment: .leading, spacing: 0) {
-                Text(model.title(c)).font(.headline).lineLimit(1)
+                Text(model.visibleTitle(c)).font(.headline).lineLimit(1)
                 HStack(spacing: 6) {
-                    if c.isGroup { Text("Group") } else if c.title != c.key { Text(c.key) }
+                    if c.isGroup { Text("Group") } else if !detail.isEmpty { Text(detail) }
                     if c.expirationSeconds > 0 {
                         Label(AppModel.expirationChoices.first { $0.1 == c.expirationSeconds }?.0 ?? "\(c.expirationSeconds) s",
                               systemImage: "timer")
@@ -111,6 +124,7 @@ private struct ChatHeader: View {
             }
         }
         .padding(.horizontal, 4)
+        .contentShape(Rectangle())
     }
 }
 
@@ -452,7 +466,7 @@ private struct ConversationMenu: View {
             }
             .disabled(!model.connected)
             Divider()
-            Button { Task { await model.editNickname(c.key) } } label: {
+            Button { model.editNickname(c.key) } label: {
                 Label(c.localNickname.isEmpty ? "Set nickname …" : "Change nickname …", systemImage: "person.text.rectangle")
             }
             if !c.localNickname.isEmpty { Button("Remove nickname") { model.setNickname(c.key, "") } }

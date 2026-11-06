@@ -2,7 +2,7 @@ import AppKit
 import CorvusCore
 import SwiftUI
 
-/// Sheets for "New group …" and "Group info …". Applied once to the main window.
+/// Sheets for "New group …", "New conversation …" and the new admin when leaving. Applied once to the main window.
 struct GroupSheets: ViewModifier {
     @Environment(AppModel.self) private var model
 
@@ -12,8 +12,8 @@ struct GroupSheets: ViewModifier {
             .sheet(isPresented: Binding(get: { model.newConversationShown }, set: { model.newConversationShown = $0 })) {
                 NewConversationSheet()
             }
-            .sheet(isPresented: Binding(get: { model.groupInfoKey != nil }, set: { if !$0 { model.groupInfoKey = nil } })) {
-                if let key = model.groupInfoKey { GroupInfoSheet(key: key) }
+            .sheet(item: Binding(get: { model.successorPick }, set: { if $0 == nil { model.finishSuccessorPick(nil) } })) { pick in
+                SuccessorSheet(pick: pick)
             }
     }
 }
@@ -82,55 +82,44 @@ struct NewGroupSheet: View {
 
 // MARK: - Group info
 
-struct GroupInfoSheet: View {
+/// The group part of the info panel: name and description, members, invite link, leaving.
+struct GroupInfoPanel: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     let key: String
     @State private var name = ""
     @State private var about = ""
     @State private var busy = false
     @State private var error: String?
     @State private var addShown = false
+    @State private var filter = ""
 
     private var id: String { String(key.dropFirst(2)) }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let g = model.roster.groups[key], let c = model.chats.convs[key] {
-                content(g, c)
+            if let g = model.roster.groups[key] {
+                content(g)
             } else {
-                Text("Group information").font(.title3.weight(.semibold))
-                Text(model.roster.groupsLoaded ? "signal-cli has no details for this group." : "Loading …").foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, minHeight: 80)
-                HStack { Spacer(); Button("Close") { dismiss() }.keyboardShortcut(.cancelAction) }
+                Text(model.roster.groupsLoaded ? "signal-cli has no details for this group." : "Loading …")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, minHeight: 60)
             }
         }
-        .padding(20)
-        .frame(width: 460)
-        .task {
+        .task(id: key) {
+            filter = ""
+            error = nil
+            if let g = model.roster.groups[key] { name = g.name; about = g.description }
             await model.refreshGroup(id)
-            if let g = model.roster.groups[key] {
-                name = g.name
-                about = g.description
-            }
+            if let g = model.roster.groups[key] { name = g.name; about = g.description }
         }
         .sheet(isPresented: $addShown) { AddMembersSheet(key: key) }
     }
 
     @ViewBuilder
-    private func content(_ g: GroupInfo, _ c: Conversation) -> some View {
+    private func content(_ g: GroupInfo) -> some View {
         let me = model.account
         let admin = g.canAdminister(me)
         let canEdit = g.isMember && g.canEditDetails(me)
-        HStack(spacing: 12) {
-            AvatarView(image: model.avatarImage(c), size: 52)
-            VStack(alignment: .leading, spacing: 2) {
-                Text(g.name.isEmpty ? "Group" : g.name).font(.title3.weight(.semibold)).lineLimit(1)
-                Text("\(g.members.count) member\(g.members.count == 1 ? "" : "s")" + (g.isMember ? "" : " · you left"))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-        }
 
         if canEdit {
             TextField("Group name", text: $name).textFieldStyle(.roundedBorder)
@@ -152,79 +141,71 @@ struct GroupInfoSheet: View {
             Text(g.description).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
         }
 
+        Divider()
         HStack {
-            Text("Members").font(.headline)
+            Text("\(g.members.count) member\(g.members.count == 1 ? "" : "s")").font(.headline)
             Spacer()
             Button { addShown = true } label: { Label("Add members …", systemImage: "person.badge.plus") }
+                .buttonStyle(.borderless)
                 .disabled(busy || !g.isMember || !g.canAddMembers(me))
         }
-        List {
-            ForEach(g.members, id: \.self) { m in memberRow(m, g, admin: admin) }
-            if !g.pending.isEmpty {
-                Section("Invited") {
-                    ForEach(g.pending, id: \.self) { m in
-                        HStack {
-                            Text(model.memberName(m.id)).lineLimit(1)
-                            Spacer()
-                            if admin { Button("Cancel invite") { run(GroupParams.removeMembers([m.id])) }.buttonStyle(.borderless) }
-                        }
-                    }
+        if g.members.count > People.filterThreshold {
+            SearchField(text: $filter, prompt: "Search members", autofocus: false)
+        }
+        let members = People.sortedMembers(g.members, isSelf: { model.isSelf($0.id) }, name: { model.memberName($0.id) })
+            .map { (member: $0, person: model.memberPerson($0)) }
+            .filter { People.matches(filter, name: $0.person.title, detail: $0.person.detail, number: $0.member.number) }
+        LazyVStack(alignment: .leading, spacing: 0) {
+            ForEach(members, id: \.member) { m in memberRow(m.member, m.person, admin: admin) }
+        }
+        .overlay {
+            if members.isEmpty && !filter.isEmpty { Text("No one matches “\(filter)”").foregroundStyle(.secondary) }
+        }
+
+        if !g.pending.isEmpty {
+            Text("Invited").font(.headline).padding(.top, 4)
+            ForEach(g.pending, id: \.self) { m in
+                HStack(spacing: 4) {
+                    PickerRow(person: model.memberPerson(m))
+                    if admin { Button("Cancel invite") { run(GroupParams.removeMembers([m.id])) }.buttonStyle(.borderless) }
                 }
             }
-            if !g.requesting.isEmpty {
-                Section("Join requests") {
-                    ForEach(g.requesting, id: \.self) { m in
-                        HStack {
-                            Text(model.memberName(m.id)).lineLimit(1)
-                            Spacer()
-                            if admin {
-                                Button("Approve") { run(GroupParams.addMembers([m.id])) }.buttonStyle(.borderless)
-                                Button("Deny") { run(GroupParams.removeMembers([m.id])) }.buttonStyle(.borderless)
-                            }
-                        }
+        }
+        if !g.requesting.isEmpty {
+            Text("Join requests").font(.headline).padding(.top, 4)
+            ForEach(g.requesting, id: \.self) { m in
+                HStack(spacing: 4) {
+                    PickerRow(person: model.memberPerson(m))
+                    if admin {
+                        Button("Approve") { run(GroupParams.addMembers([m.id])) }.buttonStyle(.borderless)
+                        Button("Deny") { run(GroupParams.removeMembers([m.id])) }.buttonStyle(.borderless)
                     }
                 }
             }
         }
-        .frame(height: 220)
 
+        Divider()
         inviteLink(g, admin: admin)
 
         if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-
-        HStack {
-            if busy { ProgressView().controlSize(.small) }
-            Button { Task { await model.toggleBlocked(key) } } label: {
-                Text(model.isBlocked(key) ? "Unblock group" : "Block group …")
-            }
-            .disabled(!model.connected)
-            Button("Leave group …", role: .destructive) {
-                Task {
-                    await model.leaveGroup(key)
-                    if model.roster.groups[key]?.isMember != true { dismiss() }
-                }
-            }
-            .disabled(!model.connected || !g.isMember)
-            Spacer()
-            Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
-        }
+        if busy { ProgressView().controlSize(.small) }
     }
 
-    private func memberRow(_ m: GroupMember, _ g: GroupInfo, admin: Bool) -> some View {
+    /// A member; a click opens the 1:1 chat with them.
+    private func memberRow(_ m: GroupMember, _ p: PickerPerson, admin: Bool) -> some View {
         let isMe = model.isSelf(m.id)
-        return HStack(spacing: 8) {
-            Image(systemName: "person.circle").foregroundStyle(.secondary)
-            VStack(alignment: .leading, spacing: 0) {
-                Text(model.memberName(m.id)).lineLimit(1)
-                if model.memberName(m.id) != m.id, !isMe { Text(m.id).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-            }
-            Spacer()
+        return HStack(spacing: 4) {
+            PickerRow(person: p)
+                .onTapGesture { if !isMe { model.startConversation(p.key) } }
+                .help(isMe ? "" : "Message \(p.title)")
             if m.isAdmin {
                 Text("Admin").font(.caption2.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Capsule().fill(Theme.signalBlue.opacity(0.15))).foregroundStyle(Theme.signalBlue)
             }
             if admin && !isMe {
                 Menu {
+                    Button("Message \(p.title)") { model.startConversation(p.key) }
+                    Divider()
                     if m.isAdmin {
                         Button("Remove admin") { run(GroupParams.demote([m.id])) }
                     } else {

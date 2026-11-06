@@ -123,7 +123,10 @@ final class AppModel {
     var roster = Roster() { didSet { chatListCache.removeAll() } }
     /// Chat list rows (per folder), rebuilt only after a change to what they show.
     @ObservationIgnored private var chatListCache: [Bool: (day: Int, items: [ChatListItem])] = [:]
-    var groupInfoKey: String?                  // group whose info sheet is shown
+    var infoPanelShown = false                 // info panel (inspector) of the open chat
+    var nicknameFocusPending = false           // the info panel focuses its nickname field
+    var successorPick: SuccessorPick?          // "choose a new admin" sheet while leaving a group
+    @ObservationIgnored var successorContinuation: CheckedContinuation<String?, Never>?
     var newGroupShown = false
     var newConversationShown = false
 
@@ -842,11 +845,12 @@ final class AppModel {
         persist(Records.nickname(key, nickname))
     }
 
-    func editNickname(_ key: String) async {
-        guard let c = chats.convs[key] else { return }
-        if let n = await Dialogs.text("Contact nickname", "Nickname for \(c.title):", initial: c.localNickname) {
-            setNickname(key, n.trimmingCharacters(in: .whitespaces))
-        }
+    /// Opens the chat's info panel with the nickname field focused.
+    func editNickname(_ key: String) {
+        guard chats.convs[key]?.isGroup == false else { return }
+        openConversation(key)
+        infoPanelShown = true
+        nicknameFocusPending = true
     }
 
     func setArchived(_ key: String, _ archived: Bool) {

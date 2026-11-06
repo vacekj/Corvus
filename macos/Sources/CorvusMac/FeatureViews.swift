@@ -666,10 +666,11 @@ struct RecordingBar: View {
 }
 
 /// A square tile of the media gallery, decoded from the original picture or video.
-private struct GalleryTile: View {
+struct GalleryTile: View {
     @Environment(AppModel.self) private var model
     let message: Message
     let index: Int
+    var size: CGFloat = 120
     @State private var image: NSImage?
 
     var body: some View {
@@ -685,7 +686,7 @@ private struct GalleryTile: View {
                 Image(systemName: "play.circle.fill").font(.system(size: 28)).foregroundStyle(.white).shadow(radius: 3)
             }
         }
-        .frame(width: 120, height: 120)
+        .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contentShape(RoundedRectangle(cornerRadius: 6))
         .task(id: "\(message.id)#\(index)") {
