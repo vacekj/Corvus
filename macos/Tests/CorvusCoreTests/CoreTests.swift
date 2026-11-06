@@ -1167,7 +1167,13 @@ final class RosterTests: XCTestCase {
     func testPersistenceIsPerAccount() throws {
         let suite = "corvus-tests-\(UUID().uuidString)"
         let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            // cfprefsd keeps an empty plist for the suite otherwise
+            let file = FileManager.default.homeDirectoryForCurrentUser
+                .appendingPathComponent("Library/Preferences/\(suite).plist")
+            try? FileManager.default.removeItem(at: file)
+        }
         var r = roster(contacts: [["number": "+49333000", "isBlocked": true]], baselined: false)
         r.baselineContacts(existing: ["+49888000", "g:SKIP"])
         r.accept("+49999000")

@@ -173,14 +173,22 @@ private struct WindowAccessor: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     final class TrackingView: NSView {
+
         weak var model: AppModel?
         private var observer: NSObjectProtocol?
+
+        private static var restoredFrame = false
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
             MainWindowTracker.shared.window = window
-            window.setFrameAutosaveName("MainWindow")
+            // SwiftUI saves the frame as "NSWindow Frame main" but places a new window on the active
+            // screen at launch; put it back where the user left it.
+            if !Self.restoredFrame {
+                Self.restoredFrame = true
+                window.setFrameUsingName("main")
+            }
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window,
                                                               queue: .main) { [weak self] _ in
