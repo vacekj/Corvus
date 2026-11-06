@@ -9,6 +9,9 @@ struct GroupSheets: ViewModifier {
     func body(content: Content) -> some View {
         content
             .sheet(isPresented: Binding(get: { model.newGroupShown }, set: { model.newGroupShown = $0 })) { NewGroupSheet() }
+            .sheet(isPresented: Binding(get: { model.newConversationShown }, set: { model.newConversationShown = $0 })) {
+                NewConversationSheet()
+            }
             .sheet(isPresented: Binding(get: { model.groupInfoKey != nil }, set: { if !$0 { model.groupInfoKey = nil } })) {
                 if let key = model.groupInfoKey { GroupInfoSheet(key: key) }
             }
@@ -28,49 +31,6 @@ struct GroupMenuItems: View {
             }
             .disabled(!model.connected || model.roster.groups[conversation.key]?.isMember != true)
             Divider()
-        }
-    }
-}
-
-// MARK: - Contact picker
-
-/// Multi-select list of the contacts known to signal-cli.
-struct ContactPicker: View {
-    @Environment(AppModel.self) private var model
-    @Binding var selection: [String]
-    var exclude: Set<String> = []
-    @State private var filter = ""
-
-    var body: some View {
-        let q = filter.trimmingCharacters(in: .whitespaces)
-        let list = model.roster.pickableContacts.filter { c in
-            !exclude.contains(c.number) && !exclude.contains(c.uuid)
-                && (q.isEmpty || c.title.localizedCaseInsensitiveContains(q) || c.key.localizedCaseInsensitiveContains(q))
-        }
-        VStack(alignment: .leading, spacing: 6) {
-            TextField("Search contacts", text: $filter).textFieldStyle(.roundedBorder)
-            List(list) { c in
-                let on = selection.contains(c.key)
-                Button {
-                    if on { selection.removeAll { $0 == c.key } } else { selection.append(c.key) }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(on ? Theme.signalBlue : .secondary)
-                        VStack(alignment: .leading, spacing: 0) {
-                            Text(c.title).lineLimit(1)
-                            if c.title != c.key { Text(c.key).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                        }
-                        Spacer()
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-            }
-            .overlay {
-                if list.isEmpty { Text(model.roster.contactsLoaded ? "No contacts" : "Loading contacts …").foregroundStyle(.secondary) }
-            }
-            Text("\(selection.count) selected").font(.caption).foregroundStyle(.secondary)
         }
     }
 }
@@ -95,7 +55,7 @@ struct NewGroupSheet: View {
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...3)
             Text("Members").font(.headline)
-            ContactPicker(selection: $members).frame(height: 240)
+            ContactPicker(selection: $members).frame(height: 340)
             if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack {
                 if busy { ProgressView().controlSize(.small) }

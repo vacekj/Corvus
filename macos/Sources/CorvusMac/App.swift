@@ -195,6 +195,11 @@ struct AppCommands: Commands {
             Button("New group …") { model.newGroupShown = true }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(!model.connected || !model.historyReady)
+            Button("Previous chat") { model.openAdjacentChat(-1) }
+                .keyboardShortcut(.upArrow, modifiers: .option)
+            Button("Next chat") { model.openAdjacentChat(1) }
+                .keyboardShortcut(.downArrow, modifiers: .option)
+            Divider()
             Button("Link device …") { Task { await model.linkDevice() } }
             Button("Reconnect") { model.reconnect() }
             Divider()

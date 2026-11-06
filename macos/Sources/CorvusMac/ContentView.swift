@@ -55,6 +55,8 @@ struct ContentView: View {
         .navigationTitle(model.totalUnread > 0 ? "(\(model.totalUnread)) Corvus" : "Corvus")
         .hidingWindowTitle()
         .tint(Theme.signalBlue)
+        .overlay { ImageViewerOverlay() }
+        .animation(.easeOut(duration: 0.12), value: ImageViewerWindow.shared.item?.id)
         .background(WindowAccessor())
         .sheet(isPresented: $model.linkSheetShown) {
             LinkView(executable: model.cli.executable) { model.finishLinking($0) }
@@ -205,14 +207,6 @@ private struct Sidebar: View {
     @State private var filter = ""
 
     var body: some View {
-        let selection = Binding<String?>(get: { model.current }, set: { key in
-            guard let key else { return }
-            switch key {
-            case "::archived": model.showArchived = true
-            case "::back": model.showArchived = false
-            default: model.openConversation(key)
-            }
-        })
         let archived = model.chatListItems(archived: true)
         let archivedUnread = archived.reduce(0) { $0 + $1.unread }
         let q = filter.trimmingCharacters(in: .whitespaces)
@@ -255,37 +249,39 @@ private struct Sidebar: View {
             .padding(.top, 6)
             .padding(.bottom, 8)
 
-            List(selection: selection) {
+            // The selection is drawn by the rows (not the list), so switching chats never flashes the
+            // focused-list accent colour; a chat opens on mouse down.
+            List {
                 if model.showArchived {
-                    Label("Back to chats", systemImage: "chevron.left")
-                        .foregroundStyle(Theme.signalBlue)
-                        .padding(.vertical, 4)
-                        .tag("::back")
+                    SidebarRow(selected: false, action: { model.showArchived = false }) {
+                        Label("Back to chats", systemImage: "chevron.left")
+                            .foregroundStyle(Theme.signalBlue)
+                            .padding(.vertical, 4)
+                    }
                     Text("Archived chats")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .selectionDisabled()
                 } else if !archived.isEmpty && q.isEmpty {
-                    HStack(spacing: 10) {
-                        Image(systemName: "archivebox")
-                            .font(.system(size: 15))
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(Theme.field))
-                        Text("Archived chats").fontWeight(archivedUnread > 0 ? .semibold : .regular)
-                        Spacer()
-                        Text("\(archived.count)").foregroundStyle(.secondary)
-                        if archivedUnread > 0 { Circle().fill(Theme.signalBlue).frame(width: 8, height: 8) }
+                    SidebarRow(selected: false, action: { model.showArchived = true }) {
+                        HStack(spacing: 10) {
+                            Image(systemName: "archivebox")
+                                .font(.system(size: 15))
+                                .frame(width: 40, height: 40)
+                                .background(Circle().fill(Theme.field))
+                            Text("Archived chats").fontWeight(archivedUnread > 0 ? .semibold : .regular)
+                            Spacer()
+                            Text("\(archived.count)").foregroundStyle(.secondary)
+                            if archivedUnread > 0 { Circle().fill(Theme.signalBlue).frame(width: 8, height: 8) }
+                        }
+                        .padding(.vertical, 2)
                     }
-                    .padding(.vertical, 2)
-                    .tag("::archived")
                 }
-                ChatListRows(items: list)
+                ChatListRows(items: list, current: model.current)
                 if list.isEmpty && model.historyReady {
                     Text(q.isEmpty ? "No chats yet" : "No chats match “\(q)”")
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity)
                         .padding(.top, 20)
-                        .selectionDisabled()
                 }
             }
             .listStyle(.sidebar)
@@ -389,16 +385,45 @@ private struct ConversationRow: View, Equatable {
     }
 }
 
-/// The chat rows; skipped entirely while the rows are unchanged (e.g. when only the selection moves).
+/// The chat rows; skipped entirely while the rows and the selected chat are unchanged.
 private struct ChatListRows: View, Equatable {
+    @Environment(AppModel.self) private var model
     let items: [ChatListItem]
+    let current: String?
+
+    static func == (a: ChatListRows, b: ChatListRows) -> Bool { a.items == b.items && a.current == b.current }
 
     var body: some View {
         ForEach(items, id: \.key) { c in
-            ConversationRow(item: c)
-                .tag(c.key)
-                .contextMenu { ConversationMenuFor(key: c.key) }
+            SidebarRow(selected: c.key == current, action: { model.openConversation(c.key) }) {
+                ConversationRow(item: c)
+            }
+            .contextMenu { ConversationMenuFor(key: c.key) }
         }
+    }
+}
+
+/// A chat list row with its own selection background; acts on mouse down.
+private struct SidebarRow<Content: View>: View {
+    let selected: Bool
+    let action: () -> Void
+    @ViewBuilder let content: Content
+    @State private var pressed = false
+
+    var body: some View {
+        content
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Theme.selection : .clear))
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    if !pressed { pressed = true; action() }
+                }
+                .onEnded { _ in pressed = false })
+            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction { action() }
     }
 }
 

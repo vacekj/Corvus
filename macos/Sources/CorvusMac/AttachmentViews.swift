@@ -194,28 +194,83 @@ struct AnimatedImage: NSViewRepresentable {
     }
 }
 
-/// Full-size image in a window of its own.
-@MainActor
-enum ImageViewerWindow {
-    private static var windows: [NSWindow] = []
+/// Full-size image shown over the main window (Esc, a click outside or the close button closes it).
+@MainActor @Observable
+final class ImageViewerWindow {
+    static let shared = ImageViewerWindow()
+    struct Item: Identifiable {
+        let id = UUID()
+        let data: Data
+        let image: NSImage
+        let title: String
+    }
+    var item: Item?
 
     static func show(data: Data, title: String) {
         guard let image = NSImage(data: data) else { return }
-        let screen = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1200, height: 800)
-        let scale = min(1, screen.width * 0.85 / max(image.size.width, 1), screen.height * 0.85 / max(image.size.height, 1))
-        let size = NSSize(width: max(200, image.size.width * scale), height: max(150, image.size.height * scale))
-        let view = NSHostingView(rootView: ImageViewerContent(data: data, image: image))
-        let w = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                         backing: .buffered, defer: false)
-        w.title = title.isEmpty ? "Image" : title
-        w.contentView = view
-        w.isReleasedWhenClosed = false
-        w.center()
-        w.makeKeyAndOrderFront(nil)
-        windows.append(w)
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
-            MainActor.assumeIsolated { windows.removeAll { $0 === w } }
+        shared.item = Item(data: data, image: image, title: title)
+    }
+
+    static func close() { shared.item = nil }
+}
+
+/// The image viewer layer of the main window.
+struct ImageViewerOverlay: View {
+    private let viewer = ImageViewerWindow.shared
+    @State private var escMonitor: Any?
+
+    var body: some View {
+        if let item = viewer.item {
+            ZStack(alignment: .topTrailing) {
+                Color.black.opacity(0.9)
+                    .contentShape(Rectangle())
+                    .onTapGesture { ImageViewerWindow.close() }
+                ImageViewerContent(data: item.data, image: item.image)
+                    .padding(EdgeInsets(top: 52, leading: 24, bottom: 24, trailing: 24))
+                    .allowsHitTesting(false)
+                HStack(spacing: 14) {
+                    if !item.title.isEmpty {
+                        Text(item.title).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
+                    }
+                    Button { saveCopy(item) } label: { Image(systemName: "square.and.arrow.down") }
+                        .help("Save …")
+                    Button { ImageViewerWindow.close() } label: { Image(systemName: "xmark") }
+                        .help("Close (Esc)")
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(16)
+            }
+            .ignoresSafeArea()
+            .transition(.opacity)
+            .onAppear { installEsc() }
+            .onDisappear { removeEsc() }
+            .id(item.id)
         }
+    }
+
+    // Esc must work wherever the focus is (the composer keeps it while the image is shown).
+    private func installEsc() {
+        removeEsc()
+        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            if e.keyCode == 53, ImageViewerWindow.shared.item != nil {
+                ImageViewerWindow.close()
+                return nil
+            }
+            return e
+        }
+    }
+
+    private func removeEsc() {
+        if let m = escMonitor { NSEvent.removeMonitor(m) }
+        escMonitor = nil
+    }
+
+    private func saveCopy(_ item: ImageViewerWindow.Item) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = item.title.isEmpty ? "Image" : item.title
+        if panel.runModal() == .OK, let url = panel.url { try? item.data.write(to: url) }
     }
 }
 
@@ -232,6 +287,5 @@ private struct ImageViewerContent: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
     }
 }

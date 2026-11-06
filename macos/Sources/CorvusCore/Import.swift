@@ -7,6 +7,7 @@ public struct ImportSummary: Equatable {
     public var reactionsAdded = 0
     public var conversationsAdded = 0
     public var namesSet = 0
+    public var receiptsUpdated = 0
     public init() {}
 }
 
@@ -35,8 +36,21 @@ extension ChatState {
                 if m.outgoing && !account.isEmpty { m.authorKey = account }
                 let c = convs[key]!
                 let author = effectiveAuthor(c, m)
-                if findMessage(c, ts: m.ts, authors: author.isEmpty ? [] : [author]) != nil {
+                if let i = findMessage(c, ts: m.ts, authors: author.isEmpty ? [] : [author]) {
                     sum.messagesKnown += 1
+                    // Known outgoing messages still take the delivery and read state (never lowered).
+                    if m.outgoing && c.msgs[i].outgoing && (m.receiptStatus > 0 || !m.recipientReceipts.isEmpty) {
+                        var cur = c.msgs[i]
+                        cur.receiptStatus = max(cur.receiptStatus, m.receiptStatus)
+                        for (who, r) in m.recipientReceipts {
+                            var x = cur.recipientReceipts[who] ?? RecipientReceipt()
+                            x.status = max(x.status, r.status)
+                            if x.deliveredAtMs <= 0 { x.deliveredAtMs = r.deliveredAtMs }
+                            if x.readAtMs <= 0 { x.readAtMs = r.readAtMs }
+                            cur.recipientReceipts[who] = x
+                        }
+                        if cur.receiptStatus != c.msgs[i].receiptStatus || cur.recipientReceipts != c.msgs[i].recipientReceipts { convs[key]!.msgs[i] = cur; sum.receiptsUpdated += 1 }
+                    }
                     continue
                 }
                 convs[key]!.insertSorted(m)

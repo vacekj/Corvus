@@ -125,6 +125,7 @@ final class AppModel {
     @ObservationIgnored private var chatListCache: [Bool: (day: Int, items: [ChatListItem])] = [:]
     var groupInfoKey: String?                  // group whose info sheet is shown
     var newGroupShown = false
+    var newConversationShown = false
 
     // composer extras
     var viewOnceNext = false                    // send the single attached photo/video as View Once
@@ -909,13 +910,24 @@ final class AppModel {
         listChanged()
     }
 
-    func newConversation() async {
-        guard let r = await Dialogs.text("New conversation", "Phone number or Signal username (e.g. username.1234):")?
-            .trimmingCharacters(in: .whitespaces), !r.isEmpty else { return }
+    func newConversation() async { newConversationShown = true }
+
+    func startConversation(_ key: String) {
+        let r = key.trimmingCharacters(in: .whitespaces)
+        guard !r.isEmpty else { return }
         chats.ensure(r)
         if chats.convs[r]!.archived { setArchived(r, false) }
         showArchived = false
         openConversation(r)
+    }
+
+    /// ⌥↑ / ⌥↓: the chat above or below the current one in the chat list.
+    func openAdjacentChat(_ step: Int) {
+        let items = chatListItems(archived: showArchived)
+        guard !items.isEmpty else { return }
+        let i = items.firstIndex { $0.key == current }.map { $0 + step } ?? (step > 0 ? 0 : items.count - 1)
+        guard items.indices.contains(i) else { return }
+        openConversation(items[i].key)
     }
 
     /// Selecting a chat: stashes the old chat's draft, restores this chat's draft, marks it read.

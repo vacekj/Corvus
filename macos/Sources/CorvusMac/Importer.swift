@@ -121,7 +121,8 @@ extension AppModel {
             showFlash("Imported \(sum.messagesAdded) messages", seconds: 4)
             await Dialogs.info("Import finished",
                                "\(sum.messagesAdded) messages and \(sum.reactionsAdded) reactions were added "
-                               + "(\(sum.messagesKnown) messages were already in Corvus); \(sum.conversationsAdded) new chats.")
+                               + "(\(sum.messagesKnown) messages were already in Corvus, \(sum.receiptsUpdated) of them got their delivery or read state); "
+                               + "\(sum.conversationsAdded) new chats.")
         } catch {
             showFlash("Import failed", seconds: 3)
             await Dialogs.error("Import from Signal Desktop", error.localizedDescription)

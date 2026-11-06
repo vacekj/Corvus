@@ -265,6 +265,34 @@ impl<'a> Exporter<'a> {
             d.insert("ex".into(), ex.into());
             d.insert("es".into(), i(m, "expirationStartTimestamp").into());
         }
+        if outgoing {
+            // Delivery and read state per recipient (Signal Desktop: sendStateByConversationId).
+            if let Some(states) = m.get("sendStateByConversationId").and_then(Value::as_object) {
+                let mut rr = Map::new();
+                let mut best = 0i64;
+                for (cid, st) in states {
+                    let who = self.key_for_conv_id(cid);
+                    if who.is_empty() || who == self.account {
+                        continue;
+                    }
+                    let status = match s(st, "status") {
+                        "Read" | "Viewed" => 2,
+                        "Delivered" => 1,
+                        _ => 0,
+                    };
+                    let at = i(st, "updatedAt").max(0);
+                    best = best.max(status);
+                    let (dt, rt) = match status { 2 => (0, at), 1 => (at, 0), _ => (0, 0) };
+                    rr.insert(who, json!({"s": status, "d": dt, "r": rt}));
+                }
+                if best > 0 {
+                    d.insert("rs".into(), best.into());
+                }
+                if !rr.is_empty() {
+                    d.insert("rr".into(), Value::Object(rr));
+                }
+            }
+        }
         let view_once = b(m, "isViewOnce");
         if view_once {
             // Opened, sent or expired View Once media is never imported; for simplicity all of it is
