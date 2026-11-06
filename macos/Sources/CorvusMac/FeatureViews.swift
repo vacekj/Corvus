@@ -45,16 +45,22 @@ struct StickerPicker: View {
     @Environment(AppModel.self) private var model
     let done: () -> Void
     @State private var packIndex = 0
+    @State private var adding = false
 
     var body: some View {
         VStack(spacing: 0) {
+            if adding {
+                AddStickerPackField { adding = false }
+                    .padding(10)
+                Divider()
+            }
             if model.stickerPacks.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "face.smiling").font(.system(size: 34)).foregroundStyle(.secondary)
                     Text("No sticker packs installed").font(.headline)
                     Text("Install packs on your phone (they sync to Corvus) or add one from a signal.art link.")
                         .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
-                    Button("Add sticker pack …") { Task { await model.addStickerPack() } }
+                    if !adding { Button("Add sticker pack …") { adding = true } }
                 }
                 .padding(20)
                 .frame(width: 320, height: 220)
@@ -68,9 +74,9 @@ struct StickerPicker: View {
                     }
                     .labelsHidden()
                     Spacer()
-                    Button { Task { await model.addStickerPack() } } label: { Image(systemName: "plus") }
+                    Button { adding.toggle() } label: { Image(systemName: adding ? "xmark" : "plus") }
                         .buttonStyle(.borderless)
-                        .help("Add sticker pack …")
+                        .help(adding ? "Cancel" : "Add sticker pack …")
                 }
                 .padding(10)
                 Divider()
@@ -92,7 +98,10 @@ struct StickerPicker: View {
                 .frame(width: 420, height: 320)
             }
         }
-        .onAppear { if model.stickerPacks.isEmpty { model.loadStickerPacks() } }
+        .onAppear {
+            if model.stickerPacks.isEmpty { model.loadStickerPacks() }
+            if model.stickerPackAddPending { adding = true; model.stickerPackAddPending = false }
+        }
     }
 }
 
@@ -313,55 +322,96 @@ struct ForwardSheet: View {
     let messageId: String
     @State private var selected: [String] = []
     @State private var filter = ""
+    @State private var index = 0
+    @State private var keyboard = false     // highlight only once the arrow keys or typing are used
 
     var body: some View {
         let q = filter.trimmingCharacters(in: .whitespaces)
+        // Filter on the title as shown ("Note to Self"), like the chat list.
         let list = (model.chats.sortedConversations(archived: false) + model.chats.sortedConversations(archived: true))
-            .filter { q.isEmpty || $0.title.localizedCaseInsensitiveContains(q) }
+            .filter { q.isEmpty || model.title($0).localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q) }
         VStack(alignment: .leading, spacing: 10) {
             Text("Forward to …").font(.title3.weight(.semibold))
-            TextField("Search chats", text: $filter).textFieldStyle(.roundedBorder)
-            List(list) { c in
-                let on = selected.contains(c.key)
-                Button {
-                    if on { selected.removeAll { $0 == c.key } } else if selected.count < AppModel.maxForwardTargets { selected.append(c.key) }
-                } label: {
-                    HStack(spacing: 10) {
-                        Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                            .foregroundStyle(on ? Theme.signalBlue : .secondary)
-                        AvatarView(image: model.avatarImage(c), size: 28)
-                        Text(model.title(c)).lineLimit(1)
-                        Spacer()
+            SearchField(text: $filter, prompt: "Search chats")
+                .modifier(PickerKeys(count: list.count, index: $index) {
+                    if list.indices.contains(index) { toggle(list[index].key) }
+                })
+                .onChange(of: filter) { index = 0; keyboard = true }
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(list.enumerated()), id: \.element.key) { i, c in
+                            let on = selected.contains(c.key)
+                            HStack(spacing: 10) {
+                                Image(systemName: on ? "checkmark.circle.fill" : "circle")
+                                    .foregroundStyle(on ? Theme.signalBlue : .secondary)
+                                AvatarView(image: model.avatarImage(c), size: 28)
+                                Text(model.title(c)).lineLimit(1)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 7)
+                                .fill(keyboard && i == index ? Theme.signalBlue.opacity(0.22) : .clear))
+                            .contentShape(Rectangle())
+                            .opacity(!on && selected.count >= AppModel.maxForwardTargets ? 0.5 : 1)
+                            .id(c.key)
+                            .onTapGesture { index = i; toggle(c.key) }
+                        }
                     }
-                    .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
-                .disabled(!on && selected.count >= AppModel.maxForwardTargets)
+                .onChange(of: index) { keyboard = true; if list.indices.contains(index) { proxy.scrollTo(list[index].key) } }
             }
             .frame(height: 300)
+            .overlay {
+                if list.isEmpty { Text("No chats match “\(q)”").foregroundStyle(.secondary) }
+            }
             HStack {
-                Text("\(selected.count) of \(AppModel.maxForwardTargets) chats").font(.caption).foregroundStyle(.secondary)
+                Text("\(selected.count) of \(AppModel.maxForwardTargets) chats · ↑↓ Return to select, ⌘Return to forward")
+                    .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Forward") {
                     model.forward(messageId: messageId, to: selected)
                     dismiss()
                 }
-                .keyboardShortcut(.defaultAction)
+                .keyboardShortcut(.return, modifiers: .command)
+                .buttonStyle(.borderedProminent)
                 .disabled(selected.isEmpty)
             }
         }
         .padding(20)
-        .frame(width: 400)
+        .frame(width: 440)
+    }
+
+    private func toggle(_ key: String) {
+        if selected.contains(key) {
+            selected.removeAll { $0 == key }
+        } else if selected.count < AppModel.maxForwardTargets {
+            selected.append(key)
+        }
     }
 }
 
 // MARK: - Media gallery
 
+/// The gallery as a resizable sheet with a Done button.
 struct MediaGallerySheet: View {
-    @Environment(AppModel.self) private var model
     @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        MediaGalleryView {
+            Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+        }
+        .frame(minWidth: 480, idealWidth: 680, maxWidth: .infinity, minHeight: 360, idealHeight: 520, maxHeight: .infinity)
+    }
+}
+
+/// Media, audio, files and links of the open chat; fills whatever space it gets.
+struct MediaGalleryView<Accessory: View>: View {
+    @Environment(AppModel.self) private var model
     @State private var tab = 0
+    @ViewBuilder var accessory: Accessory
+
     @State private var gallery = MediaGallery()
     @State private var loaded = false
 
@@ -384,14 +434,14 @@ struct MediaGallerySheet: View {
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+                accessory
             }
             .padding(12)
             Divider()
             ScrollView {
                 switch tab {
                 case 0:
-                    LazyVGrid(columns: Array(repeating: GridItem(.fixed(120), spacing: 6), count: 5), spacing: 6) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 110, maximum: 180), spacing: 6)], spacing: 6) {
                         ForEach(media) { it in
                             Button { model.openAttachment(it.message, it.index) } label: { GalleryTile(message: it.message, index: it.index) }
                                 .buttonStyle(.plain)
@@ -446,156 +496,20 @@ struct MediaGallerySheet: View {
                 }
             }
         }
-        .frame(width: 680, height: 520)
         .task(id: source) {
             let msgs = model.currentConversation?.msgs ?? []
             gallery = await Task.detached(priority: .userInitiated) { MediaGallery(msgs) }.value
             loaded = true
         }
     }
+
 }
 
-// MARK: - Stories
-
-struct StoriesSheet: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-    @State private var openId: String?
-    @State private var allowReplies = true
-
-    var body: some View {
-        let stories = model.activeStories
-        HStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack {
-                    Text("Stories").font(.title3.weight(.semibold))
-                    Spacer()
-                    Menu {
-                        Button("My Story …") { post(group: nil) }
-                        let groups = model.chats.convs.values.filter(\.isGroup).sorted { $0.title < $1.title }
-                        if !groups.isEmpty {
-                            Divider()
-                            ForEach(groups) { g in Button("\(g.title) …") { post(group: g.key) } }
-                        }
-                        Divider()
-                        Toggle("Allow replies", isOn: $allowReplies)
-                    } label: { Label("New story", systemImage: "plus.circle") }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .disabled(!model.connected)
-                }
-                .padding(12)
-                Divider()
-                List(stories, selection: $openId) { st in
-                    HStack(spacing: 10) {
-                        Circle().strokeBorder(st.viewed || st.outgoing ? Color.secondary.opacity(0.4) : Theme.signalBlue, lineWidth: 2.5)
-                            .frame(width: 34, height: 34)
-                            .overlay(Image(systemName: st.attachment?.isVideo == true ? "film" : (st.attachment == nil ? "textformat" : "photo"))
-                                        .font(.caption))
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(model.storyTitle(st)).fontWeight(st.viewed ? .regular : .semibold).lineLimit(1)
-                            Text(st.time.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    .tag(st.id)
-                }
-                .listStyle(.sidebar)
-                if stories.isEmpty {
-                    Text("No stories in the last 24 hours.\nStories received while Corvus is running appear here.")
-                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding()
-                }
-            }
-            .frame(width: 250)
-            Divider()
-            ZStack(alignment: .topTrailing) {
-                if let id = openId, let st = stories.first(where: { $0.id == id }) {
-                    StoryViewer(story: st).id(st.id)
-                } else {
-                    Text("Choose a story").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-                }
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction).padding(10)
-            }
-        }
-        .frame(width: 760, height: 560)
-        .onChange(of: openId) { _, id in if let id { model.markStoryViewed(id) } }
-    }
-
-    private func post(group: String?) {
-        guard let f = model.chooseStoryFile() else { return }
-        model.postStory(file: f, groupKey: group, allowReplies: allowReplies)
-    }
+extension MediaGalleryView where Accessory == EmptyView {
+    init() { self.init { EmptyView() } }
 }
 
-private struct StoryViewer: View {
-    @Environment(AppModel.self) private var model
-    let story: Story
-    @State private var image: NSImage?          // decoded once, not on every redraw
-    @State private var player: AVPlayer?        // kept, so a redraw doesn't restart the video
-    @State private var error = ""
-    @State private var reply = ""
-
-    var body: some View {
-        VStack(spacing: 0) {
-            ZStack {
-                Color.black
-                if let a = story.attachment {
-                    if a.isVideo, let player {
-                        VideoPlayer(player: player)
-                    } else if let image {
-                        Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
-                    } else if !error.isEmpty {
-                        Text(error).foregroundStyle(.white.opacity(0.7)).padding()
-                    } else {
-                        ProgressView().colorScheme(.dark)
-                    }
-                } else {
-                    TextStory(story: story)
-                }
-            }
-            if !story.outgoing && story.allowsReplies {
-                HStack(spacing: 6) {
-                    ForEach(EmojiCatalog.quickReactions.prefix(6), id: \.self) { e in
-                        Button(e) { model.reactToStory(story, emoji: e) }.buttonStyle(.borderless)
-                    }
-                    TextField("Reply …", text: $reply)
-                        .textFieldStyle(.roundedBorder)
-                        .onSubmit { send() }
-                    Button("Send") { send() }.disabled(reply.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-                .padding(10)
-                .disabled(!model.connected)
-            } else {
-                Text(story.outgoing ? "Your story" : "Replies are turned off for this story")
-                    .font(.caption).foregroundStyle(.secondary).padding(10)
-            }
-        }
-        .task { await load() }
-    }
-
-    private func send() {
-        model.replyToStory(story, text: reply)
-        reply = ""
-    }
-
-    private func load() async {
-        guard let a = story.attachment else { return }
-        do {
-            let d = try await model.fetchStoryMedia(story)
-            guard !d.isEmpty else { throw RpcError("The story media is empty.") }
-            if a.isVideo {
-                let suffix = AttachmentPolicy.mediaSuffix(filename: a.filename, contentType: a.contentType, fallback: "mp4")
-                player = AVPlayer(url: try Media.writeAttachmentTemp(d, name: "story." + suffix))
-            } else {
-                image = await Task.detached(priority: .userInitiated) { NSImage(data: d) }.value
-                if image == nil { error = "The story could not be shown." }
-            }
-        } catch {
-            self.error = "The story could not be loaded: \(error.localizedDescription)"
-        }
-    }
-}
-
-private struct TextStory: View {
+struct TextStory: View {
     let story: Story
 
     var body: some View {
@@ -666,12 +580,12 @@ struct GalleryTile: View {
     @Environment(AppModel.self) private var model
     let message: Message
     let index: Int
-    var size: CGFloat = 120
+    var size: CGFloat?      // nil: fills the grid cell
     @State private var image: NSImage?
 
     var body: some View {
         let a = message.attachments[index]
-        ZStack {
+        Color.clear.aspectRatio(1, contentMode: .fit).overlay { ZStack {
             if let image {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
             } else {
@@ -681,7 +595,7 @@ struct GalleryTile: View {
             if a.isVideo {
                 Image(systemName: "play.circle.fill").font(.system(size: 28)).foregroundStyle(.white).shadow(radius: 3)
             }
-        }
+        } }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: 6))
         .contentShape(RoundedRectangle(cornerRadius: 6))

@@ -12,15 +12,18 @@ struct ContentView: View {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 420)
         } detail: {
-            ZStack(alignment: .top) {
-                if let c = model.currentConversation {
-                    ChatPane(conversation: c)
-                } else {
-                    Welcome()
+            VStack(spacing: 0) {
+                CallLayer()
+                ZStack(alignment: .top) {
+                    if let c = model.currentConversation {
+                        ChatPane(conversation: c)
+                    } else {
+                        Welcome()
+                    }
+                    if let flash = model.flash { Toast(text: flash).padding(.top, 10) }
                 }
-                if let flash = model.flash { Toast(text: flash).padding(.top, 10) }
+                .animation(.easeOut(duration: 0.2), value: model.flash)
             }
-            .animation(.easeOut(duration: 0.2), value: model.flash)
             .inspector(isPresented: Binding(get: { model.infoPanelShown && model.currentConversation != nil },
                                             set: { model.infoPanelShown = $0 })) {
                 Group {
@@ -34,9 +37,10 @@ struct ContentView: View {
                 }
                 ToolbarItem(placement: .automatic) {
                     if let c = model.currentConversation, !c.isGroup {
+                        let unavailable = model.callUnavailableReason(c.key)
                         Button { Task { await model.startCall(c.key) } } label: { Label("Voice call", systemImage: "phone") }
-                            .help("Voice call")
-                            .disabled(!model.connected || model.call?.isActive == true)
+                            .help(unavailable ?? "Voice call")
+                            .disabled(unavailable != nil)
                     }
                 }
                 ToolbarItem(placement: .automatic) {
@@ -69,11 +73,6 @@ struct ContentView: View {
         .sheet(isPresented: $model.linkSheetShown) {
             LinkView(executable: model.cli.executable) { model.finishLinking($0) }
         }
-        .sheet(isPresented: Binding(get: { model.giphyApiKey != nil }, set: { if !$0 { model.giphyApiKey = nil } })) {
-            if let key = model.giphyApiKey {
-                GiphyPicker(apiKey: key) { url, analytics in model.sendGif(url: url, analytics: analytics) }
-            }
-        }
         .sheet(isPresented: Binding(get: { model.safetyNumberKey != nil }, set: { if !$0 { model.safetyNumberKey = nil } })) {
             if let key = model.safetyNumberKey { SafetyNumberSheet(key: key) }
         }
@@ -85,6 +84,9 @@ struct ContentView: View {
         }
         .sheet(isPresented: $model.galleryShown) { MediaGallerySheet() }
         .sheet(isPresented: $model.storiesShown) { StoriesSheet() }
+        .sheet(isPresented: Binding(get: { model.importProgress != nil }, set: { if !$0 { model.importProgress = nil } })) {
+            ImportProgressSheet()
+        }
         .modifier(GroupSheets())
         .onAppear {
             KeyboardNavigation.shared.installTabMonitor(model)
@@ -148,10 +150,13 @@ private struct Welcome: View {
                     .foregroundStyle(Theme.signalBlue)
             }
             Text("Welcome to Corvus").font(.title2.weight(.semibold))
-            Text(model.historyReady
-                    ? (model.connected ? "Choose a chat on the left, or start a new one." : model.statusText)
-                    : "Unlocking your chat history …")
-                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                if !model.historyReady { ProgressView().controlSize(.small) }
+                Text(model.historyReady
+                        ? (model.connected ? "Choose a chat on the left, or start a new one." : model.statusText)
+                        : "Unlocking your chat history …")
+            }
+            .foregroundStyle(.secondary)
             if model.historyReady {
                 Button { Task { await model.newConversation() } } label: {
                     Label("New conversation", systemImage: "square.and.pencil").padding(.horizontal, 6)
@@ -389,6 +394,9 @@ struct ChatListItem: Equatable {
     var time: String
     var preview: String
     var avatar: NSImage?
+    var pinned: Bool
+    var markedUnread: Bool
+    var isDraft: Bool
 
     @MainActor init(_ c: Conversation, _ model: AppModel) {
         key = c.key
@@ -401,11 +409,19 @@ struct ChatListItem: Equatable {
         preview = model.isMessageRequest(c.key) ? "Message request"
             : c.msgs.last.map { ChatListItem.preview($0, isGroup: c.isGroup) } ?? (c.isGroup ? "Group" : " ")
         avatar = model.appearance.showAvatars ? model.avatarImage(c) : nil
+        pinned = c.pinned
+        markedUnread = c.markedUnread
+        isDraft = false
+        if c.key != model.current, !model.isMessageRequest(c.key), let d = model.draftPreview(c.key) {
+            preview = d
+            isDraft = true
+        }
     }
 
     static func == (a: ChatListItem, b: ChatListItem) -> Bool {
         a.key == b.key && a.title == b.title && a.isGroup == b.isGroup && a.unread == b.unread && a.muted == b.muted
             && a.blocked == b.blocked && a.time == b.time && a.preview == b.preview && a.avatar === b.avatar
+            && a.pinned == b.pinned && a.markedUnread == b.markedUnread && a.isDraft == b.isDraft
     }
 
     private static func preview(_ m: Message, isGroup: Bool) -> String {
@@ -446,6 +462,7 @@ private struct ConversationRow: View, Equatable {
                     if c.muted { Image(systemName: "bell.slash.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
                     if c.blocked { Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.red) }
                     Spacer(minLength: 4)
+                    if c.pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
                     Text(c.time)
                         .font(.caption2)
                         .foregroundStyle(c.unread > 0 ? Theme.signalBlue : .secondary)
@@ -453,9 +470,14 @@ private struct ConversationRow: View, Equatable {
                 HStack(spacing: 4) {
                     Text(c.preview)
                         .font(.caption)
+                        .italic(c.isDraft)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 4)
+                    if c.markedUnread && c.unread == 0 {
+                        Circle().fill(c.muted ? Color.secondary : Theme.signalBlue).frame(width: 10, height: 10)
+                            .accessibilityLabel("Marked as unread")
+                    }
                     if c.unread > 0 {
                         Text(c.unread > 99 ? "99+" : "\(c.unread)")
                             .font(.system(size: 10, weight: .bold))
@@ -532,7 +554,7 @@ private struct ConversationMenu: View {
         GroupMenuItems(conversation: c)
         if !c.isGroup {
             Button { Task { await model.startCall(c.key) } } label: { Label("Voice call", systemImage: "phone") }
-                .disabled(!model.connected || model.call?.isActive == true)
+                .disabled(model.callUnavailableReason(c.key) != nil)
             Button { model.openConversation(c.key); model.safetyNumberKey = c.key } label: {
                 Label("View safety number …", systemImage: "checkmark.shield")
             }
@@ -543,6 +565,13 @@ private struct ConversationMenu: View {
             }
             if !c.localNickname.isEmpty { Button("Remove nickname") { model.setNickname(c.key, "") } }
             Divider()
+        }
+        Button { model.setPinned(c.key, !c.pinned) } label: {
+            Label(c.pinned ? "Unpin" : "Pin", systemImage: c.pinned ? "pin.slash" : "pin")
+        }
+        let unread = c.markedUnread || c.unread > 0
+        Button { if unread { model.markChatRead(c.key) } else { model.setMarkedUnread(c.key, true) } } label: {
+            Label(unread ? "Mark as read" : "Mark as unread", systemImage: unread ? "envelope.open" : "envelope.badge")
         }
         Button { model.setArchived(c.key, !c.archived) } label: {
             Label(c.archived ? "Unarchive" : "Archive", systemImage: c.archived ? "tray.and.arrow.up" : "archivebox")

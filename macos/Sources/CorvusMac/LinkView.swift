@@ -23,8 +23,9 @@ struct LinkView: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Text("Device name:")
-                TextField("Device name", text: $name).disabled(running)
-                Button("Start") { start() }.disabled(running || name.trimmingCharacters(in: .whitespaces).isEmpty)
+                TextField("Device name", text: $name).onSubmit { start() }
+                Button("Restart") { start() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("Start again, for example with another device name")
             }
             ZStack {
                 RoundedRectangle(cornerRadius: 8).fill(Color.white)
@@ -53,6 +54,7 @@ struct LinkView: View {
         .padding(20)
         .frame(width: 460)
         .onChange(of: uri) { qrImage = LinkView.qrImage(uri) }
+        .onAppear { if process == nil && uri.isEmpty { start() } } // no extra click: the QR code comes right away
     }
 
     private static func qrImage(_ uri: String) -> NSImage? {
@@ -66,6 +68,11 @@ struct LinkView: View {
     }
 
     private func start() {
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        if let old = process { // a new name: the running link request is replaced
+            process = nil
+            old.terminate()
+        }
         uri = ""
         status = "Waiting for signal-cli …"
         running = true

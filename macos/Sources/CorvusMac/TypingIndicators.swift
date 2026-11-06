@@ -81,11 +81,11 @@ extension AppModel {
         return "\(names.count) people are typing …"
     }
 
-    /// The composer text changed: tells the chat that we are typing (only where read receipts and typing
-    /// indicators may be sent: not to an unaccepted request, never to blocked people).
+    /// The composer text changed: tells the chat that we are typing (only when switched on in Settings →
+    /// Privacy, and not to an unaccepted request, never to blocked people).
     func composerEdited() {
         guard let key = current else { return }
-        let allowed = connected && mayAcknowledge(key) && !isSendLocked(key) && editKey.isEmpty
+        let allowed = privacy.typingIndicators && connected && mayAcknowledge(key) && !isSendLocked(key) && editKey.isEmpty
         let empty = composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         sendTyping(TypingIndicators.shared.outgoing { $0.edited(conversation: key, empty: empty, allowed: allowed, now: nowMs()) })
     }

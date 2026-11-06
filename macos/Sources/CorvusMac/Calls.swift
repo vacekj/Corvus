@@ -261,6 +261,7 @@ extension AppModel {
             do {
                 try await cli.call("subscribeCallEvents")
                 callSubscribed = true
+                callSetupMissing = CallSetup.missingRequirements(signalCli: cli.executable)
             } catch {
                 // signal-cli before 0.14.2: no calls.
                 callSubscribed = false
@@ -269,6 +270,22 @@ extension AppModel {
     }
 
     var callsAvailable: Bool { callSubscribed && connected }
+
+    /// Why a voice call cannot be started with this contact now (shown as the call button's tooltip), or nil.
+    func callUnavailableReason(_ key: String) -> String? {
+        if !connected { return "Voice calls need a connection to signal-cli." }
+        if call?.isActive == true { return "A call is already in progress." }
+        if !callSubscribed { return "Voice calls need signal-cli 0.14.2 or newer." }
+        if !callSetupMissing.isEmpty {
+            return "Voice calls are not set up: \(callSetupMissing.joined(separator: " and ")) missing. See Help → Voice call setup."
+        }
+        if isSendLocked(key) { return "Accept the message request first." }
+        return nil
+    }
+
+    func showCallSetup() async {
+        await Dialogs.info("Voice call setup", CallSetup.instructions)
+    }
 
     func startCall(_ key: String) async {
         guard let c = chats.convs[key], !c.isGroup else { return }
@@ -297,7 +314,6 @@ extension AppModel {
             if !i.isEmpty { s.inputDevice = i }
             if !o.isEmpty { s.outputDevice = o }
             call = s
-            CallWindow.show(model: self)
         } catch {
             showFlash("The call could not be started: \(error.localizedDescription)")
         }
@@ -358,7 +374,7 @@ extension AppModel {
             chats.ensure(peerKey)
             startRinging()
             alertIncomingCall(peerKey)
-            CallWindow.show(model: self)
+            openMainWindow?() // the incoming-call banner is in the main window
         }
         let i = jsonString(ev["inputDeviceName"]), o = jsonString(ev["outputDeviceName"])
         if !i.isEmpty { call?.inputDevice = i }
@@ -393,10 +409,7 @@ extension AppModel {
         call = s
         Task {
             try? await Task.sleep(for: .seconds(2))
-            if call?.callId == s.callId && call?.state == .ended {
-                call = nil
-                CallWindow.close()
-            }
+            if call?.callId == s.callId && call?.state == .ended { call = nil }
         }
     }
 
@@ -409,7 +422,10 @@ extension AppModel {
         case .authorized: return true
         case .notDetermined: return await AVCaptureDevice.requestAccess(for: .audio)
         default:
-            await Dialogs.warn("Microphone access", "Allow Corvus to use the microphone in System Settings → Privacy & Security → Microphone.")
+            if await Dialogs.confirm("Microphone access", "Allow Corvus to use the microphone in System Settings → Privacy & Security → Microphone.",
+                                     ok: "Open System Settings") {
+                NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!)
+            }
             return false
         }
     }
@@ -433,113 +449,6 @@ extension AppModel {
         if notify.notifications {
             let hidden = notify.content == .hidden
             notifier.notify(key: key, title: hidden ? "Corvus" : c.title, body: "Incoming voice call", icon: hidden ? nil : avatarImage(c))
-        }
-    }
-}
-
-// MARK: - Call window
-
-@MainActor
-enum CallWindow {
-    private static var window: NSWindow?
-
-    static func show(model: AppModel) {
-        if let w = window {
-            w.makeKeyAndOrderFront(nil)
-            return
-        }
-        let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 360), styleMask: [.titled, .closable],
-                         backing: .buffered, defer: false)
-        w.title = "Voice call"
-        w.isReleasedWhenClosed = false
-        w.level = .floating
-        w.contentView = NSHostingView(rootView: CallView().environment(model))
-        w.center()
-        w.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        window = w
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
-            MainActor.assumeIsolated {
-                if model.call?.isActive == true {
-                    if model.call?.state == .ringingIncoming { model.declineCall() } else { model.hangUp() }
-                }
-                window = nil
-            }
-        }
-    }
-
-    static func close() {
-        window?.close()
-        window = nil
-    }
-}
-
-struct CallView: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        let s = model.call
-        VStack(spacing: 14) {
-            if let s, let c = model.chats.convs[s.peerKey] {
-                AvatarView(image: model.avatarImage(c), size: 88)
-                Text(c.title).font(.title2.weight(.semibold)).lineLimit(1)
-            } else {
-                Image(systemName: "phone.circle.fill").font(.system(size: 80)).foregroundStyle(.secondary)
-            }
-            TimelineView(.periodic(from: .now, by: 1)) { ctx in
-                Text(statusText(s, now: ctx.date)).foregroundStyle(.secondary).monospacedDigit()
-            }
-            Spacer(minLength: 0)
-            HStack(spacing: 26) {
-                if s?.state == .ringingIncoming {
-                    CallButton(icon: "phone.down.fill", color: .red, label: "Decline") { model.declineCall() }
-                    CallButton(icon: "phone.fill", color: .green, label: "Accept") { Task { await model.acceptCall() } }
-                } else if s?.isActive == true {
-                    CallButton(icon: s?.muted == true ? "mic.slash.fill" : "mic.fill", color: s?.muted == true ? .orange : .gray,
-                               label: s?.muted == true ? "Unmute" : "Mute") { model.toggleCallMute() }
-                    CallButton(icon: "phone.down.fill", color: .red, label: "End") { model.hangUp() }
-                }
-            }
-        }
-        .padding(24)
-        .frame(width: 300, height: 360)
-    }
-
-    private func statusText(_ s: CallSession?, now: Date) -> String {
-        guard let s else { return "" }
-        switch s.state {
-        case .ringingIncoming: return "Incoming voice call …"
-        case .ringingOutgoing: return "Ringing …"
-        case .connecting, .idle: return "Connecting …"
-        case .reconnecting: return "Reconnecting …"
-        case .connected:
-            let t = Int(now.timeIntervalSince(s.connectedAt ?? now))
-            return String(format: "%d:%02d", t / 60, t % 60)
-        case .ended:
-            switch s.endReason {
-            case "", "hangup", "remote_hangup": return "Call ended"
-            case "declined": return "Call declined"
-            case "tunnel_spawn_error", "tunnel_exit", "tunnel_error": return "Call failed (signal-call-tunnel)"
-            default: return "Call ended (\(s.endReason.replacingOccurrences(of: "_", with: " ")))"
-            }
-        }
-    }
-}
-
-private struct CallButton: View {
-    let icon: String
-    let color: Color
-    let label: String
-    let action: () -> Void
-
-    var body: some View {
-        VStack(spacing: 6) {
-            Button(action: action) {
-                Image(systemName: icon).font(.system(size: 22)).foregroundStyle(.white)
-                    .frame(width: 56, height: 56).background(Circle().fill(color))
-            }
-            .buttonStyle(.plain)
-            Text(label).font(.caption).foregroundStyle(.secondary)
         }
     }
 }

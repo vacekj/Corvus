@@ -11,6 +11,8 @@ struct Draft {
     var files: [String] = []
     var gifAnalyticsUrl: URL?
     var isEmpty: Bool { text.isEmpty && !reply.valid && files.isEmpty }
+    /// "Draft: …" in the chat list.
+    var preview: String? { DraftPreview.text(text, attachments: files.count) }
 }
 
 struct UpdateHint: Equatable {
@@ -46,6 +48,7 @@ final class AppModel {
 
     var appearance = Appearance.load() { didSet { chatListCache.removeAll() } }
     var notify = NotificationSettings.load()
+    var privacy = PrivacySettings.load()
 
     // composer (for the current conversation; other conversations keep a Draft)
     var composerText = ""
@@ -57,7 +60,9 @@ final class AppModel {
     private var editDraft = ""
     var composerFocusRequest = 0    // incremented to put the caret into the composer
     var composerCursorToEnd = 0
-    private var drafts: [String: Draft] = [:]
+    private var drafts: [String: Draft] = [:] {
+        didSet { if oldValue.mapValues(\.preview) != drafts.mapValues(\.preview) { chatListCache.removeAll() } }
+    }
     let linkDraft = LinkPreviewDraft()  // preview of the link in the composer text
 
     // search in the current conversation
@@ -99,17 +104,19 @@ final class AppModel {
 
     // profile
     var profileUsername = ""
+    var profileName = ""            // own Signal profile name (given + family)
     var profileStatus: (text: String, error: Bool)?
 
     // sheets
     var linkSheetShown = false
     @ObservationIgnored private var linkContinuation: CheckedContinuation<Bool, Never>?
-    var giphyApiKey: String?        // non-nil = GIF picker shown
 
     // stickers
     var stickerPacks: [StickerPack] = []
     var stickerImages: [String: Data] = [:]     // "packId:stickerId" -> image data
     @ObservationIgnored var stickerPending: Set<String> = []
+    var stickerPackAddRequest = 0               // incremented to open the sticker picker's "add pack" field
+    @ObservationIgnored var stickerPackAddPending = false
 
     // stories (memory only)
     var stories: [Story] = []
@@ -120,6 +127,7 @@ final class AppModel {
     var forwardMessageId: String?              // message to forward (in the current conversation)
     var messageInfoId: String?                 // message whose info sheet is shown (in the current conversation)
     var galleryShown = false
+    var importProgress: ImportProgress?        // Signal Desktop import sheet
     var pollComposerShown = false
 
     // groups, blocking and message requests (Groups.swift, MessageRequests.swift)
@@ -142,7 +150,8 @@ final class AppModel {
 
     // voice calls
     var call: CallSession?
-    @ObservationIgnored var callSubscribed = false
+    var callSubscribed = false
+    var callSetupMissing: [String] = []     // what voice calls still need (checked when connecting)
     @ObservationIgnored let audioBridge = CallAudioBridge()
     @ObservationIgnored var ringTimer: Timer?
 
@@ -728,71 +737,47 @@ final class AppModel {
         }
     }
 
-    func changeHistoryProtection() async {
-        guard store.isOpen else { return }
-        let isKeychain = historyProtectionMode == "keychain"
-        guard let choice = await Dialogs.ask("Chat history protection",
-                                             "Choose how to protect the encrypted chat history. It is currently protected by "
-                                                 + (isKeychain ? "the system keychain." : "a passphrase."),
-                                             buttons: ["System keychain", isKeychain ? "Passphrase" : "Change passphrase"],
-                                             cancel: true) else { return }
-        let useKeychain = choice == 0
-        if useKeychain && isKeychain { return }
+    // Settings › General › Chat history. Each returns nil on success or the message to show next to the fields.
 
-        if useKeychain {
-            var error = ""
-            while true {
-                guard let old = await Dialogs.passphrase(.unlock, error: error) else { return }
-                let newSecret = HistoryKeychain.generateSecret()
-                do { try HistoryKeychain.save(newSecret) } catch {
-                    await Dialogs.error("Chat history", error.localizedDescription)
-                    return
-                }
-                if let e = await changePassphrase(old: old.new, new: newSecret) {
-                    try? HistoryKeychain.clear()
-                    if e == .wrongPassphrase { error = e.localizedDescription; continue }
-                    await Dialogs.error("Chat history", e.localizedDescription)
-                    return
-                }
-                saveProtectionMode("keychain")
-                await Dialogs.info("Chat history", "The history is now protected by the system keychain.")
-                return
-            }
+    /// Passphrase → system keychain: the history is re-encrypted with a new random key kept in the keychain.
+    func protectHistoryWithKeychain(currentPassphrase old: String) async -> String? {
+        guard store.isOpen, historyProtectionMode != "keychain" else { return nil }
+        guard !old.isEmpty else { return "Enter the current passphrase." }
+        let newSecret = HistoryKeychain.generateSecret()
+        do { try HistoryKeychain.save(newSecret) } catch { return error.localizedDescription }
+        if let e = await changePassphrase(old: old, new: newSecret) {
+            try? HistoryKeychain.clear()
+            return e.localizedDescription
         }
+        saveProtectionMode("keychain")
+        return nil
+    }
 
-        if isKeychain {
-            let oldSecret: String
-            do {
-                guard let s = try HistoryKeychain.load() else { throw RpcError("No history key was found in the keychain.") }
-                oldSecret = s
-            } catch {
-                await Dialogs.error("Chat history", error.localizedDescription)
-                return
-            }
-            guard let pw = await Dialogs.passphrase(.create) else { return }
-            if let e = await changePassphrase(old: oldSecret, new: pw.new) {
-                await Dialogs.error("Chat history", e.localizedDescription)
-                return
-            }
-            saveProtectionMode("passphrase")
-            do { try HistoryKeychain.clear() } catch { await Dialogs.warn("Chat history", error.localizedDescription) }
-            await Dialogs.info("Chat history", "The history is now protected by your passphrase.")
-            return
+    /// System keychain → passphrase: re-encrypts with the passphrase, then removes the keychain key.
+    func protectHistoryWithPassphrase(_ new: String, repeated: String) async -> String? {
+        guard store.isOpen, historyProtectionMode == "keychain" else { return nil }
+        if let p = PassphrasePolicy.problem(new: new, repeated: repeated) { return p.isEmpty ? "Enter the passphrase twice." : p }
+        let oldSecret: String
+        do {
+            guard let s = try HistoryKeychain.load() else { throw RpcError("No history key was found in the keychain.") }
+            oldSecret = s
+        } catch {
+            return error.localizedDescription
         }
+        if let e = await changePassphrase(old: oldSecret, new: new) { return e.localizedDescription }
+        saveProtectionMode("passphrase")
+        do { try HistoryKeychain.clear() } catch {
+            return "The history is now protected by your passphrase, but the old key could not be removed from the keychain: "
+                + error.localizedDescription
+        }
+        return nil
+    }
 
-        var error = ""
-        while true {
-            guard let pw = await Dialogs.passphrase(.change, error: error) else { return }
-            guard let e = await changePassphrase(old: pw.old, new: pw.new) else {
-                await Dialogs.info("Chat history", "The passphrase has been changed.")
-                return
-            }
-            error = e.localizedDescription
-            if e != .wrongPassphrase {
-                await Dialogs.error("Chat history", error)
-                return
-            }
-        }
+    func changeHistoryPassphrase(old: String, new: String, repeated: String) async -> String? {
+        guard store.isOpen, historyProtectionMode != "keychain" else { return nil }
+        guard !old.isEmpty else { return "Enter the current passphrase." }
+        if let p = PassphrasePolicy.problem(new: new, repeated: repeated) { return p.isEmpty ? "Enter the new passphrase twice." : p }
+        return await changePassphrase(old: old, new: new)?.localizedDescription
     }
 
     // MARK: - Conversations
@@ -808,7 +793,7 @@ final class AppModel {
 
     /// Rows of the chat list, newest first. Reading it registers the same dependencies as building it.
     func chatListItems(archived: Bool) -> [ChatListItem] {
-        _ = chats.convs.count; _ = avatars.count; _ = appearance.showAvatars; _ = roster
+        _ = chats.convs.count; _ = avatars.count; _ = appearance.showAvatars; _ = roster; _ = drafts
         let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0 // "Yesterday" changes at midnight
         if let c = chatListCache[archived], c.day == day { return c.items }
         let items = chats.sortedConversations(archived: archived).map { ChatListItem($0, self) }
@@ -858,6 +843,35 @@ final class AppModel {
         guard let c = chats.convs[key], c.archived != archived else { return }
         chats.convs[key]!.archived = archived
         persist(Records.archive(key, archived: archived, sigArchived: c.sigArchived))
+        listChanged()
+    }
+
+    func setPinned(_ key: String, _ pinned: Bool) {
+        guard let c = chats.convs[key], c.pinned != pinned else { return }
+        chats.convs[key]!.pinned = pinned
+        persist(Records.pin(key, pinned))
+        listChanged()
+    }
+
+    /// The chat list line of a chat that is not open but has an unsent draft.
+    func draftPreview(_ key: String) -> String? { drafts[key]?.preview }
+
+    /// "Mark as read" from the chat list: clears the unread counter and the "marked as unread" flag.
+    func markChatRead(_ key: String) {
+        guard let c = chats.convs[key] else { return }
+        if c.unread > 0 {
+            sendReadReceipts(key, newest: c.unread)
+            chats.convs[key]!.unread = 0
+            notifier.close(key)
+        }
+        setMarkedUnread(key, false)
+        listChanged()
+    }
+
+    func setMarkedUnread(_ key: String, _ marked: Bool) {
+        guard let c = chats.convs[key], c.markedUnread != marked else { return }
+        chats.convs[key]!.markedUnread = marked
+        persist(Records.markedUnread(key, marked))
         listChanged()
     }
 
@@ -957,7 +971,11 @@ final class AppModel {
             closeSearch()
         }
         // Only real changes: any write to `chats` makes every view showing chats update.
-        if chats.convs[key]!.unread != 0 { chats.convs[key]!.unread = 0 }
+        if chats.convs[key]!.unread != 0 {
+            sendReadReceipts(key, newest: chats.convs[key]!.unread)
+            chats.convs[key]!.unread = 0
+        }
+        if chats.convs[key]!.markedUnread { setMarkedUnread(key, false) }
         if chats.hasIncomingExpirationToStart(key) { persist(chats.startIncomingExpirationTimers(key, now: nowMs())) }
         notifier.close(key) // the notification for this chat is obsolete now
         composerFocusRequest += 1
@@ -985,6 +1003,7 @@ final class AppModel {
         if let key = current, chats.convs[key] != nil {
             persist(chats.startIncomingExpirationTimers(key, now: nowMs()))
             if chats.convs[key]!.unread > 0 {
+                sendReadReceipts(key, newest: chats.convs[key]!.unread)
                 chats.convs[key]!.unread = 0
                 notifier.close(key)
                 listChanged()
@@ -1234,6 +1253,7 @@ final class AppModel {
         // A message in the selected chat is only read while the user looks at it.
         let quiet = !m.outgoing && isQuiet(key, author: m.authorKey) // blocked sender or unaccepted request
         if !m.outgoing && !quiet && !(key == current && userIsLooking()) { chats.convs[key]!.unread += 1 }
+        else if !m.outgoing && !quiet { sendReadReceipts(key, [m]) } // read right away
         if !m.outgoing && !quiet && !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
         if key == current { updateSearch() }
         listChanged()
@@ -2049,11 +2069,25 @@ final class AppModel {
                 }
                 let u = jsonString(me["username"])
                 profileUsername = u.isEmpty ? "not set" : u
+                let profile = jsonObject(me["profile"])
+                profileName = [jsonString(profile["givenName"]), jsonString(profile["familyName"])]
+                    .filter { !$0.isEmpty }.joined(separator: " ")
             } catch {
                 profileUsername = "unavailable"
                 reportProfileStatus("Could not read your Signal username: \(error.localizedDescription)", error: true)
             }
         }
+    }
+
+    /// The own profile picture: signal-cli's avatar file, else asked over JSON-RPC.
+    func ownAvatar() async -> NSImage? {
+        guard !account.isEmpty, !account.contains("/") else { return nil }
+        let file = Self.signalCliAvatarDir.appendingPathComponent("profile-" + account)
+        var data = (try? Data(contentsOf: file)) ?? Data()
+        if data.isEmpty, cli.isRunning, let res = try? await cli.call("getAvatar", ["profile": account]) {
+            data = Data(base64Encoded: jsonString(jsonObject(res)["data"])) ?? Data()
+        }
+        return data.isEmpty ? nil : NSImage(data: data).map { Media.roundAvatar($0, size: 128) }
     }
 
     private func reportProfileStatus(_ text: String, error: Bool) {
@@ -2080,6 +2114,7 @@ final class AppModel {
         Task {
             do {
                 try await cli.call("updateProfile", params)
+                if let given = params["givenName"] as? String { profileName = given }
                 reportProfileStatus(success, error: false)
             } catch {
                 reportProfileStatus("Could not update your Signal profile: \(error.localizedDescription)", error: true)
@@ -2089,46 +2124,22 @@ final class AppModel {
 
     // MARK: - GIPHY
 
-    func searchGifs() async {
-        guard current != nil else {
-            showFlash("Open a conversation before searching for GIFs.", seconds: 5)
-            return
-        }
-        var key: String
-        do { key = try GiphyApiKeyStore.load() } catch {
-            await Dialogs.warn("GIPHY API key", error.localizedDescription)
-            return
-        }
-        if key.isEmpty {
-            switch await Dialogs.ask("GIPHY API key required", "GIPHY requires an API key to search and send GIFs.",
-                                     buttons: ["Configure API key …", "Get an API key"], cancel: true) {
-            case 0:
-                await configureGiphyApiKey()
-                key = (try? GiphyApiKeyStore.load()) ?? ""
-                if key.isEmpty { return }
-            case 1:
-                NSWorkspace.shared.open(URL(string: "https://developers.giphy.com/dashboard/")!)
-                return
-            default:
-                return
-            }
-        }
-        giphyApiKey = key
-    }
+    static let giphyDashboard = URL(string: "https://developers.giphy.com/dashboard/")!
 
-    func configureGiphyApiKey() async {
-        let currentKey: String
-        do { currentKey = try GiphyApiKeyStore.load() } catch {
-            await Dialogs.warn("GIPHY API key", error.localizedDescription)
-            return
+    /// The saved GIPHY API key ("" when none is set).
+    func loadGiphyApiKey() throws -> String { try GiphyApiKeyStore.load() }
+
+    /// Saves the key (empty removes it); returns an error message on failure.
+    func saveGiphyApiKey(_ key: String) -> String? {
+        do {
+            try GiphyApiKeyStore.save(key)
+            return nil
+        } catch {
+            return error.localizedDescription
         }
-        guard let k = await Dialogs.text("GIPHY API key", "Enter your GIPHY API key. Create one at developers.giphy.com/dashboard. "
-                                            + "Leave it empty to remove the key.", initial: currentKey, secure: true) else { return }
-        do { try GiphyApiKeyStore.save(k) } catch { await Dialogs.warn("GIPHY API key", error.localizedDescription) }
     }
 
     func sendGif(url: URL, analytics: URL?) {
-        giphyApiKey = nil
         guard let key = current, url.scheme == "https" else {
             showFlash("The selected GIF could not be downloaded.", seconds: 8)
             return

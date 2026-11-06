@@ -203,15 +203,50 @@ final class ImageViewerWindow {
         let data: Data
         let image: NSImage
         let title: String
+        /// View Once media: no saving, kept out of screenshots and screen sharing while shown.
+        var viewOnce = false
+        var player: AVPlayer?
+        var videoFile: URL?
     }
-    var item: Item?
+    var item: Item? {
+        didSet { if let old = oldValue, old.id != item?.id { ImageViewerWindow.finish(old) } }
+    }
+    private var savedSharingType: NSWindow.SharingType?
 
     static func show(data: Data, title: String) {
         guard let image = NSImage(data: data) else { return }
         shared.item = Item(data: data, image: image, title: title)
     }
 
+    static func showViewOnce(image data: Data) {
+        guard let image = NSImage(data: data) else { return }
+        shared.protectWindow()
+        shared.item = Item(data: data, image: image, title: "View once", viewOnce: true)
+    }
+
+    static func showViewOnce(video url: URL) {
+        let player = AVPlayer(url: url)
+        shared.protectWindow()
+        shared.item = Item(data: Data(), image: NSImage(), title: "View once", viewOnce: true, player: player, videoFile: url)
+        player.play()
+    }
+
     static func close() { shared.item = nil }
+
+    private func protectWindow() {
+        guard let w = MainWindowTracker.shared.window else { return }
+        if savedSharingType == nil { savedSharingType = w.sharingType }
+        w.sharingType = .none
+    }
+
+    private static func finish(_ old: Item) {
+        old.player?.pause()
+        if let f = old.videoFile { try? FileManager.default.removeItem(at: f) }
+        if old.viewOnce, shared.item?.viewOnce != true, let t = shared.savedSharingType {
+            MainWindowTracker.shared.window?.sharingType = t
+            shared.savedSharingType = nil
+        }
+    }
 }
 
 /// The image viewer layer of the main window.
@@ -225,15 +260,23 @@ struct ImageViewerOverlay: View {
                 Color.black.opacity(0.9)
                     .contentShape(Rectangle())
                     .onTapGesture { ImageViewerWindow.close() }
-                ImageViewerContent(data: item.data, image: item.image)
+                Group {
+                    if let player = item.player {
+                        AVPlayerViewRepresentable(player: player)
+                    } else {
+                        ImageViewerContent(data: item.data, image: item.image)
+                    }
+                }
                     .padding(EdgeInsets(top: 52, leading: 24, bottom: 24, trailing: 24))
                     .allowsHitTesting(false)
                 HStack(spacing: 14) {
                     if !item.title.isEmpty {
                         Text(item.title).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
                     }
-                    Button { saveCopy(item) } label: { Image(systemName: "square.and.arrow.down") }
-                        .help("Save …")
+                    if !item.viewOnce {
+                        Button { saveCopy(item) } label: { Image(systemName: "square.and.arrow.down") }
+                            .help("Save …")
+                    }
                     Button { ImageViewerWindow.close() } label: { Image(systemName: "xmark") }
                         .help("Close (Esc)")
                 }
