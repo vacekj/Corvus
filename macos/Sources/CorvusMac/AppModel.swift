@@ -5,7 +5,7 @@ import CorvusCore
 import SwiftUI
 
 /// Unsent composer state of one conversation.
-struct Draft {
+struct Draft: Equatable {
     var text = ""
     var reply = Quote()
     var files: [String] = []
@@ -33,10 +33,40 @@ final class AppModel {
             if chats.account != accountKey { accountKey = chats.account }
         }
     }
-    var current: String?            // selected conversation
+    var current: String? {          // selected conversation
+        didSet {
+            SidebarSelection.shared.select(current)
+            if let current, current != oldValue { UserDefaults.standard.set(current, forKey: Self.lastChatKey) }
+        }
+    }
+    static let lastChatKey = "lastOpenChat"
     /// Chats whose message list stays built while hidden, most recently opened first (see `ChatPane`).
     var warmChats: [String] = []
-    static let warmLimit = 8
+    static let warmLimit = 12
+
+    /// The chat that was open when the app was last used opens again.
+    private func reopenLastChat() {
+        guard current == nil, let key = UserDefaults.standard.string(forKey: Self.lastChatKey),
+              let c = chats.convs[key], !c.archived else { return }
+        openConversation(key)
+    }
+
+    /// The chats at the top of the list are the likely ones to open: their lists are built while idle
+    /// after launch (one per run loop pass), so opening them is only a show.
+    private func prewarmTopChats() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(800))
+            for item in chatListItems(archived: false).prefix(6).reversed() { prewarm(item.key) }
+        }
+    }
+
+    /// Prepares a chat's message list ahead of a likely open (pointer resting on it in the chat list,
+    /// chats at the top of the list after launch), so opening it only has to show it.
+    func prewarm(_ key: String) {
+        guard chats.convs[key] != nil, !warmChats.contains(key) else { return }
+        warmChats.insert(key, at: min(1, warmChats.count))
+        if warmChats.count > Self.warmLimit { warmChats.removeLast(warmChats.count - Self.warmLimit) }
+    }
     var showArchived = false
     var connected = false
     var statusText = "Not connected"
@@ -223,6 +253,8 @@ final class AppModel {
             historyReady = true
             Perf.mark("history ready")
             applyCachedRoster()
+            reopenLastChat()
+            prewarmTopChats()
             let early = earlyEnvelopes
             earlyEnvelopes = []
             early.forEach(onEnvelope)
@@ -986,11 +1018,13 @@ final class AppModel {
     private func saveDraft() {
         guard let key = current else { return }
         let d = Draft(text: composerText, reply: replyQuote, files: pendingFiles, gifAnalyticsUrl: pendingGifAnalyticsUrl)
-        if d.isEmpty { drafts.removeValue(forKey: key) } else { drafts[key] = d }
+        // Only real changes: the chat list shows drafts, and any write to `drafts` makes it update.
+        if d.isEmpty { if drafts[key] != nil { drafts[key] = nil } } else if drafts[key] != d { drafts[key] = d }
     }
 
     private func loadDraft(_ key: String) {
-        let d = drafts.removeValue(forKey: key) ?? Draft() // the composer owns it while the chat is open
+        let d = drafts[key] ?? Draft() // the composer owns it while the chat is open
+        if drafts[key] != nil { drafts[key] = nil }
         composerText = d.text
         replyQuote = d.reply
         pendingFiles = d.files

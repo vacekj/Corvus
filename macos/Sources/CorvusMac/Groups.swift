@@ -32,12 +32,15 @@ extension AppModel {
     func refreshGroup(_ id: String) async {
         guard let res = try? await cli.call("listGroups", ["groupId": [id]]),
               let g = GroupInfo.parseList(res).first(where: { $0.id == id }) else { return }
-        roster.set(group: g)
-        if chats.convs[g.key] != nil {
-            if !g.name.isEmpty { chats.convs[g.key]!.title = g.name }
-            chats.convs[g.key]!.expirationSeconds = g.expiration
+        // Only real changes: this runs whenever a group's info is shown (every time a group chat opens),
+        // and a write to `roster` or `chats` makes the whole chat list update.
+        var changed = false
+        if roster.groups[g.key] != g || roster.blocked.contains(g.key) != g.isBlocked { roster.set(group: g); changed = true }
+        if let c = chats.convs[g.key] {
+            if !g.name.isEmpty && c.title != g.name { chats.convs[g.key]!.title = g.name; changed = true }
+            if c.expirationSeconds != g.expiration { chats.convs[g.key]!.expirationSeconds = g.expiration; changed = true }
         }
-        listChanged()
+        if changed { listChanged() }
     }
 
     /// One `updateGroup` call for the group `id`; returns the error text, nil on success.

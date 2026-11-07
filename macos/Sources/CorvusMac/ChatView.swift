@@ -19,7 +19,9 @@ struct ChatPane: View {
             // SwiftUI revisit all kept lists. Switching to a kept chat only flips which list is visible.
             Color.clear.overlay {
                 if WarmListsContainer.hosted {
+                    // The chat background (not the window's) shows while a list is being built.
                     WarmMessageLists(model: model, keys: model.warmChats, current: conversation.key)
+                        .background(model.appearance.backgroundColor)
                 } else {
                     ZStack {
                         ForEach(model.warmChats, id: \.self) { key in
@@ -158,28 +160,53 @@ final class WarmListsContainer: NSView {
     }
 
     /// Lists are created only at the final size: one laid out at zero size first would not open at the
-    /// newest message.
+    /// newest message. Building a list is the slow part of opening a chat, so it never happens in the pass
+    /// that switches chats: that pass only shows the new header, composer and selection (on screen in the
+    /// next frame), and the list is built in a following run loop pass, one list per pass.
     private func reconcile() {
         guard let model, bounds.width > 0, bounds.height > 0 else { return }
         for k in hosts.keys where !keys.contains(k) {
             hosts[k]?.removeFromSuperview()
             hosts[k] = nil
         }
-        for k in keys where hosts[k] == nil {
-            let h = NSHostingView(rootView: AnyView(MessageListHost(key: k).environment(model)))
-            h.sizingOptions = [] // the container decides the size; no constraints from the content
-            h.frame = bounds
-            h.autoresizingMask = []
-            h.isHidden = k != current
-            addSubview(h)
-            hosts[k] = h
-            scrollToBottom(h, passes: 4)
-        }
         for (k, h) in hosts {
             let on = k == current
             if on && h.frame != bounds { h.frame = bounds } // hidden lists follow window resizes when shown
             if h.isHidden == on { h.isHidden = !on }
         }
+        if keys.contains(where: { hosts[$0] == nil }) { scheduleBuild() }
+    }
+
+    private var buildScheduled = false
+
+    private func scheduleBuild() {
+        guard !buildScheduled else { return }
+        buildScheduled = true
+        DispatchQueue.main.async { [weak self] in self?.buildNext() }
+    }
+
+    /// When the last list build started: the frame that switched chats was committed by then (benchmark).
+    static var lastBuildStart: CFTimeInterval = 0
+
+    private func buildNext() {
+        buildScheduled = false
+        Self.lastBuildStart = CACurrentMediaTime()
+        guard let model, bounds.width > 0, bounds.height > 0 else { return }
+        // The open chat first, then chats being prepared ahead (newest wish first).
+        guard let k = ([current] + keys).first(where: { keys.contains($0) && hosts[$0] == nil }) else { return }
+        let h = NSHostingView(rootView: AnyView(MessageListHost(key: k).environment(model)))
+        h.sizingOptions = [] // the container decides the size; no constraints from the content
+        h.frame = bounds
+        h.autoresizingMask = []
+        // Laid out and scrolled to the newest message while hidden, and only then shown: never a frame of
+        // the list at its top, half laid out or jumping down (until then the chat background shows).
+        h.isHidden = true
+        addSubview(h)
+        hosts[k] = h
+        settleAtBottom(h)
+        h.isHidden = k != current
+        scrollToBottom(h, passes: 2) // rows measured after this pass can still move the end
+        if keys.contains(where: { hosts[$0] == nil }) { scheduleBuild() }
     }
 
     override func layout() {
@@ -189,6 +216,21 @@ final class WarmListsContainer: NSView {
 
     /// A new list opens at the newest message. The lazy stack only estimates the height of rows it has
     /// not built, so the end moves while the last rows are built: repeat for a few run loop passes.
+    /// The lazy stack only estimates the height of rows it has not built, so reaching the end takes a few
+    /// rounds of layout and scrolling; done synchronously here, before the list is first shown.
+    private func settleAtBottom(_ h: NSView) {
+        for _ in 0..<5 {
+            h.layoutSubtreeIfNeeded()
+            guard let sv = Self.scrollView(in: h), let doc = sv.documentView else { return }
+            let clip = sv.contentView
+            let maxY = max(0, doc.frame.height - clip.bounds.height)
+            let y = doc.isFlipped ? maxY : 0
+            guard abs(clip.bounds.origin.y - y) > 0.5 else { return }
+            clip.scroll(to: NSPoint(x: clip.bounds.origin.x, y: y))
+            sv.reflectScrolledClipView(clip)
+        }
+    }
+
     private func scrollToBottom(_ h: NSView, passes: Int) {
         DispatchQueue.main.async { [weak self, weak h] in
             guard let h, let sv = Self.scrollView(in: h), let doc = sv.documentView else { return }
@@ -974,3 +1016,4 @@ private struct MaxWidthLayout: Layout {
         subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
+

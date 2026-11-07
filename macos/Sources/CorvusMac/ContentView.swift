@@ -321,7 +321,7 @@ private struct Sidebar: View {
                         }
                     }
                     if !q.isEmpty && !list.isEmpty && !messageHits.isEmpty { SidebarSectionHeader(title: "Chats") }
-                    ChatListRows(items: list, current: model.current)
+                    ChatListRows(items: list)
                     if !q.isEmpty && !messageHits.isEmpty {
                         SidebarSectionHeader(title: "Messages")
                         ForEach(messageHits) { h in
@@ -344,9 +344,7 @@ private struct Sidebar: View {
                     default: break
                     }
                 }
-                .onChange(of: model.current) { _, key in
-                    if let key { proxy.scrollTo(key) } // keyboard switching keeps the open chat in view
-                }
+                .background(KeepCurrentInView(proxy: proxy))
             }
 
             ConnectionFooter()
@@ -413,7 +411,8 @@ struct ChatListItem: Equatable {
         pinned = c.pinned
         markedUnread = c.markedUnread
         isDraft = false
-        if c.key != model.current, !model.isMessageRequest(c.key), let d = model.draftPreview(c.key) {
+        // (The open chat has no stored draft: the composer holds it.)
+        if !model.isMessageRequest(c.key), let d = model.draftPreview(c.key) {
             preview = d
             isDraft = true
         }
@@ -494,20 +493,81 @@ private struct ConversationRow: View, Equatable {
     }
 }
 
-/// The chat rows; skipped entirely while the rows and the selected chat are unchanged.
+/// The chat rows; skipped entirely while the rows are unchanged. The selection is not an input: only the
+/// two rows whose highlight changes update when another chat is opened (`SidebarSelection`).
 private struct ChatListRows: View, Equatable {
     @Environment(AppModel.self) private var model
     let items: [ChatListItem]
-    let current: String?
 
-    static func == (a: ChatListRows, b: ChatListRows) -> Bool { a.items == b.items && a.current == b.current }
+    static func == (a: ChatListRows, b: ChatListRows) -> Bool { a.items == b.items }
 
     var body: some View {
         ForEach(items, id: \.key) { c in
-            SidebarRow(selected: c.key == current, action: { model.openConversation(c.key) }) {
+            SelectableChatRow(key: c.key) {
                 ConversationRow(item: c)
             }
             .contextMenu { ConversationMenuFor(key: c.key) }
+        }
+    }
+}
+
+/// Whether one chat is the open one, observed per row: opening a chat updates two rows, not the list.
+@MainActor @Observable
+final class SidebarSelection {
+    static let shared = SidebarSelection()
+
+    @MainActor @Observable
+    final class Mark {
+        var on = false
+    }
+
+    @ObservationIgnored private var marks: [String: Mark] = [:]
+    @ObservationIgnored private var current: String?
+
+    func mark(_ key: String) -> Mark {
+        if let m = marks[key] { return m }
+        let m = Mark()
+        m.on = key == current
+        marks[key] = m
+        return m
+    }
+
+    func select(_ key: String?) {
+        guard key != current else { return }
+        if let old = current { marks[old]?.on = false }
+        current = key
+        if let key { marks[key]?.on = true }
+    }
+}
+
+private struct SelectableChatRow<Content: View>: View {
+    @Environment(AppModel.self) private var model
+    let key: String
+    @ViewBuilder let content: Content
+
+    @State private var hover: Task<Void, Never>?
+
+    var body: some View {
+        SidebarRow(selected: SidebarSelection.shared.mark(key).on, action: { model.openConversation(key) }) { content }
+            .onHover { inside in
+                // The pointer resting on a chat is a likely click: prepare its messages meanwhile.
+                hover?.cancel()
+                hover = inside ? Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(120))
+                    if !Task.isCancelled { model.prewarm(key) }
+                } : nil
+            }
+    }
+}
+
+/// Keyboard switching keeps the open chat in view (on its own, so the chat list does not depend on it).
+private struct KeepCurrentInView: View {
+    @Environment(AppModel.self) private var model
+    let proxy: ScrollViewProxy
+
+    var body: some View {
+        Color.clear.onChange(of: model.current) { _, key in
+            if let key { proxy.scrollTo(key) }
         }
     }
 }

@@ -109,11 +109,13 @@ final class ScrollBench: NSObject {
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(6)) // history loaded, window up
             guard let model else { return }
-            let keys = model.chats.convs.values.sorted { $0.msgs.count > $1.msgs.count }.prefix(6).map(\.key)
+            // The first 16 chats of the chat list in turn: more than are kept ready, so cold opens are included.
+            let keys = model.chatListItems(archived: false).prefix(16).map(\.key)
             guard !keys.isEmpty else { return }
-            var times: [Double] = []
+            var times: [Double] = [], cold: [Double] = [], coldFirst: [Double] = []
             for i in 0..<n {
                 let key = keys[i % keys.count]
+                let wasWarm = model.warmChats.contains(key)
                 let t = CACurrentMediaTime()
                 let done: Double = await withCheckedContinuation { cont in
                     CATransaction.begin()
@@ -129,9 +131,17 @@ final class ScrollBench: NSObject {
                         CATransaction.commit()
                     }
                 }
-                _ = done
                 times.append(shown)
+                _ = done
+                // The switch (header, composer, selection) is committed before the list build starts.
+                let switched = WarmListsContainer.lastBuildStart > t ? (WarmListsContainer.lastBuildStart - t) * 1000 : shown
+                if !wasWarm { cold.append(shown); coldFirst.append(switched) }
                 try? await Task.sleep(for: .milliseconds(250))
+            }
+            let c = cold.sorted(), f = coldFirst.sorted()
+            if !c.isEmpty {
+                Perf.mark(String(format: "open bench: %d cold opens, switch committed p50 %.1f ms, max %.1f ms; messages p50 %.1f ms, max %.1f ms",
+                                 c.count, f[f.count / 2], f.last!, c[c.count / 2], c.last!))
             }
             let d = times.sorted()
             Perf.mark(String(format: "open bench: %d opens, p50 %.1f ms, p90 %.1f ms, max %.1f ms; all: %@", d.count,

@@ -171,30 +171,35 @@ enum SignalCliInstaller {
     }
 
     private static func run(_ tool: String, _ args: [String], timeout: TimeInterval) async throws {
-        try await Task.detached(priority: .utility) {
-            let p = Process()
-            p.executableURL = URL(fileURLWithPath: tool)
-            p.arguments = args
-            var env = ProcessInfo.processInfo.environment
-            env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-            p.environment = env
-            p.standardInput = FileHandle.nullDevice
-            p.standardOutput = FileHandle.nullDevice
-            let err = Pipe()
-            p.standardError = err
-            try p.run()
-            let done = DispatchSemaphore(value: 0)
-            DispatchQueue.global().async { p.waitUntilExit(); done.signal() }
-            var errData = Data()
-            DispatchQueue.global().async { errData = err.fileHandleForReading.readDataToEndOfFile() }
-            if done.wait(timeout: .now() + timeout) == .timedOut {
-                p.terminate()
-                throw Failure(message: "\((tool as NSString).lastPathComponent) took too long.")
-            }
-            guard p.terminationStatus == 0 else {
-                let msg = String(decoding: errData, as: UTF8.self).split(separator: "\n").last.map(String.init) ?? ""
-                throw Failure(message: "\((tool as NSString).lastPathComponent) failed (\(p.terminationStatus)). \(msg)")
-            }
-        }.value
+        try await Task.detached(priority: .utility) { try runBlocking(tool, args, timeout: timeout) }.value
+    }
+
+    private nonisolated static func runBlocking(_ tool: String, _ args: [String], timeout: TimeInterval) throws {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: tool)
+        p.arguments = args
+        var env = ProcessInfo.processInfo.environment
+        env["PATH"] = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+        p.environment = env
+        p.standardInput = FileHandle.nullDevice
+        p.standardOutput = FileHandle.nullDevice
+        let err = Pipe()
+        p.standardError = err
+        try p.run()
+        let done = DispatchSemaphore(value: 0)
+        nonisolated(unsafe) var errData = Data() // written before `done` is signalled, read after
+        DispatchQueue.global().async {
+            errData = err.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            done.signal()
+        }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            p.terminate()
+            throw Failure(message: "\((tool as NSString).lastPathComponent) took too long.")
+        }
+        guard p.terminationStatus == 0 else {
+            let msg = String(decoding: errData, as: UTF8.self).split(separator: "\n").last.map(String.init) ?? ""
+            throw Failure(message: "\((tool as NSString).lastPathComponent) failed (\(p.terminationStatus)). \(msg)")
+        }
     }
 }

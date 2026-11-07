@@ -163,6 +163,7 @@ struct FullImageView: View {
     let cornerRadius: CGFloat
     @State private var image: NSImage?
     @State private var failed = false
+    @State private var slow = false
     @Environment(\.displayScale) private var displayScale
 
     private var attachment: Attachment { message.attachments[index] }
@@ -183,8 +184,8 @@ struct FullImageView: View {
                 Rectangle().fill(Theme.field)
                 if failed {
                     Image(systemName: "photo").font(.title2).foregroundStyle(.secondary)
-                } else {
-                    ProgressView().controlSize(.small)
+                } else if slow {
+                    ProgressView().controlSize(.small) // only for a slow load: no spinner blinking past
                 }
             }
         }
@@ -195,6 +196,8 @@ struct FullImageView: View {
         .task(id: "\(token)|\(px)") {
             if att.isGif { model.loadAnimatedGif(message, index) }
             if self.image != nil { return }
+            let spinner = Task { try? await Task.sleep(for: .milliseconds(400)); if !Task.isCancelled { slow = true } }
+            defer { spinner.cancel() }
             if let img = await model.displayImage(conversation, att, maxPixel: px, message: message, index: index) {
                 self.image = img
             } else {
