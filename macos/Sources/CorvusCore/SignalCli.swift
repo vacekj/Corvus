@@ -151,7 +151,7 @@ public final class SignalCli {
         return result
     }
 
-    nonisolated static func log(_ line: String) {
+    nonisolated public static func log(_ line: String) {
         FileHandle.standardError.write(Data((line + "\n").utf8))
     }
 
@@ -221,6 +221,13 @@ public final class SignalCli {
         r.ms = Int64(Date().timeIntervalSince(start) * 1000)
         logResult(exe: exe, args: args, r)
         return r
+    }
+
+    /// First output line of `<exe> --version` ("signal-cli 0.14.10"), for checking a freshly unpacked update.
+    nonisolated public static func versionLine(of exe: String, timeout: TimeInterval = 90) -> (CliResult, String) {
+        let r = runBlocking(exe: exe, args: ["--version"], timeout: timeout)
+        let first = r.out.split(separator: "\n").first.map(String.init) ?? ""
+        return (r, first.trimmingCharacters(in: .whitespaces))
     }
 
     /// "signal-cli 0.13.12" -> (result, first output line)

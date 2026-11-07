@@ -43,6 +43,8 @@ final class AppModel {
     var flash: String?              // transient status bar message
     var updateHint: UpdateHint?
     var version = ""                // e.g. "0.13.12"
+    @ObservationIgnored var updatingCli = false
+    @ObservationIgnored var updateChecksStarted = false
     var historyProtectionMode = ""  // "keychain" | "passphrase"
     var historyReady = false
 
@@ -435,7 +437,7 @@ final class AppModel {
         loadContactsAndGroups()
         subscribeCallEvents()
         loadStickerPacks()
-        checkForUpdates(silent: true) // silent: only a hint in the status bar
+        startUpdateChecks() // installs signal-cli updates (Settings → General), otherwise a hint in the status bar
     }
 
     private func showCliProblem(_ title: String, _ r: CliResult) async {
@@ -2184,39 +2186,6 @@ final class AppModel {
             if x != y { return x < y ? .orderedAscending : .orderedDescending }
         }
         return .orderedSame
-    }
-
-    func checkForUpdates(silent: Bool) {
-        Task {
-            var req = URLRequest(url: URL(string: "https://api.github.com/repos/AsamK/signal-cli/releases/latest")!)
-            req.setValue("corvus", forHTTPHeaderField: "User-Agent")
-            req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            let o: JSON
-            do {
-                let (data, _) = try await URLSession.shared.data(for: req)
-                o = (try JSONSerialization.jsonObject(with: data)) as? JSON ?? [:]
-            } catch {
-                if !silent { await Dialogs.warn("Update check", "Could not reach GitHub:\n\(error.localizedDescription)") }
-                return
-            }
-            var latest = jsonString(o["tag_name"])
-            if latest.hasPrefix("v") { latest.removeFirst() }
-            let url = URL(string: jsonString(o["html_url"])) ?? URL(string: "https://github.com/AsamK/signal-cli/releases")!
-            let newer = !latest.isEmpty && AppModel.compareVersions(latest, version) == .orderedDescending
-            updateHint = newer ? UpdateHint(version: latest, url: url) : nil
-            if silent { return }
-            if newer {
-                let r = await Dialogs.ask("Update available",
-                                          "Installed: signal-cli \(version)\nLatest version: signal-cli \(latest)\n\nUpdate signal-cli the way you "
-                                              + "usually do (e.g. brew upgrade signal-cli) – this app does not need to be changed for that. "
-                                              + "Afterwards choose “File → Reconnect”.",
-                                          buttons: ["Open release page", "Close"])
-                if r == 0 { NSWorkspace.shared.open(url) }
-            } else {
-                await Dialogs.info("Update check", version.isEmpty ? "The installed signal-cli version is not known yet."
-                                       : "signal-cli \(version) is up to date.")
-            }
-        }
     }
 
     func showAbout() {

@@ -23,6 +23,8 @@ private struct GeneralSettings: View {
     @AppStorage(MessageInput.spellCheckKey) private var spellCheck = false
     @State private var giphyKey: String?
 
+    @AppStorage(AppModel.autoUpdateKey) private var autoUpdate = true
+
     var body: some View {
         Form {
             Section("signal-cli") {
@@ -38,6 +40,7 @@ private struct GeneralSettings: View {
                     Button("Reconnect") { model.reconnect() }
                     Button("Check for update") { model.checkForUpdates(silent: false) }
                 }
+                Toggle("Update signal-cli automatically", isOn: $autoUpdate)
             }
             HistoryProtectionSection()
             Section("Message field") {
