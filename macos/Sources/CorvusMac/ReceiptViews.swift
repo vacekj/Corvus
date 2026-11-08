@@ -24,17 +24,7 @@ struct DeliveryTicks: View {
     let pending: Bool
 
     var body: some View {
-        if pending {
-            Image(systemName: "circle.dotted")
-        } else {
-            let status = message.deliveryStatus
-            let symbol = status >= 2 ? "checkmark.circle.fill" : "checkmark.circle"
-            HStack(spacing: -5) {
-                if status >= 1 { Image(systemName: symbol) }
-                Image(systemName: symbol)
-            }
-            .help(helpText(status))
-        }
+        ReceiptTicks(status: pending ? nil : message.deliveryStatus).help(pending ? "Sending" : helpText(message.deliveryStatus))
     }
 
     private func helpText(_ status: Int) -> String {
@@ -42,6 +32,25 @@ struct DeliveryTicks: View {
         guard n > 1 else { return Message.receiptLabel(status) }
         let delivered = message.recipients(withStatusAtLeast: 1).count, read = message.recipients(withStatusAtLeast: 2).count
         return "Delivered to \(delivered) of \(n), read by \(read)"
+    }
+}
+
+/// The ticks alone (also in the chat list): nil while sending.
+struct ReceiptTicks: View {
+    let status: Int?
+
+    var body: some View {
+        if let status {
+            let symbol = status >= 2 ? "checkmark.circle.fill" : "checkmark.circle"
+            HStack(spacing: -5) {
+                if status >= 1 { Image(systemName: symbol) }
+                Image(systemName: symbol)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(Message.receiptLabel(status))
+        } else {
+            Image(systemName: "circle.dotted").accessibilityLabel("Sending")
+        }
     }
 }
 

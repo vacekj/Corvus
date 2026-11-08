@@ -396,6 +396,8 @@ struct ChatListItem: Equatable {
     var pinned: Bool
     var markedUnread: Bool
     var isDraft: Bool
+    /// Ticks of the last message when it is our own: nil for none, -1 while sending, else 0 sent … 2 read.
+    var lastStatus: Int?
 
     @MainActor init(_ c: Conversation, _ model: AppModel) {
         key = c.key
@@ -411,10 +413,15 @@ struct ChatListItem: Equatable {
         pinned = c.pinned
         markedUnread = c.markedUnread
         isDraft = false
+        lastStatus = nil
+        if let m = c.msgs.last, m.outgoing, !model.isMessageRequest(c.key) {
+            lastStatus = model.chats.pendingTimestamps(c.key).contains(m.ts) ? -1 : m.deliveryStatus
+        }
         // (The open chat has no stored draft: the composer holds it.)
         if !model.isMessageRequest(c.key), let d = model.draftPreview(c.key) {
             preview = d
             isDraft = true
+            lastStatus = nil
         }
     }
 
@@ -422,6 +429,7 @@ struct ChatListItem: Equatable {
         a.key == b.key && a.title == b.title && a.isGroup == b.isGroup && a.unread == b.unread && a.muted == b.muted
             && a.blocked == b.blocked && a.time == b.time && a.preview == b.preview && a.avatar === b.avatar
             && a.pinned == b.pinned && a.markedUnread == b.markedUnread && a.isDraft == b.isDraft
+            && a.lastStatus == b.lastStatus
     }
 
     private static func preview(_ m: Message, isGroup: Bool) -> String {
@@ -474,6 +482,11 @@ private struct ConversationRow: View, Equatable {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 4)
+                    if let status = c.lastStatus, c.unread == 0 {
+                        ReceiptTicks(status: status < 0 ? nil : status)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(status >= 2 ? Theme.signalBlue : Color.secondary)
+                    }
                     if c.markedUnread && c.unread == 0 {
                         Circle().fill(c.muted ? Color.secondary : Theme.signalBlue).frame(width: 10, height: 10)
                             .accessibilityLabel("Marked as unread")
