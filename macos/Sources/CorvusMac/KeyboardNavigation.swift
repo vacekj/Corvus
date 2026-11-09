@@ -264,9 +264,22 @@ struct MessageHitRow: View {
                     Spacer(minLength: 4)
                     Text(ChatListItem.shortTime(hit.time)).font(.caption2).foregroundStyle(.secondary)
                 }
-                Text(who + hit.snippet).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Text(snippet(who)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
         }
         .padding(.vertical, 4)
+    }
+
+    /// The snippet with the searched text in bold, in the normal text colour (like Signal Desktop).
+    private func snippet(_ prefix: String) -> AttributedString {
+        var s = AttributedString(prefix)
+        var body = AttributedString(hit.snippet)
+        for r in hit.highlights {
+            guard let sr = Range(r, in: hit.snippet), let ar = Range(sr, in: body) else { continue }
+            body[ar].font = .caption.weight(.bold)
+            body[ar].foregroundColor = .primary
+        }
+        s.append(body)
+        return s
     }
 }

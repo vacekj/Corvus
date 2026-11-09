@@ -15,18 +15,62 @@ struct FormattedMessageText: View {
     private static let size = NSFont.systemFontSize + 1
 
     @Environment(\.messageHovered) private var hovered
+    @Environment(\.searchHighlightQuery) private var highlightQuery
+    @Environment(\.conversationKey) private var conversationKey
     /// Stays on once the pointer was over the message, so a selection survives moving the pointer away.
     @State private var selectable = false
+    /// Long texts: how many characters are shown ("Read more" adds more).
+    @State private var shownLength = LongText.initialLength
 
     var body: some View {
+        let b = expandedBody
+        let full = attributed(b)
+        let cut = LongText.cut(b.text, limit: shownLimit(b.text))
+        if cut != nil || message.longTextAttachmentIndex != nil {
+            VStack(alignment: .leading, spacing: 4) {
+                text(cut.map { Self.shortened(full, b.text, at: $0) } ?? full)
+                Button("Read more") { readMore(shown: cut.map { b.text.distance(from: b.text.startIndex, to: $0) } ?? b.text.count) }
+                    .buttonStyle(.plain)
+                    .font(.system(size: Self.size, weight: .semibold))
+                    .foregroundStyle(foreground)
+            }
+        } else {
+            text(full)
+        }
+    }
+
+    private func text(_ s: AttributedString) -> some View {
         Group {
             if selectable || hovered {
-                styled(Text(attributed)).textSelection(.enabled)
+                styled(Text(s)).textSelection(.enabled)
             } else {
-                styled(Text(attributed))
+                styled(Text(s))
             }
         }
         .onChange(of: hovered) { _, h in if h { selectable = true } }
+    }
+
+    /// The shown part of a long text, ending with "…".
+    private static func shortened(_ s: AttributedString, _ text: String, at cut: String.Index) -> AttributedString {
+        let n = text.distance(from: text.startIndex, to: cut)
+        var out = AttributedString(s[s.startIndex..<s.characters.index(s.startIndex, offsetBy: n)])
+        out.append(AttributedString("…"))
+        return out
+    }
+
+    /// Characters shown of a long text: enough to include the last search hit.
+    private func shownLimit(_ text: String) -> Int {
+        guard let q = highlightQuery, text.utf16.count > LongText.threshold,
+              let last = SearchHighlight.ranges(of: q, in: text).last else { return shownLength }
+        return max(shownLength, text.distance(from: text.startIndex, to: last.upperBound) + 100)
+    }
+
+    private func readMore(shown: Int) {
+        shownLength = max(shownLength, shown) + LongText.increment
+        // The full text of a long message is still in its attachment (older history): load it first.
+        if message.longTextAttachmentIndex != nil, let c = model.chats.convs[conversationKey] {
+            model.loadLongText(c.key, ts: message.ts, author: model.chats.effectiveAuthor(c, message), userInitiated: true)
+        }
     }
 
     private func styled(_ t: Text) -> some View {
@@ -61,8 +105,22 @@ struct FormattedMessageText: View {
         }
     }
 
-    private var attributed: AttributedString {
-        let body = expandedBody
+    private func attributed(_ body: FormattedBody) -> AttributedString {
+        var s = styledText(body)
+        if let q = highlightQuery { highlight(&s, text: body.text, query: q) }
+        return s
+    }
+
+    /// Search hits inside the text (Signal Desktop marks them like a highlighter).
+    private func highlight(_ s: inout AttributedString, text: String, query: String) {
+        for r in SearchHighlight.ranges(of: query, in: text) {
+            guard let ar = Range(r, in: s) else { continue }
+            s[ar].backgroundColor = Color(red: 1, green: 0.85, blue: 0.2)
+            s[ar].foregroundColor = .black
+        }
+    }
+
+    private func styledText(_ body: FormattedBody) -> AttributedString {
         var s = linkify(body.text)
         if body.styles.isEmpty && body.mentions.isEmpty { return s }
         let text = body.text

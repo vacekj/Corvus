@@ -155,6 +155,12 @@ public struct Message: Equatable, Identifiable {
     public var poll = Poll()          // valid for poll messages
     public var linkPreview = LinkPreview() // sender-provided preview card (never fetched by us when received)
 
+    // Message content without a text body (MessageContent.swift); `text` then holds a fallback line.
+    public var sharedContacts: [SharedContact] = []
+    public var payment: PaymentNote?
+    /// A chat event shown as a centred note instead of a bubble (e.g. "… set the disappearing message timer …").
+    public var notice = MessageNotice()
+
     // Signal text formatting (see Formatting.swift); offsets are UTF-16 units of `text`.
     public var textStyles: [TextStyleRange] = []
     public var mentions: [MentionRange] = []
@@ -203,6 +209,8 @@ public struct Message: Equatable, Identifiable {
         linkPreview = LinkPreview()
         pinnedAtMs = 0
         pinExpiresMs = 0
+        sharedContacts = []
+        payment = nil
     }
 
     /// View Once media that has been opened (or was sent by us): only a placeholder remains.

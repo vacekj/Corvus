@@ -47,6 +47,7 @@ private struct GeneralSettings: View {
             HistoryProtectionSection()
             Section("Message field") {
                 Toggle("Check spelling while typing", isOn: $spellCheck)
+                EmojiSkinToneSetting()
             }
             Section("Media") {
                 Picker("Sent media quality", selection: $sentMediaQuality) {

@@ -159,6 +159,22 @@ private func parseQuote(_ dm: JSON) -> Quote {
     return q
 }
 
+/// A group (v2) change without content: a timer change arrives like this, with the new timer in
+/// expiresInSeconds. (Other changes carry the unchanged timer and are ignored by the caller.) A zero timer is
+/// not trusted here: not every client sets the timer on group updates, and "disabled" would then be wrong.
+private func isTimerOnlyGroupUpdate(_ dm: JSON) -> Bool {
+    let g = jsonObject(dm["groupInfo"])
+    guard jsonString(g["type"]) == "UPDATE", jsonInt(dm["expiresInSeconds"]) > 0 else { return false }
+    let content = ["message", "attachments", "reaction", "sticker", "contacts", "payment", "remoteDelete",
+                   "pollCreate", "pollVote", "pollTerminate", "quote", "storyContext", "groupCallUpdate"]
+    return !content.contains { k in
+        guard let v = dm[k], !(v is NSNull) else { return false }
+        if let s = v as? String { return !s.isEmpty }
+        if let a = v as? [Any] { return !a.isEmpty }
+        return true
+    }
+}
+
 private func groupIdOf(_ dm: JSON) -> String {
     jsonString(jsonObject(dm["groupInfo"])["groupId"])
 }
@@ -167,8 +183,11 @@ private func groupIdOf(_ dm: JSON) -> String {
 private func parseBody(_ dm: JSON, _ out: inout ParsedEnvelope, envelopeTs: Int64) {
     out.groupId = groupIdOf(dm)
     out.expirationSeconds = jsonInt(dm["expiresInSeconds"])
-    if jsonBool(dm["isExpirationUpdate"]) {
+    if jsonBool(dm["isExpirationUpdate"]) || isTimerOnlyGroupUpdate(dm) {
         out.kind = .expirationUpdate
+        var ts = jsonInt64(dm["timestamp"])
+        if ts <= 0 { ts = envelopeTs }
+        out.msg.ts = ts > 0 ? ts : nowMs()
         return
     }
     let r = jsonObject(dm["reaction"])
@@ -288,6 +307,11 @@ private func parseBody(_ dm: JSON, _ out: inout ParsedEnvelope, envelopeTs: Int6
         q.attachmentNote = "story"
         out.msg.quote = q
     }
+    // Shared contacts and payments have no body: the text is a fallback line (chat list, notifications, Qt app).
+    out.msg.sharedContacts = parseSharedContacts(dm)
+    if !out.msg.sharedContacts.isEmpty && out.msg.text.isEmpty { out.msg.text = MessageFallback.contact(out.msg.sharedContacts) }
+    out.msg.payment = parsePayment(dm)
+    if let p = out.msg.payment, out.msg.text.isEmpty { out.msg.text = MessageFallback.payment(p) }
     out.msg.expiresInSeconds = out.expirationSeconds
     if out.msg.text.isEmpty && out.msg.attachments.isEmpty { return } // receipts, typing, sessions, ...
 

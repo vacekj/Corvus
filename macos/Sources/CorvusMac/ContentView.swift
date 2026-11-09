@@ -442,6 +442,7 @@ struct ChatListItem: Equatable {
 
     private static func preview(_ m: Message, isGroup: Bool) -> String {
         if m.deleted { return m.deletedText }
+        if m.isNotice { return m.text }
         var t = m.text.prefix(200).replacingOccurrences(of: "\n", with: " ")
         if m.viewOnce { t = "1️⃣ View once media" }
         if t.isEmpty, let a = m.attachments.first {

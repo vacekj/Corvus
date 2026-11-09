@@ -77,6 +77,7 @@ public enum Records {
         // Local-only extras (the Qt app ignores them): a failed send and a pinned message.
         if m.outgoing && m.sendFailed && !m.deleted { d["fs"] = true }
         if m.pinnedAtMs > 0 && !m.deleted { d["pn"] = pinToJson(m) }
+        contentExtras(m, into: &d)
         var rec: JSON = ["t": "m", "c": conv, "ts": m.ts, "s": m.sender, "x": m.deleted ? "" : m.text,
                          "o": m.outgoing, "au": m.authorKey]
         if m.editCount > 0 && !m.deleted { d["ed"] = editToJson(m) }
@@ -194,6 +195,7 @@ public enum Records {
             m.pinnedAtMs = jsonInt64(pn["at"])
             m.pinExpiresMs = m.pinnedAtMs > 0 ? jsonInt64(pn["ex"]) : 0
         }
+        applyContentExtras(&m, d)
         if d["at"] != nil {
             m.attachments = jsonArray(d["at"]).map { attachmentFromJson(jsonObject($0)) }
         }

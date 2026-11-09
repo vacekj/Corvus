@@ -43,6 +43,7 @@ public struct MessageSearchHit: Equatable, Identifiable {
     public var outgoing = false
     public var sender = ""
     public var snippet = ""      // one line around the first match
+    public var highlights: [NSRange] = [] // occurrences of the query in `snippet` (UTF-16)
 
     public init() {}
 
@@ -57,7 +58,7 @@ public func searchMessages(_ convs: [String: Conversation], query: String, limit
     guard q.count >= 2 else { return [] }
     var hits: [MessageSearchHit] = []
     for c in convs.values {
-        for m in c.msgs.reversed() where !m.deleted && !m.viewOnce && !m.text.isEmpty {
+        for m in c.msgs.reversed() where !m.deleted && !m.viewOnce && !m.text.isEmpty && !m.isNotice {
             guard let r = m.text.range(of: q, options: [.caseInsensitive, .diacriticInsensitive]) else { continue }
             var h = MessageSearchHit()
             h.key = c.key
@@ -66,6 +67,7 @@ public func searchMessages(_ convs: [String: Conversation], query: String, limit
             h.outgoing = m.outgoing
             h.sender = m.sender
             h.snippet = snippet(m.text, around: r)
+            h.highlights = SearchHighlight.nsRanges(of: q, in: h.snippet, options: SearchHighlight.listOptions, locale: nil)
             hits.append(h)
             if hits.count > limit * 4 { break } // enough candidates from one chat
         }

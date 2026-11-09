@@ -920,10 +920,7 @@ final class AppModel {
                 } else {
                     try await cli.call("updateContact", ["recipient": chats.resolveKey(key), "expiration": seconds])
                 }
-                guard chats.convs[key] != nil else { return }
-                chats.convs[key]!.expirationSeconds = seconds
-                persist(Records.expiration(key, seconds))
-                showFlash("Disappearing-message timer updated.", seconds: 5)
+                noteTimerChange(key, seconds: seconds, by: account, ts: nowMs())
             } catch {
                 showFlash("Could not change disappearing-message timer: \(error.localizedDescription)")
             }
@@ -1194,10 +1191,7 @@ final class AppModel {
 
         switch pe.kind {
         case .expirationUpdate:
-            if let c = chats.convs[key], c.expirationSeconds != pe.expirationSeconds {
-                chats.convs[key]!.expirationSeconds = pe.expirationSeconds
-                persist(Records.expiration(key, pe.expirationSeconds))
-            }
+            noteTimerChange(key, seconds: pe.expirationSeconds, by: pe.outgoing ? account : srcKey, ts: pe.msg.ts)
             return
         case .reaction:
             let reactor = pe.outgoing ? account : srcKey
@@ -1714,6 +1708,7 @@ final class AppModel {
         guard let c = chats.convs[key], let mi = chats.findMessage(c, ts: ts, authors: [author]) else { return }
         let m = c.msgs[mi]
         if m.viewOnce { return } // View Once media never gets a stored preview
+        if m.longTextAttachmentIndex != nil { loadLongText(key, ts: ts, author: author) }
         fetchLinkPreviewThumbnail(key, ts: ts, author: author, attempt: attempt)
         // Pictures are shown from the original file when they come into view (MediaDisplay.swift); no copy
         // is kept in the history.

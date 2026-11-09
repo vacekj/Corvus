@@ -14,11 +14,11 @@ struct AttachmentStack: View {
         let album = atts.indices.filter { atts[$0].isAlbumMedia }
         if album.count >= 2 {
             MediaAlbum(message: message, indices: album, width: edgeToEdge ? 340 : 300, cornerRadius: edgeToEdge ? 0 : 10)
-            ForEach(atts.indices.filter { !atts[$0].isAlbumMedia }, id: \.self) { i in
+            ForEach(atts.indices.filter { !atts[$0].isAlbumMedia && !atts[$0].isLongText }, id: \.self) { i in
                 AttachmentView(message: message, index: i, attachment: atts[i], foreground: foreground, edgeToEdge: edgeToEdge)
             }
         } else {
-            ForEach(Array(atts.enumerated()), id: \.offset) { i, att in
+            ForEach(Array(atts.enumerated()).filter { !$0.element.isLongText }, id: \.offset) { i, att in
                 AttachmentView(message: message, index: i, attachment: att, foreground: foreground, edgeToEdge: edgeToEdge)
             }
         }

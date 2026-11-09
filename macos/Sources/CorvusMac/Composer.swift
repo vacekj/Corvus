@@ -31,6 +31,7 @@ struct ComposerArea: View {
                 }
             }
             MentionSuggestionList()
+            EmojiSuggestionList()
             if model.isRecording {
                 RecordingBar()
             } else {
@@ -273,6 +274,7 @@ struct MessageInput: NSViewRepresentable {
         context.coordinator.scroll = scroll
         context.coordinator.observeInsertions()
         MentionAutocomplete.shared.insert = { [weak coordinator = context.coordinator] in coordinator?.insertMention($0) }
+        EmojiAutocomplete.shared.insert = { [weak coordinator = context.coordinator] in coordinator?.insertEmojiShortcode($0) }
         DispatchQueue.main.async { tv.window?.makeFirstResponder(tv) }
         return scroll
     }
@@ -285,6 +287,7 @@ struct MessageInput: NSViewRepresentable {
             tv.string = text
             tv.needsDisplay = true
             MentionAutocomplete.shared.hide() // sent, or another chat's draft
+            EmojiAutocomplete.shared.hide()
         }
         tv.isEditable = model.connected && model.canCompose
         // Settings → General: spell checking, grammar and autocorrect follow one switch.
@@ -334,10 +337,14 @@ struct MessageInput: NSViewRepresentable {
             if parent.text != tv.string { parent.text = tv.string }
             updateHeight()
             updateMentions()
+            updateEmojiShortcodes(afterEdit: true)
             parent.model.composerEdited()
         }
 
-        func textViewDidChangeSelection(_ notification: Notification) { updateMentions() }
+        func textViewDidChangeSelection(_ notification: Notification) {
+            updateMentions()
+            updateEmojiShortcodes(afterEdit: false)
+        }
 
         /// Shows the members matching the "@…" before the caret (groups only).
         func updateMentions() {
@@ -376,6 +383,7 @@ struct MessageInput: NSViewRepresentable {
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
             let model = parent.model
             let flags = NSApp.currentEvent?.modifierFlags ?? []
+            if handleEmojiCommand(selector) { return true }
             let mentions = MentionAutocomplete.shared
             if mentions.active {
                 switch selector {

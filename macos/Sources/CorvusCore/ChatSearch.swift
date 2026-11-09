@@ -10,6 +10,7 @@ public enum ChatSearch {
         var out: [String] = []
         for (i, m) in msgs.enumerated() {
             if i % 512 == 0 && Task.isCancelled { return nil }
+            if m.isNotice { continue }
             var s = m.sender + "\n" + m.text + "\n" + m.quote.text
             for a in m.attachments { s += "\n" + a.filename }
             if s.localizedCaseInsensitiveContains(needle) { out.append(m.id) }

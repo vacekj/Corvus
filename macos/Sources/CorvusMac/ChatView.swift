@@ -264,6 +264,7 @@ private struct MessageListHost: View {
                 .equatable()
                 // `searchVisible` first: while no search is open, switching chats does not touch this view
                 .environment(\.searchHighlightId, model.searchVisible && model.current == key ? model.searchMatchId : nil)
+                .environment(\.searchHighlightQuery, model.searchVisible && model.current == key ? model.searchHighlightQuery : nil)
                 .tint(Theme.signalBlue)
         }
     }
@@ -285,7 +286,7 @@ private struct MessageList: View, Equatable {
     }
 
     private func sameRun(_ a: Message, _ b: Message) -> Bool {
-        a.outgoing == b.outgoing && a.authorKey == b.authorKey && abs(a.ts - b.ts) <= Theme.groupGapMs
+        !a.isNotice && !b.isNotice && a.outgoing == b.outgoing && a.authorKey == b.authorKey && abs(a.ts - b.ts) <= Theme.groupGapMs
             && LocalDay.of(a.ts) == LocalDay.of(b.ts)
     }
 
@@ -309,10 +310,14 @@ private struct MessageList: View, Equatable {
                         VStack(spacing: 0) {
                             if newDay { DateSeparator(date: m.time) }
                             if let divider, m.ts == divider.ts && m.authorKey == divider.authorKey { UnreadDivider() }
-                            MessageRow(message: m, isGroup: conversation.isGroup, grouping: g,
-                                       pending: pendingTs.contains(m.ts),
-                                       avatar: conversation.isGroup && !m.outgoing && !g.joinedBelow ? authorAvatar(m) : nil)
-                                .padding(.top, g.joinedAbove ? 2 : (newDay ? 2 : 10))
+                            if m.isNotice {
+                                ChatNoticeRow(message: m).padding(.top, newDay ? 2 : 10)
+                            } else {
+                                MessageRow(message: m, isGroup: conversation.isGroup, grouping: g,
+                                           pending: pendingTs.contains(m.ts),
+                                           avatar: conversation.isGroup && !m.outgoing && !g.joinedBelow ? authorAvatar(m) : nil)
+                                    .padding(.top, g.joinedAbove ? 2 : (newDay ? 2 : 10))
+                            }
                         }
                         .id(m.id)
                     }
@@ -535,6 +540,8 @@ extension EnvironmentValues {
     /// The current search hit, outlined (passed down instead of read from the model in every bubble:
     /// a bubble reading model state updates whenever that state is written).
     @Entry var searchHighlightId: String? = nil
+    /// The text searched for in the open chat: its occurrences are highlighted inside the bubbles.
+    @Entry var searchHighlightQuery: String? = nil
     /// The chat a message list shows (the kept hidden lists are not the current chat).
     @Entry var conversationKey = ""
 }
@@ -689,7 +696,8 @@ private struct Bubble: View {
                         if showSender { senderLabel }
                         if m.quote.valid { QuoteView(quote: m.quote, foreground: fg, outgoing: m.outgoing) }
                         AttachmentStack(message: m, foreground: fg)
-                        if !m.text.isEmpty {
+                        if m.hasExtraContent { MessageExtraContent(message: m, foreground: fg) }
+                        if !m.text.isEmpty && !m.extraReplacesText {
                             FormattedMessageText(message: m, foreground: fg) {
                                 Bubble.linkified($0, emojiOnly: Bubble.isEmojiOnly(m.text))
                             }
@@ -792,7 +800,9 @@ private struct MetaRow: View {
 
     var body: some View {
         HStack(spacing: 3) {
-            if message.expiresInSeconds > 0 { Image(systemName: "timer") }
+            if message.expiresInSeconds > 0 {
+                ExpiryCountdownIcon(seconds: message.expiresInSeconds, startMs: message.expirationStartMs)
+            }
             if message.isEdited { Text("Edited") }
             // The full date as a tooltip, installed only under the pointer (a tooltip per row costs scrolling).
             if hovered {
@@ -945,7 +955,7 @@ private struct MessageMenu: View {
                 NSPasteboard.general.setString(m.text, forType: .string)
             } label: { Label("Copy text", systemImage: "doc.on.doc") }
         }
-        ForEach(Array(m.attachments.enumerated()).filter { !$0.element.isSticker && !m.viewOnce }, id: \.offset) { i, a in
+        ForEach(Array(m.attachments.enumerated()).filter { !$0.element.isSticker && !$0.element.isLongText && !m.viewOnce }, id: \.offset) { i, a in
             Button { model.saveAttachment(m, i) } label: {
                 Label("Save “\(a.filename.isEmpty ? "attachment" : a.filename)” …", systemImage: "square.and.arrow.down")
             }

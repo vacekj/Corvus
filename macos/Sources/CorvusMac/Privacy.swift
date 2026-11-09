@@ -21,7 +21,7 @@ extension AppModel {
     func sendReadReceipts(_ key: String, _ msgs: [Message]) {
         guard privacy.readReceipts, cli.isRunning, let c = chats.convs[key], mayAcknowledge(key) else { return }
         var byAuthor: [String: [Int64]] = [:]
-        for m in msgs where !m.outgoing && !m.deleted && m.ts > 0 {
+        for m in msgs where !m.outgoing && !m.deleted && !m.isNotice && m.ts > 0 {
             let author = chats.resolveKey(chats.effectiveAuthor(c, m))
             guard !author.isEmpty, author != account, !isBlocked(author) else { continue }
             byAuthor[author, default: []].append(m.ts)
