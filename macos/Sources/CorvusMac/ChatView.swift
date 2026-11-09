@@ -629,7 +629,7 @@ private struct Bubble: View {
                             .font(.system(size: NSFont.systemFontSize + 1).italic())
                             .foregroundStyle(fg.opacity(0.7))
                     }
-                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7))
+                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7), readColor: fg, isGroup: isGroup)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -639,7 +639,7 @@ private struct Bubble: View {
                     if showSender { senderLabel }
                     if m.quote.valid { QuoteView(quote: m.quote, foreground: .primary, outgoing: m.outgoing) }
                     StickerView(attachment: m.attachments[0])
-                    MetaRow(message: m, pending: pending, color: .secondary)
+                    MetaRow(message: m, pending: pending, color: .secondary, readColor: .primary, isGroup: isGroup)
                 }
             } else if m.viewOnce {
                 BubbleContentLayout(spacing: 3) {
@@ -647,7 +647,7 @@ private struct Bubble: View {
                         if showSender { senderLabel }
                         ViewOnceBubbleContent(message: m, foreground: fg)
                     }
-                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7))
+                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7), readColor: fg, isGroup: isGroup)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -658,7 +658,7 @@ private struct Bubble: View {
                         if showSender { senderLabel }
                         PollView(message: m, foreground: fg)
                     }
-                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7))
+                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7), readColor: fg, isGroup: isGroup)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 10)
@@ -670,7 +670,7 @@ private struct Bubble: View {
                     }
                 }
                 .overlay(alignment: .bottomTrailing) {
-                    MetaRow(message: m, pending: pending, color: .white)
+                    MetaRow(message: m, pending: pending, color: .white.opacity(0.8), readColor: .white, isGroup: isGroup)
                         .padding(.horizontal, 7)
                         .padding(.vertical, 3)
                         .background(Capsule().fill(.black.opacity(0.45)))
@@ -685,7 +685,7 @@ private struct Bubble: View {
                 VStack(alignment: m.outgoing ? .trailing : .leading, spacing: 2) {
                     if showSender { senderLabel }
                     Text(m.text).font(.system(size: 44))
-                    MetaRow(message: m, pending: pending, color: .secondary)
+                    MetaRow(message: m, pending: pending, color: .secondary, readColor: .primary, isGroup: isGroup)
                 }
             } else {
                 BubbleContentLayout(spacing: 3) {
@@ -702,7 +702,7 @@ private struct Bubble: View {
                         }
                         if m.linkPreview.isValid { LinkPreviewCard(preview: m.linkPreview, foreground: fg) }
                     }
-                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7))
+                    MetaRow(message: m, pending: pending, color: fg.opacity(0.7), readColor: fg, isGroup: isGroup)
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
@@ -790,6 +790,8 @@ private struct MetaRow: View {
     let message: Message
     let pending: Bool
     let color: Color
+    let readColor: Color
+    let isGroup: Bool
     @Environment(\.messageHovered) private var hovered
 
     var body: some View {
@@ -804,7 +806,8 @@ private struct MetaRow: View {
                 Text(message.time.formatted(date: .omitted, time: .shortened))
             }
             if message.outgoing {
-                DeliveryTicks(message: message, pending: pending)
+                DeliveryTicks(message: message, pending: pending, isGroup: isGroup,
+                              muted: color, read: readColor)
             }
         }
         .font(.system(size: 10, weight: .medium))

@@ -162,6 +162,10 @@ public struct Message: Equatable, Identifiable {
     // Outgoing messages: best status over all recipients (0 sent, 1 delivered, 2 read) and the state per recipient.
     public var receiptStatus = 0
     public var recipientReceipts: [String: RecipientReceipt] = [:]
+    // Outgoing group messages: the members the message was sent to, captured when the send started
+    // (self excluded, aliases resolved). Empty for other messages and for imported history that did
+    // not record it; the hover detail then shows only the recipients of known receipts.
+    public var sentToKeys: [String] = []
 
     public init() {}
 

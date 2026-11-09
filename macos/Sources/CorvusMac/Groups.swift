@@ -28,6 +28,19 @@ extension AppModel {
 
     func isSelf(_ id: String) -> Bool { !account.isEmpty && (id == account || chats.resolveKey(id) == account) }
 
+    /// The members a group message is sent to right now, excluding us and resolving UUID aliases.
+    /// Stored on the outgoing message so receipt details keep the audience even when membership changes.
+    func groupRecipientKeys(_ key: String) -> [String] {
+        guard let g = roster.groups[key] else { return [] }
+        var keys: [String] = []
+        for m in g.members {
+            let k = chats.resolveKey(m.id)
+            if k.isEmpty || isSelf(k) || keys.contains(k) { continue }
+            keys.append(k)
+        }
+        return keys
+    }
+
     /// Reloads one group (detailed) and updates the chat title.
     func refreshGroup(_ id: String) async {
         guard let res = try? await cli.call("listGroups", ["groupId": [id]]),

@@ -68,6 +68,9 @@ public enum Records {
         if m.poll.isValid && !m.deleted { d["pl"] = pollToJson(m.poll) }
         if !m.textStyles.isEmpty && !m.deleted { d["st"] = textStylesToJson(m.textStyles) }
         if !m.mentions.isEmpty && !m.deleted { d["mn"] = mentionsToJson(m.mentions) }
+        // "to" is local-only: the Qt app ignores unknown extras. It keeps the recipients of a group
+        // send so receipt details can show sent/waiting members and a denominator after a restart.
+        if m.outgoing && !m.sentToKeys.isEmpty { d["to"] = m.sentToKeys }
         if m.outgoing && m.receiptStatus > 0 { d["rs"] = min(m.receiptStatus, 2) }
         if m.outgoing && !m.recipientReceipts.isEmpty { d["rr"] = recipientReceiptsToJson(m.recipientReceipts) }
         if let lp = linkPreviewExtra(m) { d["lp"] = lp }
@@ -142,6 +145,15 @@ public enum Records {
         }
         if d["st"] != nil { m.textStyles = textStylesFromJson(d["st"]) }
         if d["mn"] != nil { m.mentions = mentionsFromJson(d["mn"]) }
+        if let to = d["to"], m.outgoing {
+            var keys: [String] = []
+            var seen = Set<String>()
+            for key in jsonArray(to).map(jsonString) {
+                guard !key.isEmpty, seen.insert(key).inserted else { continue }
+                keys.append(key)
+            }
+            m.sentToKeys = keys
+        }
         if d["rs"] != nil && m.outgoing { m.receiptStatus = min(max(jsonInt(d["rs"]), 0), 2) }
         if d["rr"] != nil && m.outgoing { m.recipientReceipts = recipientReceiptsFromJson(jsonObject(d["rr"])) }
         if let e = d["ed"] as? JSON {

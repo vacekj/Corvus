@@ -731,6 +731,142 @@ final class ReceiptTests: XCTestCase {
         XCTAssertEqual(s.convs[key]!.msgs[0].receiptStatus, 2)
     }
 
+    // The hover detail of the delivery ticks (ReceiptHoverDetail).
+
+    func testHoverDetailDirectChatUsesTheRecipientsTimestamp() {
+        var (s, key) = outgoing(500)
+        _ = s.applyReceipt(key, recipient: "+49111", status: 1, timestamps: [500], atMs: 6000)
+        _ = s.applyReceipt(key, recipient: "+49111", status: 2, timestamps: [500], atMs: 7000)
+        let m = s.convs[key]!.msgs[0]
+        let d = m.receiptHover(isGroup: false, directKey: "+49111", name: { _ in "Peer" })
+        XCTAssertEqual(d.total, 1)
+        XCTAssertEqual(d.rows.count, 1)
+        XCTAssertEqual(d.rows[0].status, 2)
+        XCTAssertEqual(d.rows[0].deliveredAtMs, 6000)
+        XCTAssertEqual(d.rows[0].readAtMs, 7000)
+    }
+
+    func testHoverDetailDirectMatchesAnImportedAliasKey() {
+        // Imported history can key a receipt by UUID while the chat is keyed by number; the read
+        // time must still be found instead of showing "unavailable".
+        var (s, key) = outgoing(520)
+        s.alias["u-peer"] = key
+        var m = s.convs[key]!.msgs[0]
+        m.receiptStatus = 2
+        m.recipientReceipts["u-peer"] = RecipientReceipt(status: 2, deliveredAtMs: 8000, readAtMs: 9000)
+        let d = m.receiptHover(isGroup: false, directKey: key,
+                               resolve: { s.alias[$0] ?? $0 }, name: { _ in "Peer" })
+        XCTAssertEqual(d.rows.count, 1)
+        XCTAssertEqual(d.rows[0].key, key)
+        XCTAssertEqual(d.rows[0].status, 2)
+        XCTAssertEqual(d.rows[0].readAtMs, 9000)
+    }
+
+    func testHoverDetailGroupMergesAliasDuplicates() {
+        var (s, key) = outgoing(540, group: true)
+        s.alias["u-peer"] = "+49111"
+        var m = s.convs[key]!.msgs[0]
+        m.sentToKeys = ["+49111"]
+        m.recipientReceipts["+49111"] = RecipientReceipt(status: 1, deliveredAtMs: 100)
+        m.recipientReceipts["u-peer"] = RecipientReceipt(status: 2, readAtMs: 200)
+        let d = m.receiptHover(isGroup: true, directKey: "",
+                               resolve: { s.alias[$0] ?? $0 }, name: { _ in "Alice" })
+        XCTAssertEqual(d.total, 1)
+        XCTAssertEqual(d.rows.count, 1)
+        XCTAssertEqual(d.rows[0].status, 2)
+        XCTAssertEqual(d.rows[0].deliveredAtMs, 100)
+        XCTAssertEqual(d.rows[0].readAtMs, 200)
+    }
+
+    func testHoverDetailLegacyReadKeepsTimestampUnknown() {
+        // A legacy "rs": 2 record: read, no per-recipient details, no invented read time.
+        var s = ChatState()
+        s.account = "+49000"
+        var m = Message()
+        m.ts = 11
+        m.text = "legacy"
+        m.outgoing = true
+        m.authorKey = "+49000"
+        m.receiptStatus = 2
+        _ = s.addMessage("+49111", m)
+        let d = m.receiptHover(isGroup: false, directKey: "+49111", name: { _ in "" })
+        XCTAssertEqual(d.rows.first?.status, 2)
+        XCTAssertEqual(d.rows.first?.readAtMs, 0)
+        XCTAssertEqual(d.rows.first?.deliveredAtMs, 0)
+        XCTAssertEqual(d.rows.first?.name, "+49111") // never blank when the name is unknown
+    }
+
+    func testHoverDetailGroupWithOneReceiptKeepsGroupTotals() {
+        var (s, key) = outgoing(600, group: true)
+        _ = s.applyReceipt("+49111", recipient: "+49111", status: 2, timestamps: [600], atMs: 5)
+        let m = s.convs[key]!.msgs[0]
+        let d = m.receiptHover(isGroup: true, directKey: "", name: { _ in "Alice" })
+        // One receipt record must not make groups look like a direct chat.
+        XCTAssertEqual(d.rows.count, 1)
+        XCTAssertEqual(d.readCount, 1)
+        XCTAssertEqual(d.deliveredCount, 1)
+        XCTAssertEqual(d.total, 0) // no snapshot: never invent a denominator from one reader
+    }
+
+    func testHoverDetailGroupSnapshotFillsUnreadMembersAndNeverDuplicates() {
+        var (s, key) = outgoing(700, group: true)
+        _ = s.applyReceipt("+49111", recipient: "+49111", status: 1, timestamps: [700], atMs: 1)
+        _ = s.applyReceipt("+49222", recipient: "+49222", status: 2, timestamps: [700], atMs: 2)
+        var m = s.convs[key]!.msgs[0]
+        // The snapshot double-lists one member (receipt and member ids resolve to the same key).
+        m.sentToKeys = ["+49111", "+49222", "+49333", "+49111"]
+        let d = m.receiptHover(isGroup: true, directKey: "", name: { $0 })
+        XCTAssertEqual(d.total, 3)
+        XCTAssertEqual(d.rows.count, 3)
+        XCTAssertEqual(d.deliveredCount, 2) // "+49333" stays sent
+        XCTAssertEqual(d.readCount, 1)
+        let sent = d.rows.first { $0.key == "+49333" }
+        XCTAssertEqual(sent?.status, 0)
+        XCTAssertEqual(sent?.readAtMs, 0)
+    }
+
+    func testHoverDetailGroupSnapshotIncludesReceiptsOutsideIt() {
+        var (s, key) = outgoing(750, group: true)
+        _ = s.applyReceipt("+49111", recipient: "+49111", status: 2, timestamps: [750], atMs: 2)
+        _ = s.applyReceipt("+49333", recipient: "+49333", status: 1, timestamps: [750], atMs: 1)
+        var m = s.convs[key]!.msgs[0]
+        m.sentToKeys = ["+49111", "+49222"]
+        let d = m.receiptHover(isGroup: true, directKey: "", name: { $0 })
+        // A receipt from outside the stored snapshot still refers to this send; never report
+        // "delivered to 2 of 2" while listing three recipients.
+        XCTAssertEqual(d.rows.count, 3)
+        XCTAssertEqual(d.total, 3)
+        XCTAssertEqual(d.deliveredCount, 2)
+        XCTAssertEqual(d.readCount, 1)
+    }
+
+    func testHoverDetailRowsAreSortedByName() {
+        var (s, key) = outgoing(800, group: true)
+        _ = s.applyReceipt("+49333", recipient: "+49333", status: 1, timestamps: [800], atMs: 1)
+        _ = s.applyReceipt("+49111", recipient: "+49111", status: 1, timestamps: [800], atMs: 1)
+        let m = s.convs[key]!.msgs[0]
+        let d = m.receiptHover(isGroup: true, directKey: "", name: { $0 == "+49333" ? "Zoe" : "Alice" })
+        XCTAssertEqual(d.rows.map(\.name), ["Alice", "Zoe"])
+    }
+
+    func testGroupRecipientSnapshotRoundTripsWithTheHistory() {
+        var (s, key) = outgoing(900, group: true)
+        var m = s.convs[key]!.msgs[0]
+        m.sentToKeys = ["+49111", "+49222"]
+        s.convs[key]!.msgs[0] = m
+        let rec = Records.message(key, m)
+        XCTAssertEqual(jsonArray(jsonObject(rec["d"])["to"]).map(jsonString), ["+49111", "+49222"])
+        let back = Records.messageFromRecord(rec)
+        XCTAssertEqual(back.sentToKeys, ["+49111", "+49222"])
+        var h = ChatState()
+        h.account = "+49000"
+        h.loadHistory(s.allRecords())
+        XCTAssertEqual(h.convs[key]!.msgs[0].sentToKeys, ["+49111", "+49222"])
+        // Older records have no snapshot: the detail must not invent recipients or a denominator.
+        let old = Records.messageFromRecord(["t": "m", "c": key, "ts": 901, "o": true, "d": ["rs": 1] as JSON])
+        XCTAssertTrue(old.sentToKeys.isEmpty)
+    }
+
     func testReceiptBeforeTheSendIsConfirmed() {
         var s = ChatState()
         s.account = "+49000"

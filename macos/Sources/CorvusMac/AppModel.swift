@@ -1423,6 +1423,7 @@ final class AppModel {
         preview.mentions = mentions
         preview.outgoing = true
         preview.authorKey = account
+        if c.isGroup { preview.sentToKeys = groupRecipientKeys(key) }
         preview.expiresInSeconds = c.expirationSeconds
         preview.quote = quote
         preview.attachments = sticker.map { [$0] } ?? atts

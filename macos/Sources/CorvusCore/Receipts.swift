@@ -2,6 +2,7 @@ import Foundation
 
 // Delivery and read receipts of outgoing messages. History keys are the ones of the Qt app
 // (src/Records.cpp): "rs" = aggregate status 0..2, "rr" = {recipient: {"s": status, "d": deliveredAtMs, "r": readAtMs}}.
+// macOS also writes "to" (ignored by the Qt app): the recipients of a group send, for the hover detail.
 
 /// 0 = sent, 1 = delivered, 2 = read.
 public struct RecipientReceipt: Equatable, Hashable {
@@ -50,6 +51,106 @@ extension Message {
 
     public func recipients(withStatusAtLeast status: Int) -> [String] {
         recipientReceipts.filter { $0.value.status >= status }.map(\.key).sorted()
+    }
+}
+
+/// One recipient row of the hover detail shown next to the delivery ticks of an outgoing message.
+public struct ReceiptHoverRow: Equatable {
+    public var key = ""               // recipient key (shown through `name`)
+    public var name = ""
+    public var status = 0             // 0 sent/unread, 1 delivered, 2 read
+    public var deliveredAtMs: Int64 = 0
+    public var readAtMs: Int64 = 0
+
+    public init(key: String = "", name: String = "", status: Int = 0,
+                deliveredAtMs: Int64 = 0, readAtMs: Int64 = 0) {
+        self.key = key
+        self.name = name
+        self.status = status
+        self.deliveredAtMs = deliveredAtMs
+        self.readAtMs = readAtMs
+    }
+}
+
+/// Per-recipient receipt state and totals for the hover text of the delivery ticks.
+public struct ReceiptHoverDetail: Equatable {
+    public var rows: [ReceiptHoverRow] = []  // every known recipient, sorted by display name
+    public var deliveredCount = 0            // recipients at least delivered
+    public var readCount = 0                 // recipients who read
+    public var total = 0                     // recipients the message was sent to; 0 = unknown
+
+    public init() {}
+}
+
+extension Message {
+    /// The recipients and totals for the hover text of the delivery ticks of an outgoing message.
+    /// Groups use `sentToKeys`, the membership captured when the message was sent: members without
+    /// a receipt are then still sent/waiting and size the denominator. Messages without that snapshot
+    /// (imported history) only expose the recorded receipts and no denominator instead of inventing one.
+    /// `resolve` canonicalizes UUID/number aliases so a legacy receipt key still matches the chat.
+    public func receiptHover(isGroup: Bool, directKey: String,
+                             resolve: (String) -> String = { $0 },
+                             name: (String) -> String) -> ReceiptHoverDetail {
+        func merge(_ into: RecipientReceipt?, _ other: RecipientReceipt) -> RecipientReceipt {
+            guard var r = into else { return other }
+            r.status = max(r.status, other.status)
+            if r.deliveredAtMs <= 0 { r.deliveredAtMs = other.deliveredAtMs }
+            if r.readAtMs <= 0 { r.readAtMs = other.readAtMs }
+            return r
+        }
+        func canonical(_ raw: String) -> String {
+            let key = resolve(raw)
+            return key.isEmpty ? raw : key
+        }
+
+        var d = ReceiptHoverDetail()
+        if isGroup {
+            var receipts: [String: RecipientReceipt] = [:]
+            for (who, receipt) in recipientReceipts where !who.isEmpty {
+                let key = canonical(who)
+                receipts[key] = merge(receipts[key], receipt)
+            }
+            var keys = Set<String>()
+            for raw in sentToKeys {
+                let key = canonical(raw)
+                if !key.isEmpty { keys.insert(key) }
+            }
+            for key in receipts.keys { keys.insert(key) }
+            // Only a snapshot makes the total known; the receipts alone do not say how many were sent to.
+            d.total = sentToKeys.isEmpty ? 0 : keys.count
+            for k in keys {
+                let r = receipts[k]
+                d.rows.append(ReceiptHoverRow(key: k, name: display(k, name), status: r?.status ?? 0,
+                                              deliveredAtMs: r?.deliveredAtMs ?? 0, readAtMs: r?.readAtMs ?? 0))
+            }
+        } else {
+            let wanted = directKey.isEmpty ? "" : canonical(directKey)
+            var receipt: RecipientReceipt?
+            if !wanted.isEmpty {
+                for (who, r) in recipientReceipts where canonical(who) == wanted {
+                    receipt = merge(receipt, r)
+                }
+            }
+            // Legacy histories keep only the aggregate: the state is known, its timestamps are not.
+            d.rows = [ReceiptHoverRow(key: wanted, name: display(wanted, name),
+                                      status: max(receiptStatus, receipt?.status ?? 0),
+                                      deliveredAtMs: receipt?.deliveredAtMs ?? 0, readAtMs: receipt?.readAtMs ?? 0)]
+            d.total = 1
+        }
+        d.rows.sort {
+            let order = $0.name.localizedStandardCompare($1.name)
+            return order == .orderedSame ? $0.key < $1.key : order == .orderedAscending
+        }
+        for r in d.rows {
+            if r.status >= 2 { d.readCount += 1 }
+            if r.status >= 1 { d.deliveredCount += 1 }
+        }
+        return d
+    }
+
+    private func display(_ key: String, _ name: (String) -> String) -> String {
+        let resolved = key.isEmpty ? "" : name(key)
+        return resolved.isEmpty ? key : resolved
     }
 }
 

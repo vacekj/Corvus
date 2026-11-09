@@ -33,6 +33,10 @@ Differences from the Qt app:
 - Settings live in the standard Settings window (⌘,).
 - The QR code for linking is drawn by the app itself, so `qrencode` is not needed.
 - The composer is multi-line: Return sends, Shift+Return or Option+Return starts a new line.
+- Outgoing messages show one bare check when sent, two muted checks when delivered, and two brighter checks when read.
+  Hover over the checks for the localized read date and time. Group chats list each known recipient's state and read
+  time, with delivered/read totals. New group sends retain their audience for totals after a restart; older messages
+  without that audience show recorded receipts only. Missing read timestamps are shown as unavailable.
 - Clicking an attachment follows fixed rules (`Sources/CorvusCore/AttachmentPolicy.swift`). File name *and* content type
   are checked, and the stricter result wins:
   - images, audio and video are shown or played inside the app
