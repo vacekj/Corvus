@@ -15,9 +15,15 @@ final class MediaImageCache {
 
     init() { cache.totalCostLimit = 300 * 1024 * 1024 } // decoded bytes
 
+    /// Latest decoded size per attachment, so the media viewer can show it while the original loads.
+    private var latest: [String: String] = [:]
+
     func cached(_ key: String) -> NSImage? { cache.object(forKey: key as NSString) }
 
-    func image(_ key: String, load: @escaping @Sendable () async -> NSImage?) async -> NSImage? {
+    /// Any decoded picture of `base` (an attachment), whatever size it was decoded at.
+    func anyCached(base: String) -> NSImage? { latest[base].flatMap(cached) }
+
+    func image(_ key: String, base: String? = nil, load: @escaping @Sendable () async -> NSImage?) async -> NSImage? {
         if let img = cached(key) { return img }
         if let t = pending[key] { return await t.value }
         let t = Task { await load() }
@@ -27,6 +33,7 @@ final class MediaImageCache {
         if let img {
             let px = img.representations.first.map { $0.pixelsWide * $0.pixelsHigh * 4 } ?? 0
             cache.setObject(img, forKey: key as NSString, cost: px)
+            if let base { latest[base] = key }
         }
         return img
     }
@@ -85,7 +92,18 @@ extension AppModel {
     }
 
     private func mediaCacheKey(_ att: Attachment, _ px: Int) -> String {
-        "\(att.id)|\(att.encPath)|\(att.path)|\(att.size)|\(px)"
+        mediaCacheBase(att) + "|\(px)"
+    }
+
+    func mediaCacheBase(_ att: Attachment) -> String { "\(att.id)|\(att.encPath)|\(att.path)|\(att.size)" }
+
+    /// A decoded picture (or video poster) of the attachment at any size, for an instant first frame.
+    func anyCachedImage(_ att: Attachment) -> NSImage? {
+        MediaImageCache.shared.anyCached(base: mediaCacheBase(att)) ?? MediaImageCache.shared.anyCached(base: mediaCacheBase(att) + "|poster")
+    }
+
+    func cachedVideoPoster(_ att: Attachment, maxPixel: Int) -> NSImage? {
+        MediaImageCache.shared.cached(mediaCacheKey(att, maxPixel) + "|poster")
     }
 
     /// Already decoded picture, so a row scrolled back into view shows it at once instead of a placeholder.
@@ -96,7 +114,7 @@ extension AppModel {
     /// Full-quality picture of an image attachment, decoded for display. With a message, its stored pixel
     /// size is corrected when it differs (Signal reports the size before EXIF rotation).
     func displayImage(_ key: String, _ att: Attachment, maxPixel: Int, message: Message? = nil, index: Int = 0) async -> NSImage? {
-        await MediaImageCache.shared.image(mediaCacheKey(att, maxPixel)) { [weak self] in
+        await MediaImageCache.shared.image(mediaCacheKey(att, maxPixel), base: mediaCacheBase(att)) { [weak self] in
             guard let data = try? await self?.fetchAttachmentData(key, att), !data.isEmpty else { return nil }
             let (img, size) = await Task.detached { (MediaDecode.image(data, maxPixel: maxPixel), MediaDecode.orientedSize(data)) }.value
             if let message, let (w, h) = size { await self?.noteMediaSize(key, message, index, w, h) }
@@ -108,7 +126,7 @@ extension AppModel {
     func videoPoster(_ key: String, _ m: Message, _ i: Int, maxPixel: Int) async -> NSImage? {
         guard i < m.attachments.count else { return nil }
         let att = m.attachments[i], token = attachmentToken(m, i)
-        return await MediaImageCache.shared.image(mediaCacheKey(att, maxPixel) + "|poster") { [weak self] in
+        return await MediaImageCache.shared.image(mediaCacheKey(att, maxPixel) + "|poster", base: mediaCacheBase(att) + "|poster") { [weak self] in
             guard let self, let url = try? await self.videoFile(key, att, token: token) else { return nil }
             let (img, size) = await MediaDecode.poster(url, maxPixel: maxPixel)
             if let size { await self.noteMediaSize(key, m, i, Int(size.width), Int(size.height)) }
@@ -192,7 +210,7 @@ struct FullImageView: View {
         .frame(width: size.width, height: size.height)
         .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
         .contentShape(Rectangle())
-        .onTapGesture { model.openAttachment(message, index) }
+        .onTapGesture { model.openMediaViewer(message, index) }
         .task(id: "\(token)|\(px)") {
             if att.isGif { model.loadAnimatedGif(message, index) }
             if self.image != nil { return }

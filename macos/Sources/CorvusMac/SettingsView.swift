@@ -25,6 +25,7 @@ private struct GeneralSettings: View {
     @State private var giphyKey: String?
 
     @AppStorage(AppModel.autoUpdateKey) private var autoUpdate = true
+    @AppStorage(SentMediaQuality.key) private var sentMediaQuality = SentMediaQuality.standard
 
     var body: some View {
         Form {
@@ -46,6 +47,12 @@ private struct GeneralSettings: View {
             HistoryProtectionSection()
             Section("Message field") {
                 Toggle("Check spelling while typing", isOn: $spellCheck)
+            }
+            Section("Media") {
+                Picker("Sent media quality", selection: $sentMediaQuality) {
+                    Text("Standard").tag(SentMediaQuality.standard)
+                    Text("High").tag(SentMediaQuality.high)
+                }
             }
             Section("GIPHY") {
                 if let giphyKey {

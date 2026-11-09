@@ -24,7 +24,7 @@ struct AttachmentView: View {
                 VideoAttachment(message: message, index: index, token: token, attachment: att, foreground: foreground,
                                 maxSide: edgeToEdge ? 340 : 300) { model.openAttachment(message, index) }
             } else if att.isAudio {
-                AudioAttachment(token: token, attachment: att, foreground: foreground) { model.toggleAudio(message, index) }
+                VoiceNoteView(message: message, index: index, attachment: att, foreground: foreground)
             } else if att.isImage {
                 FullImageView(conversation: conversationKey, message: message, index: index,
                               maxSide: edgeToEdge ? 340 : 300, cornerRadius: edgeToEdge ? 0 : 10)
@@ -41,25 +41,57 @@ private struct FileRow: View {
     let open: () -> Void
 
     var body: some View {
+        let kind = FileKind.of(filename: attachment.filename, contentType: attachment.contentType)
         Button(action: open) {
             HStack(spacing: 10) {
-                Image(systemName: "doc.fill")
-                    .font(.system(size: 16))
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(foreground.opacity(0.15)))
+                FileKindIcon(kind: kind)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(attachment.filename.isEmpty ? "Attachment" : attachment.filename).lineLimit(1)
-                    Text([attachment.contentType, attachment.size > 0 ? Media.humanSize(attachment.size) : ""]
-                            .filter { !$0.isEmpty }.joined(separator: " · "))
+                    Text(attachment.filename.isEmpty ? "Attachment" : attachment.filename)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Text(FileKind.detail(filename: attachment.filename, contentType: attachment.contentType, size: attachment.size))
                         .font(.caption)
                         .opacity(0.75)
                 }
             }
             .foregroundStyle(foreground)
             .padding(.vertical, 2)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Open or save …")
+    }
+}
+
+/// A document-shaped icon per kind of file (PDF, archive, audio, …), coloured like the file type.
+struct FileKindIcon: View {
+    let kind: FileKind
+
+    var body: some View {
+        let (symbol, color) = FileKindIcon.style(kind)
+        ZStack {
+            RoundedRectangle(cornerRadius: 7, style: .continuous).fill(color)
+            Image(systemName: symbol)
+                .font(.system(size: 17, weight: .medium))
+                .foregroundStyle(.white)
+        }
+        .frame(width: 36, height: 40)
+    }
+
+    static func style(_ kind: FileKind) -> (String, Color) {
+        switch kind {
+        case .pdf: return ("doc.richtext.fill", Color(red: 0.86, green: 0.24, blue: 0.20))
+        case .archive: return ("doc.zipper", Color(red: 0.55, green: 0.45, blue: 0.33))
+        case .audio: return ("waveform", Color(red: 0.93, green: 0.36, blue: 0.47))
+        case .video: return ("film.fill", Color(red: 0.49, green: 0.34, blue: 0.84))
+        case .image: return ("photo.fill", Color(red: 0.16, green: 0.62, blue: 0.56))
+        case .code: return ("chevron.left.forwardslash.chevron.right", Color(red: 0.30, green: 0.36, blue: 0.45))
+        case .text: return ("doc.plaintext.fill", Color(red: 0.45, green: 0.50, blue: 0.56))
+        case .document: return ("doc.text.fill", Color(red: 0.17, green: 0.42, blue: 0.82))
+        case .spreadsheet: return ("tablecells.fill", Color(red: 0.13, green: 0.55, blue: 0.29))
+        case .presentation: return ("play.rectangle.fill", Color(red: 0.90, green: 0.47, blue: 0.13))
+        case .generic: return ("doc.fill", Color(red: 0.52, green: 0.55, blue: 0.60))
+        }
     }
 }
 
@@ -125,47 +157,6 @@ private struct VideoAttachment: View {
     }
 }
 
-private struct AudioAttachment: View {
-    @Environment(AppModel.self) private var model
-    let token: String
-    let attachment: Attachment
-    let foreground: Color
-    let toggle: () -> Void
-
-    var body: some View {
-        let active = model.audioToken == token
-        HStack(spacing: 8) {
-            Button(action: toggle) {
-                if active && model.audioLoading {
-                    ProgressView().controlSize(.small).frame(width: 28, height: 28)
-                } else {
-                    Image(systemName: active && model.audioPlaying ? "pause.circle.fill" : "play.circle.fill")
-                        .font(.system(size: 28))
-                }
-            }
-            .buttonStyle(.plain)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(attachment.filename.isEmpty ? "Audio" : attachment.filename).font(.caption).lineLimit(1)
-                ProgressView(value: active && model.audioDuration > 0 ? min(1, model.audioPosition / model.audioDuration) : 0)
-                    .progressViewStyle(.linear)
-                    .tint(foreground)
-                    .frame(width: 160)
-                Text(active ? "\(Self.time(model.audioPosition)) / \(Self.time(model.audioDuration))"
-                        : (attachment.size > 0 ? Media.humanSize(attachment.size) : ""))
-                    .font(.caption2.monospacedDigit())
-                    .opacity(0.75)
-            }
-        }
-        .foregroundStyle(foreground)
-    }
-
-    static func time(_ s: Double) -> String {
-        guard s.isFinite, s > 0 else { return "0:00" }
-        let t = Int(s)
-        return String(format: "%d:%02d", t / 60, t % 60)
-    }
-}
-
 /// Animated GIF (NSImageView animates GIF data by itself).
 struct AnimatedImage: NSViewRepresentable {
     let data: Data
@@ -191,144 +182,5 @@ struct AnimatedImage: NSViewRepresentable {
     final class Coordinator {
         var data: Data
         init(data: Data) { self.data = data }
-    }
-}
-
-/// Full-size image shown over the main window (Esc, a click outside or the close button closes it).
-@MainActor @Observable
-final class ImageViewerWindow {
-    static let shared = ImageViewerWindow()
-    struct Item: Identifiable {
-        let id = UUID()
-        let data: Data
-        let image: NSImage
-        let title: String
-        /// View Once media: no saving, kept out of screenshots and screen sharing while shown.
-        var viewOnce = false
-        var player: AVPlayer?
-        var videoFile: URL?
-    }
-    var item: Item? {
-        didSet { if let old = oldValue, old.id != item?.id { ImageViewerWindow.finish(old) } }
-    }
-    private var savedSharingType: NSWindow.SharingType?
-
-    static func show(data: Data, title: String) {
-        guard let image = NSImage(data: data) else { return }
-        shared.item = Item(data: data, image: image, title: title)
-    }
-
-    static func showViewOnce(image data: Data) {
-        guard let image = NSImage(data: data) else { return }
-        shared.protectWindow()
-        shared.item = Item(data: data, image: image, title: "View once", viewOnce: true)
-    }
-
-    static func showViewOnce(video url: URL) {
-        let player = AVPlayer(url: url)
-        shared.protectWindow()
-        shared.item = Item(data: Data(), image: NSImage(), title: "View once", viewOnce: true, player: player, videoFile: url)
-        player.play()
-    }
-
-    static func close() { shared.item = nil }
-
-    private func protectWindow() {
-        guard let w = MainWindowTracker.shared.window else { return }
-        if savedSharingType == nil { savedSharingType = w.sharingType }
-        w.sharingType = .none
-    }
-
-    private static func finish(_ old: Item) {
-        old.player?.pause()
-        if let f = old.videoFile { try? FileManager.default.removeItem(at: f) }
-        if old.viewOnce, shared.item?.viewOnce != true, let t = shared.savedSharingType {
-            MainWindowTracker.shared.window?.sharingType = t
-            shared.savedSharingType = nil
-        }
-    }
-}
-
-/// The image viewer layer of the main window.
-struct ImageViewerOverlay: View {
-    private let viewer = ImageViewerWindow.shared
-    @State private var escMonitor: Any?
-
-    var body: some View {
-        if let item = viewer.item {
-            ZStack(alignment: .topTrailing) {
-                Color.black.opacity(0.9)
-                    .contentShape(Rectangle())
-                    .onTapGesture { ImageViewerWindow.close() }
-                Group {
-                    if let player = item.player {
-                        AVPlayerViewRepresentable(player: player)
-                    } else {
-                        ImageViewerContent(data: item.data, image: item.image)
-                    }
-                }
-                    .padding(EdgeInsets(top: 52, leading: 24, bottom: 24, trailing: 24))
-                    .allowsHitTesting(false)
-                HStack(spacing: 14) {
-                    if !item.title.isEmpty {
-                        Text(item.title).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
-                    }
-                    if !item.viewOnce {
-                        Button { saveCopy(item) } label: { Image(systemName: "square.and.arrow.down") }
-                            .help("Save …")
-                    }
-                    Button { ImageViewerWindow.close() } label: { Image(systemName: "xmark") }
-                        .help("Close (Esc)")
-                }
-                .buttonStyle(.borderless)
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(16)
-            }
-            .ignoresSafeArea()
-            .transition(.opacity)
-            .onAppear { installEsc() }
-            .onDisappear { removeEsc() }
-            .id(item.id)
-        }
-    }
-
-    // Esc must work wherever the focus is (the composer keeps it while the image is shown).
-    private func installEsc() {
-        removeEsc()
-        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
-            if e.keyCode == 53, ImageViewerWindow.shared.item != nil {
-                ImageViewerWindow.close()
-                return nil
-            }
-            return e
-        }
-    }
-
-    private func removeEsc() {
-        if let m = escMonitor { NSEvent.removeMonitor(m) }
-        escMonitor = nil
-    }
-
-    private func saveCopy(_ item: ImageViewerWindow.Item) {
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = item.title.isEmpty ? "Image" : item.title
-        if panel.runModal() == .OK, let url = panel.url { try? item.data.write(to: url) }
-    }
-}
-
-private struct ImageViewerContent: View {
-    let data: Data
-    let image: NSImage
-
-    var body: some View {
-        Group {
-            if data.starts(with: Data("GIF8".utf8)) {
-                AnimatedImage(data: data)
-            } else {
-                Image(nsImage: image).resizable().aspectRatio(contentMode: .fit)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

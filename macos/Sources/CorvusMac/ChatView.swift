@@ -612,7 +612,8 @@ private struct Bubble: View {
         let bg = m.outgoing ? a.outBgColor : a.inBgColor
         let shape = bubbleShape(radius: CGFloat(a.radius))
         let mediaOnly = m.text.isEmpty && !m.quote.valid && !m.attachments.isEmpty && !m.viewOnce
-            && m.attachments.allSatisfy { $0.isImage && !$0.isSticker }
+            && (m.attachments.allSatisfy { $0.isImage && !$0.isSticker }
+                || (m.attachments.count > 1 && m.attachments.allSatisfy(\.isAlbumMedia)))
         let stickerOnly = m.text.isEmpty && !m.viewOnce && m.attachments.count == 1 && m.attachments[0].isSticker
         let showSender = isGroup && !m.outgoing && !grouping.joinedAbove
 
@@ -662,9 +663,7 @@ private struct Bubble: View {
                 .background(shape.fill(bg))
             } else if mediaOnly {
                 VStack(spacing: 2) {
-                    ForEach(Array(m.attachments.enumerated()), id: \.offset) { i, att in
-                        AttachmentView(message: m, index: i, attachment: att, foreground: fg, edgeToEdge: true)
-                    }
+                    AttachmentStack(message: m, foreground: fg, edgeToEdge: true)
                 }
                 .overlay(alignment: .bottomTrailing) {
                     MetaRow(message: m, pending: pending, color: .white.opacity(0.8), readColor: .white, isGroup: isGroup)
@@ -689,9 +688,7 @@ private struct Bubble: View {
                     VStack(alignment: .leading, spacing: 6) {
                         if showSender { senderLabel }
                         if m.quote.valid { QuoteView(quote: m.quote, foreground: fg, outgoing: m.outgoing) }
-                        ForEach(Array(m.attachments.enumerated()), id: \.offset) { i, att in
-                            AttachmentView(message: m, index: i, attachment: att, foreground: fg, edgeToEdge: false)
-                        }
+                        AttachmentStack(message: m, foreground: fg)
                         if !m.text.isEmpty {
                             FormattedMessageText(message: m, foreground: fg) {
                                 Bubble.linkified($0, emojiOnly: Bubble.isEmojiOnly(m.text))

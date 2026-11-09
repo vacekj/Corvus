@@ -124,15 +124,8 @@ final class AppModel {
     @ObservationIgnored var videoFiles: [String: URL] = [:] // attachment token -> fetched video file (poster, playback)
     var videoLoading: Set<String> = []
 
-    // audio playback
-    var audioToken: String?
-    var audioLoading = false
-    var audioPlaying = false
-    var audioPosition: Double = 0
-    var audioDuration: Double = 0
-    @ObservationIgnored private var audioPlayer: AVPlayer?
-    @ObservationIgnored private var audioObserver: Any?
-    @ObservationIgnored private var audioEndObserver: NSObjectProtocol?
+    // audio playback (VoiceNotes.swift)
+    let audio = AudioPlayback()
 
     // profile
     var profileUsername = ""
@@ -1451,9 +1444,11 @@ final class AppModel {
         scrollToMessage(index: chats.convs[key]!.msgs.firstIndex { $0.id == preview.id } ?? 0)
 
         Task { [p] in
+            var params = p
+            if !files.isEmpty { params["attachments"] = await Media.prepareForSending(staged.paths, in: staged.dir) }
             var result: Any?
             var err: String?
-            do { result = try await cli.call("send", p) } catch { err = error.localizedDescription }
+            do { result = try await cli.call("send", params) } catch { err = error.localizedDescription }
             try? FileManager.default.removeItem(at: staged.dir)
             guard let pendingNow = chats.pendingSends[pendingId] else { return }
 
@@ -1795,7 +1790,7 @@ final class AppModel {
             let decoded = att.isImage && NSImage(data: data) != nil
             let policy = AttachmentPolicy.classify(filename: name, contentType: att.contentType, isMedia: decoded)
             if policy == .inApp {
-                ImageViewerWindow.show(data: data, title: att.filename)
+                openMediaViewer(m, i, data: data)
                 return
             }
             clearFlash()
@@ -1866,74 +1861,6 @@ final class AppModel {
         } catch {
             Task { await Dialogs.warn("Attachment", "The file could not be written.") }
         }
-    }
-
-    // MARK: Audio
-
-    func toggleAudio(_ m: Message, _ i: Int) {
-        guard let key = current, i < m.attachments.count else { return }
-        let token = attachmentToken(m, i)
-        if audioToken == token {
-            if audioLoading { return }
-            if let player = audioPlayer {
-                if audioPlaying {
-                    player.pause()
-                    audioPlaying = false
-                } else {
-                    if audioDuration > 0 && audioPosition >= audioDuration - 0.05 { player.seek(to: .zero) }
-                    player.play()
-                    audioPlaying = true
-                }
-                return
-            }
-        }
-        stopAudio()
-        audioToken = token
-        audioLoading = true
-        let att = m.attachments[i]
-        Task {
-            do {
-                let data = try await fetchAttachmentData(key, att)
-                guard audioToken == token else { return }
-                guard !data.isEmpty else { throw RpcError("The audio file is empty.") }
-                let suffix = AttachmentPolicy.mediaSuffix(filename: att.filename, contentType: att.contentType, fallback: "m4a")
-                let url = try Media.writeAttachmentTemp(data, name: "audio." + suffix)
-                let player = AVPlayer(url: url)
-                audioPlayer = player
-                audioObserver = player.addPeriodicTimeObserver(forInterval: CMTime(value: 1, timescale: 10), queue: .main) { [weak self] t in
-                    MainActor.assumeIsolated {
-                        guard let self else { return }
-                        self.audioPosition = t.seconds
-                        if let d = player.currentItem?.duration.seconds, d.isFinite { self.audioDuration = d }
-                    }
-                }
-                audioEndObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime,
-                                                                          object: player.currentItem, queue: .main) { [weak self] _ in
-                    MainActor.assumeIsolated { self?.audioPlaying = false }
-                }
-                audioLoading = false
-                player.play()
-                audioPlaying = true
-            } catch {
-                audioLoading = false
-                audioToken = nil
-                showFlash("Audio playback failed: \(error.localizedDescription)")
-            }
-        }
-    }
-
-    private func stopAudio() {
-        audioPlayer?.pause()
-        if let o = audioObserver { audioPlayer?.removeTimeObserver(o) }
-        if let o = audioEndObserver { NotificationCenter.default.removeObserver(o) }
-        audioObserver = nil
-        audioEndObserver = nil
-        audioPlayer = nil
-        audioPlaying = false
-        audioLoading = false
-        audioPosition = 0
-        audioDuration = 0
-        audioToken = nil
     }
 
     // MARK: - Avatars
