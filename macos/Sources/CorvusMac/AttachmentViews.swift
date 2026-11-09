@@ -12,47 +12,26 @@ struct AttachmentView: View {
     let foreground: Color
     /// Photo-only bubbles: the image fills the bubble, which clips it.
     var edgeToEdge = false
+    @Environment(\.conversationKey) private var conversationKey
 
     var body: some View {
         let att = attachment
         let token = model.attachmentToken(message, index)
         Group {
-            if att.isVideo {
-                VideoAttachment(token: token, attachment: att, foreground: foreground) { model.openAttachment(message, index) }
+            if att.isSticker {
+                StickerView(attachment: att)
+            } else if att.isVideo {
+                VideoAttachment(message: message, index: index, token: token, attachment: att, foreground: foreground,
+                                maxSide: edgeToEdge ? 340 : 300) { model.openAttachment(message, index) }
             } else if att.isAudio {
                 AudioAttachment(token: token, attachment: att, foreground: foreground) { model.toggleAudio(message, index) }
-            } else if att.isImage, !att.thumb.isEmpty, let image = NSImage(data: att.thumb) {
-                imageView(image, token: token)
+            } else if att.isImage {
+                FullImageView(conversation: conversationKey, message: message, index: index,
+                              maxSide: edgeToEdge ? 340 : 300, cornerRadius: edgeToEdge ? 0 : 10)
             } else {
                 FileRow(attachment: att, foreground: foreground) { model.openAttachment(message, index) }
             }
         }
-    }
-
-    @ViewBuilder
-    private func imageView(_ image: NSImage, token: String) -> some View {
-        let size = displaySize(image.size)
-        Group {
-            if attachment.isGif, let data = model.animatedGifs[token] {
-                AnimatedImage(data: data)
-            } else {
-                Image(nsImage: image).resizable().interpolation(.high)
-            }
-        }
-        .frame(width: size.width, height: size.height)
-        .clipShape(RoundedRectangle(cornerRadius: edgeToEdge ? 0 : 10, style: .continuous))
-        .contentShape(Rectangle())
-        .onTapGesture { model.openAttachment(message, index) }
-        .onAppear { if attachment.isGif { model.loadAnimatedGif(message, index) } }
-        .help(attachment.filename)
-    }
-
-    private func displaySize(_ s: NSSize) -> CGSize {
-        let w = attachment.width > 0 ? CGFloat(attachment.width) : s.width
-        let h = attachment.height > 0 ? CGFloat(attachment.height) : s.height
-        let maxSide: CGFloat = edgeToEdge ? 340 : 300
-        let scale = min(maxSide / max(w, 1), maxSide / max(h, 1), 2) // small pictures are enlarged a little
-        return CGSize(width: max(120, w * scale), height: max(80, h * scale))
     }
 }
 
@@ -86,32 +65,51 @@ private struct FileRow: View {
 
 private struct VideoAttachment: View {
     @Environment(AppModel.self) private var model
+    @Environment(\.conversationKey) private var conversationKey
+    @Environment(\.displayScale) private var displayScale
+    let message: Message
+    let index: Int
     let token: String
     let attachment: Attachment
     let foreground: Color
+    let maxSide: CGFloat
     let load: () -> Void
     @State private var player: AVPlayer?
+    @State private var poster: NSImage?
 
     var body: some View {
+        // Shaped like the video (rotation applied); the poster is its first frame.
+        let size = AppModel.mediaFrame(width: poster.map { Int($0.size.width) } ?? attachment.width,
+                                       height: poster.map { Int($0.size.height) } ?? attachment.height, maxSide: maxSide)
         Group {
             if let player {
                 VideoPlayer(player: player)
-                    .frame(width: 320, height: 200)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
             } else {
                 Button(action: load) {
                     ZStack {
-                        RoundedRectangle(cornerRadius: 8).fill(Color.black.opacity(0.6))
+                        if let poster {
+                            Image(nsImage: poster).resizable().interpolation(.high).aspectRatio(contentMode: .fill)
+                        } else {
+                            Rectangle().fill(Color.black.opacity(0.6))
+                        }
                         if model.videoLoading.contains(token) {
                             ProgressView().controlSize(.small)
                         } else {
-                            Image(systemName: "play.circle.fill").font(.system(size: 40)).foregroundStyle(.white)
+                            Image(systemName: "play.circle.fill").font(.system(size: 40)).foregroundStyle(.white).shadow(radius: 4)
                         }
                     }
-                    .frame(width: 320, height: 180)
+                    .frame(width: size.width, height: size.height)
+                    .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
                 .help(attachment.filename)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .task(id: token) {
+            if poster == nil, !conversationKey.isEmpty {
+                poster = await model.videoPoster(conversationKey, message, index, maxPixel: Int(maxSide * max(displayScale, 2)))
             }
         }
         .onChange(of: model.videoURLs[token]) { _, url in
@@ -196,28 +194,126 @@ struct AnimatedImage: NSViewRepresentable {
     }
 }
 
-/// Full-size image in a window of its own.
-@MainActor
-enum ImageViewerWindow {
-    private static var windows: [NSWindow] = []
+/// Full-size image shown over the main window (Esc, a click outside or the close button closes it).
+@MainActor @Observable
+final class ImageViewerWindow {
+    static let shared = ImageViewerWindow()
+    struct Item: Identifiable {
+        let id = UUID()
+        let data: Data
+        let image: NSImage
+        let title: String
+        /// View Once media: no saving, kept out of screenshots and screen sharing while shown.
+        var viewOnce = false
+        var player: AVPlayer?
+        var videoFile: URL?
+    }
+    var item: Item? {
+        didSet { if let old = oldValue, old.id != item?.id { ImageViewerWindow.finish(old) } }
+    }
+    private var savedSharingType: NSWindow.SharingType?
 
     static func show(data: Data, title: String) {
         guard let image = NSImage(data: data) else { return }
-        let screen = NSScreen.main?.visibleFrame.size ?? NSSize(width: 1200, height: 800)
-        let scale = min(1, screen.width * 0.85 / max(image.size.width, 1), screen.height * 0.85 / max(image.size.height, 1))
-        let size = NSSize(width: max(200, image.size.width * scale), height: max(150, image.size.height * scale))
-        let view = NSHostingView(rootView: ImageViewerContent(data: data, image: image))
-        let w = NSWindow(contentRect: NSRect(origin: .zero, size: size), styleMask: [.titled, .closable, .resizable, .miniaturizable],
-                         backing: .buffered, defer: false)
-        w.title = title.isEmpty ? "Image" : title
-        w.contentView = view
-        w.isReleasedWhenClosed = false
-        w.center()
-        w.makeKeyAndOrderFront(nil)
-        windows.append(w)
-        NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification, object: w, queue: .main) { _ in
-            MainActor.assumeIsolated { windows.removeAll { $0 === w } }
+        shared.item = Item(data: data, image: image, title: title)
+    }
+
+    static func showViewOnce(image data: Data) {
+        guard let image = NSImage(data: data) else { return }
+        shared.protectWindow()
+        shared.item = Item(data: data, image: image, title: "View once", viewOnce: true)
+    }
+
+    static func showViewOnce(video url: URL) {
+        let player = AVPlayer(url: url)
+        shared.protectWindow()
+        shared.item = Item(data: Data(), image: NSImage(), title: "View once", viewOnce: true, player: player, videoFile: url)
+        player.play()
+    }
+
+    static func close() { shared.item = nil }
+
+    private func protectWindow() {
+        guard let w = MainWindowTracker.shared.window else { return }
+        if savedSharingType == nil { savedSharingType = w.sharingType }
+        w.sharingType = .none
+    }
+
+    private static func finish(_ old: Item) {
+        old.player?.pause()
+        if let f = old.videoFile { try? FileManager.default.removeItem(at: f) }
+        if old.viewOnce, shared.item?.viewOnce != true, let t = shared.savedSharingType {
+            MainWindowTracker.shared.window?.sharingType = t
+            shared.savedSharingType = nil
         }
+    }
+}
+
+/// The image viewer layer of the main window.
+struct ImageViewerOverlay: View {
+    private let viewer = ImageViewerWindow.shared
+    @State private var escMonitor: Any?
+
+    var body: some View {
+        if let item = viewer.item {
+            ZStack(alignment: .topTrailing) {
+                Color.black.opacity(0.9)
+                    .contentShape(Rectangle())
+                    .onTapGesture { ImageViewerWindow.close() }
+                Group {
+                    if let player = item.player {
+                        AVPlayerViewRepresentable(player: player)
+                    } else {
+                        ImageViewerContent(data: item.data, image: item.image)
+                    }
+                }
+                    .padding(EdgeInsets(top: 52, leading: 24, bottom: 24, trailing: 24))
+                    .allowsHitTesting(false)
+                HStack(spacing: 14) {
+                    if !item.title.isEmpty {
+                        Text(item.title).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
+                    }
+                    if !item.viewOnce {
+                        Button { saveCopy(item) } label: { Image(systemName: "square.and.arrow.down") }
+                            .help("Save …")
+                    }
+                    Button { ImageViewerWindow.close() } label: { Image(systemName: "xmark") }
+                        .help("Close (Esc)")
+                }
+                .buttonStyle(.borderless)
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white)
+                .padding(16)
+            }
+            .ignoresSafeArea()
+            .transition(.opacity)
+            .onAppear { installEsc() }
+            .onDisappear { removeEsc() }
+            .id(item.id)
+        }
+    }
+
+    // Esc must work wherever the focus is (the composer keeps it while the image is shown).
+    private func installEsc() {
+        removeEsc()
+        escMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { e in
+            if e.keyCode == 53, ImageViewerWindow.shared.item != nil {
+                ImageViewerWindow.close()
+                return nil
+            }
+            return e
+        }
+    }
+
+    private func removeEsc() {
+        if let m = escMonitor { NSEvent.removeMonitor(m) }
+        escMonitor = nil
+    }
+
+    private func saveCopy(_ item: ImageViewerWindow.Item) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = item.title.isEmpty ? "Image" : item.title
+        if panel.runModal() == .OK, let url = panel.url { try? item.data.write(to: url) }
     }
 }
 
@@ -234,6 +330,5 @@ private struct ImageViewerContent: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Color.black)
     }
 }

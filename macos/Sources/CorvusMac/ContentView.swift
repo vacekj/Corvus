@@ -12,18 +12,41 @@ struct ContentView: View {
             Sidebar()
                 .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 420)
         } detail: {
-            ZStack(alignment: .top) {
-                if let c = model.currentConversation {
-                    ChatPane(conversation: c)
-                } else {
-                    Welcome()
+            VStack(spacing: 0) {
+                CallLayer()
+                ZStack(alignment: .top) {
+                    if let c = model.currentConversation {
+                        ChatPane(conversation: c)
+                    } else {
+                        Welcome()
+                    }
+                    if let flash = model.flash { Toast(text: flash).padding(.top, 10) }
                 }
-                if let flash = model.flash { Toast(text: flash).padding(.top, 10) }
+                .animation(.easeOut(duration: 0.2), value: model.flash)
             }
-            .animation(.easeOut(duration: 0.2), value: model.flash)
+            .inspector(isPresented: Binding(get: { model.infoPanelShown && model.currentConversation != nil },
+                                            set: { model.infoPanelShown = $0 })) {
+                Group {
+                    if let c = model.currentConversation { ConversationInfoPanel(conversation: c) }
+                }
+                .inspectorColumnWidth(min: 260, ideal: 300, max: 420)
+            }
             .toolbar {
                 ToolbarItem(placement: .navigation) {
                     if let c = model.currentConversation { ChatHeader(conversation: c) }
+                }
+                ToolbarItem(placement: .automatic) {
+                    if let c = model.currentConversation, !c.isGroup {
+                        let unavailable = model.callUnavailableReason(c.key)
+                        Button { Task { await model.startCall(c.key) } } label: { Label("Voice call", systemImage: "phone") }
+                            .help(unavailable ?? "Voice call")
+                            .disabled(unavailable != nil)
+                    }
+                }
+                ToolbarItem(placement: .automatic) {
+                    Button { model.galleryShown = true } label: { Label("Media", systemImage: "photo.on.rectangle") }
+                        .help("Media, files and links of this chat")
+                        .disabled(model.current == nil)
                 }
                 ToolbarItem(placement: .automatic) {
                     Button { model.searchVisible ? model.closeSearch() : model.openSearch() } label: {
@@ -32,21 +55,42 @@ struct ContentView: View {
                     .help("Search this conversation (⌘F)")
                     .disabled(model.current == nil)
                 }
+                ToolbarItem(placement: .automatic) {
+                    Button { model.toggleInfoPanel() } label: { Label("Info", systemImage: "info.circle") }
+                        .help("Conversation info (⌘I)")
+                        .disabled(model.current == nil)
+                }
             }
         }
         .navigationTitle(model.totalUnread > 0 ? "(\(model.totalUnread)) Corvus" : "Corvus")
         .hidingWindowTitle()
         .tint(Theme.signalBlue)
+        .overlay { QuickSwitcherOverlay() }
+        .animation(.easeOut(duration: 0.1), value: KeyboardNavigation.shared.quickSwitcherShown)
+        .overlay { ImageViewerOverlay() }
+        .animation(.easeOut(duration: 0.12), value: ImageViewerWindow.shared.item?.id)
         .background(WindowAccessor())
         .sheet(isPresented: $model.linkSheetShown) {
             LinkView(executable: model.cli.executable) { model.finishLinking($0) }
         }
-        .sheet(isPresented: Binding(get: { model.giphyApiKey != nil }, set: { if !$0 { model.giphyApiKey = nil } })) {
-            if let key = model.giphyApiKey {
-                GiphyPicker(apiKey: key) { url, analytics in model.sendGif(url: url, analytics: analytics) }
-            }
+        .sheet(isPresented: Binding(get: { model.safetyNumberKey != nil }, set: { if !$0 { model.safetyNumberKey = nil } })) {
+            if let key = model.safetyNumberKey { SafetyNumberSheet(key: key) }
         }
+        .sheet(isPresented: Binding(get: { model.forwardMessageId != nil }, set: { if !$0 { model.forwardMessageId = nil } })) {
+            if let id = model.forwardMessageId { ForwardSheet(messageId: id) }
+        }
+        .sheet(isPresented: Binding(get: { model.messageInfoId != nil }, set: { if !$0 { model.messageInfoId = nil } })) {
+            if let id = model.messageInfoId { MessageInfoSheet(messageId: id) }
+        }
+        .sheet(isPresented: $model.galleryShown) { MediaGallerySheet() }
+        .sheet(isPresented: $model.storiesShown) { StoriesSheet() }
+        .sheet(isPresented: Binding(get: { model.importProgress != nil }, set: { if !$0 { model.importProgress = nil } })) {
+            ImportProgressSheet()
+        }
+        .modifier(GroupSheets())
         .onAppear {
+            KeyboardNavigation.shared.installTabMonitor(model)
+            SheetOutsideClick.install()
             model.openMainWindow = {
                 openWindow(id: "main")
                 MainWindowTracker.shared.window?.makeKeyAndOrderFront(nil)
@@ -55,24 +99,34 @@ struct ContentView: View {
     }
 }
 
-/// Avatar, name and state of the open chat in the window's toolbar.
+/// Avatar, name and state of the open chat in the window's toolbar; a click shows the info panel.
 private struct ChatHeader: View {
     @Environment(AppModel.self) private var model
     let conversation: Conversation
 
     var body: some View {
         let c = conversation
+        let detail = model.chatDetail(c)
+        Button { model.toggleInfoPanel() } label: { content(c, detail: detail) }
+            .buttonStyle(.plain)
+            .help("Conversation info (⌘I)")
+    }
+
+    private func content(_ c: Conversation, detail: String) -> some View {
         HStack(spacing: 10) {
             AvatarView(image: model.avatarImage(c), size: 30)
             VStack(alignment: .leading, spacing: 0) {
-                Text(c.title).font(.headline).lineLimit(1)
+                Text(model.visibleTitle(c)).font(.headline).lineLimit(1)
                 HStack(spacing: 6) {
-                    if c.isGroup { Text("Group") } else if c.title != c.key { Text(c.key) }
+                    if let typing = model.typingLabel(c.key) {
+                        Text(typing).foregroundStyle(Theme.signalBlue)
+                    } else if c.isGroup { Text("Group") } else if !detail.isEmpty { Text(detail) }
                     if c.expirationSeconds > 0 {
                         Label(AppModel.expirationChoices.first { $0.1 == c.expirationSeconds }?.0 ?? "\(c.expirationSeconds) s",
                               systemImage: "timer")
                     }
                     if c.muted { Label("Muted", systemImage: "bell.slash") }
+                    if model.isBlocked(c.key) { Label("Blocked", systemImage: "nosign") }
                 }
                 .labelStyle(.titleAndIcon)
                 .font(.caption)
@@ -81,6 +135,7 @@ private struct ChatHeader: View {
             }
         }
         .padding(.horizontal, 4)
+        .contentShape(Rectangle())
     }
 }
 
@@ -96,10 +151,13 @@ private struct Welcome: View {
                     .foregroundStyle(Theme.signalBlue)
             }
             Text("Welcome to Corvus").font(.title2.weight(.semibold))
-            Text(model.historyReady
-                    ? (model.connected ? "Choose a chat on the left, or start a new one." : model.statusText)
-                    : "Unlocking your chat history …")
-                .foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                if !model.historyReady { ProgressView().controlSize(.small) }
+                Text(model.historyReady
+                        ? (model.connected ? "Choose a chat on the left, or start a new one." : model.statusText)
+                        : "Unlocking your chat history …")
+            }
+            .foregroundStyle(.secondary)
             if model.historyReady {
                 Button { Task { await model.newConversation() } } label: {
                     Label("New conversation", systemImage: "square.and.pencil").padding(.horizontal, 6)
@@ -145,14 +203,22 @@ private struct WindowAccessor: NSViewRepresentable {
     func updateNSView(_ nsView: NSView, context: Context) {}
 
     final class TrackingView: NSView {
+
         weak var model: AppModel?
         private var observer: NSObjectProtocol?
+
+        private static var restoredFrame = false
 
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
             guard let window else { return }
             MainWindowTracker.shared.window = window
-            window.setFrameAutosaveName("MainWindow")
+            // SwiftUI saves the frame as "NSWindow Frame main" but places a new window on the active
+            // screen at launch; put it back where the user left it.
+            if !Self.restoredFrame {
+                Self.restoredFrame = true
+                window.setFrameUsingName("main")
+            }
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window,
                                                               queue: .main) { [weak self] _ in
@@ -167,21 +233,16 @@ private struct WindowAccessor: NSViewRepresentable {
 private struct Sidebar: View {
     @Environment(AppModel.self) private var model
     @State private var filter = ""
+    @FocusState private var searchFocused: Bool
+    @State private var messageHits: [MessageSearchHit] = []
 
     var body: some View {
-        let selection = Binding<String?>(get: { model.current }, set: { key in
-            guard let key else { return }
-            switch key {
-            case "::archived": model.showArchived = true
-            case "::back": model.showArchived = false
-            default: model.openConversation(key)
-            }
-        })
-        let archived = model.chats.convs.values.filter(\.archived)
+        let archived = model.chatListItems(archived: true)
         let archivedUnread = archived.reduce(0) { $0 + $1.unread }
         let q = filter.trimmingCharacters(in: .whitespaces)
-        let list = model.chats.sortedConversations(archived: model.showArchived).filter {
-            q.isEmpty || $0.title.localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q)
+        let all = model.chatListItems(archived: model.showArchived)
+        let list = q.isEmpty ? all : all.filter {
+            $0.title.localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q)
         }
 
         VStack(spacing: 0) {
@@ -189,6 +250,19 @@ private struct Sidebar: View {
                 HStack(spacing: 6) {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Search chats", text: $filter).textFieldStyle(.plain)
+                        .focused($searchFocused)
+                        // ↓ or Return opens the first hit, Esc clears the search.
+                        .onSubmit { openFirstHit(list, query: q) }
+                        .onKeyPress(.downArrow) { openFirstHit(list, query: q) ? .handled : .ignored }
+                        .onKeyPress(.escape) {
+                            if filter.isEmpty {
+                                searchFocused = false
+                                model.composerFocusRequest += 1
+                            } else {
+                                filter = ""
+                            }
+                            return .handled
+                        }
                     if !filter.isEmpty {
                         Button { filter = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.borderless)
@@ -198,6 +272,15 @@ private struct Sidebar: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 .background(Capsule().fill(Theme.field))
+                Button { model.storiesShown = true } label: {
+                    Image(systemName: "circle.dashed.inset.filled").font(.system(size: 15))
+                        .overlay(alignment: .topTrailing) {
+                            if model.unviewedStories > 0 { Circle().fill(Theme.signalBlue).frame(width: 7, height: 7).offset(x: 3, y: -2) }
+                        }
+                }
+                .buttonStyle(.borderless)
+                .help("Stories")
+                .disabled(!model.historyReady)
                 Button { Task { await model.newConversation() } } label: {
                     Image(systemName: "square.and.pencil").font(.system(size: 15))
                 }
@@ -209,60 +292,175 @@ private struct Sidebar: View {
             .padding(.top, 6)
             .padding(.bottom, 8)
 
-            List(selection: selection) {
-                if model.showArchived {
-                    Label("Back to chats", systemImage: "chevron.left")
-                        .foregroundStyle(Theme.signalBlue)
-                        .padding(.vertical, 4)
-                        .tag("::back")
-                    Text("Archived chats")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .selectionDisabled()
-                } else if !archived.isEmpty && q.isEmpty {
-                    HStack(spacing: 10) {
-                        Image(systemName: "archivebox")
-                            .font(.system(size: 15))
-                            .frame(width: 40, height: 40)
-                            .background(Circle().fill(Theme.field))
-                        Text("Archived chats").fontWeight(archivedUnread > 0 ? .semibold : .regular)
-                        Spacer()
-                        Text("\(archived.count)").foregroundStyle(.secondary)
-                        if archivedUnread > 0 { Circle().fill(Theme.signalBlue).frame(width: 8, height: 8) }
+            // The selection is drawn by the rows (not the list), so switching chats never flashes the
+            // focused-list accent colour; a chat opens on mouse down.
+            ScrollViewReader { proxy in
+                List {
+                    if model.showArchived {
+                        SidebarRow(selected: false, action: { model.showArchived = false }) {
+                            Label("Back to chats", systemImage: "chevron.left")
+                                .foregroundStyle(Theme.signalBlue)
+                                .padding(.vertical, 4)
+                        }
+                        Text("Archived chats")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                    } else if !archived.isEmpty && q.isEmpty {
+                        SidebarRow(selected: false, action: { model.showArchived = true }) {
+                            HStack(spacing: 10) {
+                                Image(systemName: "archivebox")
+                                    .font(.system(size: 15))
+                                    .frame(width: 40, height: 40)
+                                    .background(Circle().fill(Theme.field))
+                                Text("Archived chats").fontWeight(archivedUnread > 0 ? .semibold : .regular)
+                                Spacer()
+                                Text("\(archived.count)").foregroundStyle(.secondary)
+                                if archivedUnread > 0 { Circle().fill(Theme.signalBlue).frame(width: 8, height: 8) }
+                            }
+                            .padding(.vertical, 2)
+                        }
                     }
-                    .padding(.vertical, 2)
-                    .tag("::archived")
+                    if !q.isEmpty && !list.isEmpty && !messageHits.isEmpty { SidebarSectionHeader(title: "Chats") }
+                    ChatListRows(items: list)
+                    if !q.isEmpty && !messageHits.isEmpty {
+                        SidebarSectionHeader(title: "Messages")
+                        ForEach(messageHits) { h in
+                            SidebarRow(selected: false, action: { model.openMessageHit(h, query: q) }) { MessageHitRow(hit: h) }
+                        }
+                    }
+                    if list.isEmpty && messageHits.isEmpty && model.historyReady {
+                        Text(q.isEmpty ? "No chats yet" : "No chats match “\(q)”")
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity)
+                            .padding(.top, 20)
+                    }
                 }
-                ForEach(list) { c in
-                    ConversationRow(conversation: c, selected: c.key == model.current)
-                        .tag(c.key)
-                        .contextMenu { ConversationMenu(conversation: c) }
+                .listStyle(.sidebar)
+                // With the list focused (Tab), ↑ / ↓ open the chat above / below.
+                .onMoveCommand { direction in
+                    switch direction {
+                    case .up: model.openAdjacentChat(-1)
+                    case .down: model.openAdjacentChat(1)
+                    default: break
+                    }
                 }
-                if list.isEmpty && model.historyReady {
-                    Text(q.isEmpty ? "No chats yet" : "No chats match “\(q)”")
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.top, 20)
-                        .selectionDisabled()
-                }
+                .background(KeepCurrentInView(proxy: proxy))
             }
-            .listStyle(.sidebar)
 
             ConnectionFooter()
         }
+        .onChange(of: KeyboardNavigation.shared.sidebarSearchFocus) { searchFocused = true }
+        .task(id: q) { await searchMessages(q) }
+    }
+
+    /// The first chat matching the search, else the first message hit. Returns false when there is none.
+    @discardableResult
+    private func openFirstHit(_ list: [ChatListItem], query: String) -> Bool {
+        guard !query.isEmpty else { return false }
+        if let first = list.first {
+            model.openPicked(first.key)
+        } else if let hit = messageHits.first {
+            model.openMessageHit(hit, query: query)
+        } else {
+            return false
+        }
+        return true
+    }
+
+    /// Message hits of all chats, on a copy of the chats off the main thread, once typing pauses.
+    private func searchMessages(_ q: String) async {
+        guard q.count >= 2 else {
+            if !messageHits.isEmpty { messageHits = [] }
+            return
+        }
+        try? await Task.sleep(for: .milliseconds(250))
+        if Task.isCancelled { return }
+        let snapshot = model.chats.convs
+        let hits = await Task.detached(priority: .userInitiated) { CorvusCore.searchMessages(snapshot, query: q) }.value
+        if !Task.isCancelled { messageHits = hits }
     }
 }
 
-private struct ConversationRow: View {
-    @Environment(AppModel.self) private var model
-    let conversation: Conversation
-    let selected: Bool
+/// What a chat list row shows, compared by value: a row is rebuilt only when this changes, not whenever
+/// any chat changes (a `Conversation` carries all its messages).
+struct ChatListItem: Equatable {
+    var key: String
+    var title: String
+    var isGroup: Bool
+    var unread: Int
+    var muted: Bool
+    var blocked: Bool
+    var time: String
+    var preview: String
+    var avatar: NSImage?
+    var pinned: Bool
+    var markedUnread: Bool
+    var isDraft: Bool
+    /// Ticks of the last message when it is our own: nil for none, -1 while sending, else 0 sent … 2 read.
+    var lastStatus: Int?
+
+    @MainActor init(_ c: Conversation, _ model: AppModel) {
+        key = c.key
+        title = model.title(c)
+        isGroup = c.isGroup
+        unread = c.unread
+        muted = c.muted
+        blocked = model.isBlocked(c.key)
+        time = c.msgs.last.map { ChatListItem.shortTime($0.time) } ?? ""
+        preview = model.isMessageRequest(c.key) ? "Message request"
+            : c.msgs.last.map { ChatListItem.preview($0, isGroup: c.isGroup) } ?? (c.isGroup ? "Group" : " ")
+        avatar = model.appearance.showAvatars ? model.avatarImage(c) : nil
+        pinned = c.pinned
+        markedUnread = c.markedUnread
+        isDraft = false
+        lastStatus = nil
+        if let m = c.msgs.last, m.outgoing, !model.isMessageRequest(c.key) {
+            lastStatus = model.chats.pendingTimestamps(c.key).contains(m.ts) ? -1 : m.deliveryStatus
+        }
+        // (The open chat has no stored draft: the composer holds it.)
+        if !model.isMessageRequest(c.key), let d = model.draftPreview(c.key) {
+            preview = d
+            isDraft = true
+            lastStatus = nil
+        }
+    }
+
+    static func == (a: ChatListItem, b: ChatListItem) -> Bool {
+        a.key == b.key && a.title == b.title && a.isGroup == b.isGroup && a.unread == b.unread && a.muted == b.muted
+            && a.blocked == b.blocked && a.time == b.time && a.preview == b.preview && a.avatar === b.avatar
+            && a.pinned == b.pinned && a.markedUnread == b.markedUnread && a.isDraft == b.isDraft
+            && a.lastStatus == b.lastStatus
+    }
+
+    private static func preview(_ m: Message, isGroup: Bool) -> String {
+        if m.deleted { return m.deletedText }
+        var t = m.text.prefix(200).replacingOccurrences(of: "\n", with: " ")
+        if m.viewOnce { t = "1️⃣ View once media" }
+        if t.isEmpty, let a = m.attachments.first {
+            t = a.isSticker ? "Sticker" : a.isGif ? "GIF" : a.isImage ? "📷 Photo" : a.isVideo ? "🎬 Video"
+                : a.isAudio ? "🎤 Voice message" : "📎 " + a.filename
+        }
+        return (m.outgoing ? "You: " : (isGroup && !m.sender.isEmpty ? m.sender + ": " : "")) + t
+    }
+
+    /// Time for today, weekday within a week, else the date.
+    static func shortTime(_ d: Date) -> String {
+        let cal = Calendar.current
+        if cal.isDateInToday(d) { return d.formatted(date: .omitted, time: .shortened) }
+        if cal.isDateInYesterday(d) { return "Yesterday" }
+        if let days = cal.dateComponents([.day], from: d, to: Date()).day, days < 7 { return d.formatted(.dateTime.weekday(.abbreviated)) }
+        return d.formatted(.dateTime.day().month(.abbreviated))
+    }
+}
+
+private struct ConversationRow: View, Equatable {
+    let item: ChatListItem
 
     var body: some View {
-        let c = conversation
+        let c = item
         HStack(spacing: 10) {
-            if model.appearance.showAvatars {
-                AvatarView(image: model.avatarImage(c), size: 40)
+            if let avatar = c.avatar {
+                AvatarView(image: avatar, size: 40)
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
@@ -270,19 +468,29 @@ private struct ConversationRow: View {
                         .font(.system(size: 13, weight: c.unread > 0 ? .bold : .semibold))
                         .lineLimit(1)
                     if c.muted { Image(systemName: "bell.slash.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
+                    if c.blocked { Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.red) }
                     Spacer(minLength: 4)
-                    if let last = c.msgs.last {
-                        Text(Self.shortTime(last.time))
-                            .font(.caption2)
-                            .foregroundStyle(c.unread > 0 ? Theme.signalBlue : .secondary)
-                    }
+                    if c.pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
+                    Text(c.time)
+                        .font(.caption2)
+                        .foregroundStyle(c.unread > 0 ? Theme.signalBlue : .secondary)
                 }
                 HStack(spacing: 4) {
-                    Text(c.msgs.last.map(preview) ?? (c.isGroup ? "Group" : " "))
+                    Text(c.preview)
                         .font(.caption)
+                        .italic(c.isDraft)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 4)
+                    if let status = c.lastStatus, c.unread == 0 {
+                        ReceiptTicks(status: status < 0 ? nil : status)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(status >= 2 ? Theme.signalBlue : Color.secondary)
+                    }
+                    if c.markedUnread && c.unread == 0 {
+                        Circle().fill(c.muted ? Color.secondary : Theme.signalBlue).frame(width: 10, height: 10)
+                            .accessibilityLabel("Marked as unread")
+                    }
                     if c.unread > 0 {
                         Text(c.unread > 99 ? "99+" : "\(c.unread)")
                             .font(.system(size: 10, weight: .bold))
@@ -296,23 +504,118 @@ private struct ConversationRow: View {
         }
         .padding(.vertical, 4)
     }
+}
 
-    private func preview(_ m: Message) -> String {
-        if m.deleted { return m.deletedText }
-        var t = m.text.replacingOccurrences(of: "\n", with: " ")
-        if t.isEmpty, let a = m.attachments.first {
-            t = a.isGif ? "GIF" : a.isImage ? "📷 Photo" : a.isVideo ? "🎬 Video" : a.isAudio ? "🎤 Audio" : "📎 " + a.filename
+/// The chat rows; skipped entirely while the rows are unchanged. The selection is not an input: only the
+/// two rows whose highlight changes update when another chat is opened (`SidebarSelection`).
+private struct ChatListRows: View, Equatable {
+    @Environment(AppModel.self) private var model
+    let items: [ChatListItem]
+
+    static func == (a: ChatListRows, b: ChatListRows) -> Bool { a.items == b.items }
+
+    var body: some View {
+        ForEach(items, id: \.key) { c in
+            SelectableChatRow(key: c.key) {
+                ConversationRow(item: c)
+            }
+            .contextMenu { ConversationMenuFor(key: c.key) }
         }
-        return (m.outgoing ? "You: " : (conversation.isGroup && !m.sender.isEmpty ? m.sender + ": " : "")) + t
+    }
+}
+
+/// Whether one chat is the open one, observed per row: opening a chat updates two rows, not the list.
+@MainActor @Observable
+final class SidebarSelection {
+    static let shared = SidebarSelection()
+
+    @MainActor @Observable
+    final class Mark {
+        var on = false
     }
 
-    /// Time for today, weekday within a week, else the date.
-    static func shortTime(_ d: Date) -> String {
-        let cal = Calendar.current
-        if cal.isDateInToday(d) { return d.formatted(date: .omitted, time: .shortened) }
-        if cal.isDateInYesterday(d) { return "Yesterday" }
-        if let days = cal.dateComponents([.day], from: d, to: Date()).day, days < 7 { return d.formatted(.dateTime.weekday(.abbreviated)) }
-        return d.formatted(.dateTime.day().month(.abbreviated))
+    @ObservationIgnored private var marks: [String: Mark] = [:]
+    @ObservationIgnored private var current: String?
+
+    func mark(_ key: String) -> Mark {
+        if let m = marks[key] { return m }
+        let m = Mark()
+        m.on = key == current
+        marks[key] = m
+        return m
+    }
+
+    func select(_ key: String?) {
+        guard key != current else { return }
+        if let old = current { marks[old]?.on = false }
+        current = key
+        if let key { marks[key]?.on = true }
+    }
+}
+
+private struct SelectableChatRow<Content: View>: View {
+    @Environment(AppModel.self) private var model
+    let key: String
+    @ViewBuilder let content: Content
+
+    @State private var hover: Task<Void, Never>?
+
+    var body: some View {
+        SidebarRow(selected: SidebarSelection.shared.mark(key).on, action: { model.openConversation(key) }) { content }
+            .onHover { inside in
+                // The pointer resting on a chat is a likely click: prepare its messages meanwhile.
+                hover?.cancel()
+                hover = inside ? Task { @MainActor in
+                    try? await Task.sleep(for: .milliseconds(120))
+                    if !Task.isCancelled { model.prewarm(key) }
+                } : nil
+            }
+    }
+}
+
+/// Keyboard switching keeps the open chat in view (on its own, so the chat list does not depend on it).
+private struct KeepCurrentInView: View {
+    @Environment(AppModel.self) private var model
+    let proxy: ScrollViewProxy
+
+    var body: some View {
+        Color.clear.onChange(of: model.current) { _, key in
+            if let key { proxy.scrollTo(key) }
+        }
+    }
+}
+
+/// A chat list row with its own selection background; acts on mouse down.
+private struct SidebarRow<Content: View>: View {
+    let selected: Bool
+    let action: () -> Void
+    @ViewBuilder let content: Content
+    @State private var pressed = false
+
+    var body: some View {
+        content
+            .padding(.horizontal, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Theme.selection : .clear))
+            .contentShape(Rectangle())
+            .gesture(DragGesture(minimumDistance: 0)
+                .onChanged { _ in
+                    if !pressed { pressed = true; action() }
+                }
+                .onEnded { _ in pressed = false })
+            .listRowInsets(EdgeInsets(top: 1, leading: 4, bottom: 1, trailing: 4))
+            .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+            .accessibilityAction { action() }
+    }
+}
+
+/// Context menu of a chat list row, looked up when it opens.
+private struct ConversationMenuFor: View {
+    @Environment(AppModel.self) private var model
+    let key: String
+
+    var body: some View {
+        if let c = model.chats.convs[key] { ConversationMenu(conversation: c) }
     }
 }
 
@@ -322,12 +625,27 @@ private struct ConversationMenu: View {
 
     var body: some View {
         let c = conversation
+        GroupMenuItems(conversation: c)
         if !c.isGroup {
-            Button { Task { await model.editNickname(c.key) } } label: {
+            Button { Task { await model.startCall(c.key) } } label: { Label("Voice call", systemImage: "phone") }
+                .disabled(model.callUnavailableReason(c.key) != nil)
+            Button { model.openConversation(c.key); model.safetyNumberKey = c.key } label: {
+                Label("View safety number …", systemImage: "checkmark.shield")
+            }
+            .disabled(!model.connected)
+            Divider()
+            Button { model.editNickname(c.key) } label: {
                 Label(c.localNickname.isEmpty ? "Set nickname …" : "Change nickname …", systemImage: "person.text.rectangle")
             }
             if !c.localNickname.isEmpty { Button("Remove nickname") { model.setNickname(c.key, "") } }
             Divider()
+        }
+        Button { model.setPinned(c.key, !c.pinned) } label: {
+            Label(c.pinned ? "Unpin" : "Pin", systemImage: c.pinned ? "pin.slash" : "pin")
+        }
+        let unread = c.markedUnread || c.unread > 0
+        Button { if unread { model.markChatRead(c.key) } else { model.setMarkedUnread(c.key, true) } } label: {
+            Label(unread ? "Mark as read" : "Mark as unread", systemImage: unread ? "envelope.open" : "envelope.badge")
         }
         Button { model.setArchived(c.key, !c.archived) } label: {
             Label(c.archived ? "Unarchive" : "Archive", systemImage: c.archived ? "tray.and.arrow.up" : "archivebox")
@@ -345,6 +663,7 @@ private struct ConversationMenu: View {
             }
         } label: { Label("Disappearing messages", systemImage: "timer") }
         .disabled(!model.connected)
+        BlockMenuItem(conversation: c)
         Divider()
         Button(role: .destructive) { Task { await model.deleteConversation(c.key) } } label: {
             Label("Delete conversation …", systemImage: "trash")

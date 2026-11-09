@@ -11,6 +11,7 @@ struct LinkView: View {
 
     @State private var name = "corvus (\(Host.current().localizedName ?? "Mac"))"
     @State private var uri = ""
+    @State private var qrImage: NSImage?        // rendered once per URI
     @State private var status = ""
     @State private var running = false
     @State private var process: Process?
@@ -22,8 +23,9 @@ struct LinkView: View {
                 .fixedSize(horizontal: false, vertical: true)
             HStack {
                 Text("Device name:")
-                TextField("Device name", text: $name).disabled(running)
-                Button("Start") { start() }.disabled(running || name.trimmingCharacters(in: .whitespaces).isEmpty)
+                TextField("Device name", text: $name).onSubmit { start() }
+                Button("Restart") { start() }.disabled(name.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("Start again, for example with another device name")
             }
             ZStack {
                 RoundedRectangle(cornerRadius: 8).fill(Color.white)
@@ -51,21 +53,26 @@ struct LinkView: View {
         }
         .padding(20)
         .frame(width: 460)
+        .onChange(of: uri) { qrImage = LinkView.qrImage(uri) }
+        .onAppear { if process == nil && uri.isEmpty { start() } } // no extra click: the QR code comes right away
     }
 
-    private var qrImage: NSImage? {
+    private static func qrImage(_ uri: String) -> NSImage? {
         guard !uri.isEmpty else { return nil }
         let f = CIFilter.qrCodeGenerator()
         f.message = Data(uri.utf8)
         f.correctionLevel = "M"
-        guard let out = f.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)) else { return nil }
-        let rep = NSCIImageRep(ciImage: out)
-        let img = NSImage(size: rep.size)
-        img.addRepresentation(rep)
-        return img
+        guard let out = f.outputImage?.transformed(by: CGAffineTransform(scaleX: 8, y: 8)),
+              let cg = CIContext().createCGImage(out, from: out.extent) else { return nil }
+        return NSImage(cgImage: cg, size: out.extent.size)
     }
 
     private func start() {
+        guard !name.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        if let old = process { // a new name: the running link request is replaced
+            process = nil
+            old.terminate()
+        }
         uri = ""
         status = "Waiting for signal-cli …"
         running = true

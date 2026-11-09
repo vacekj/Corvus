@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         model.start()
+        ScrollBench.shared.arm(model)
         #if DEBUG
         DebugHooks.start(model)
         #endif
@@ -191,16 +192,40 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New conversation …") { Task { await model.newConversation() } }
                 .keyboardShortcut("n")
+            Button("New group …") { model.newGroupShown = true }
+                .keyboardShortcut("n", modifiers: [.command, .shift])
+                .disabled(!model.connected || !model.historyReady)
+            Button("Previous chat") { model.openAdjacentChat(-1) }
+                .keyboardShortcut(.upArrow, modifiers: .option)
+            Button("Next chat") { model.openAdjacentChat(1) }
+                .keyboardShortcut(.downArrow, modifiers: .option)
+            Divider()
             Button("Link device …") { Task { await model.linkDevice() } }
             Button("Reconnect") { model.reconnect() }
-                .keyboardShortcut("r")
+            Divider()
+            Button("Import from Signal Desktop …") { Task { await model.importFromSignalDesktop() } }
         }
         CommandGroup(after: .textEditing) {
             Button("Search this conversation") { model.openSearch() }
                 .keyboardShortcut("f")
                 .disabled(model.current == nil)
+            Button("Media, files and links") { model.galleryShown = true }
+                .keyboardShortcut("m", modifiers: [.command, .shift])
+                .disabled(model.current == nil)
+            Button("New poll …") { model.pollComposerShown = true }
+                .disabled(model.current == nil || !model.connected)
+            Button("Stories") { model.storiesShown = true }
+                .keyboardShortcut("s", modifiers: [.command, .shift])
+            Button("Add sticker pack …") { model.requestStickerPackAdd() }
+                .disabled(!model.connected || model.current == nil)
         }
         CommandMenu("Conversation") {
+            Button("Go to conversation …") { KeyboardNavigation.shared.showSwitcher(newChat: false) }
+                .keyboardShortcut("k")
+                .disabled(!model.historyReady)
+            Button("Search chats") { KeyboardNavigation.shared.sidebarSearchFocus += 1 }
+                .keyboardShortcut("f", modifiers: [.command, .option])
+            Divider()
             ForEach(1..<10) { n in
                 Button("Conversation \(n)") {
                     let list = model.chats.sortedConversations(archived: model.showArchived)
@@ -208,14 +233,14 @@ struct AppCommands: Commands {
                 }
                 .keyboardShortcut(KeyEquivalent(Character("\(n)")))
             }
-        }
-        CommandGroup(after: .appSettings) {
-            Button("History protection …") { Task { await model.changeHistoryProtection() } }
-            Button("GIPHY API key …") { Task { await model.configureGiphyApiKey() } }
-            Button("Path to signal-cli …") { model.chooseExecutable() }
+            Divider()
+            Button(model.infoPanelShown ? "Hide conversation info" : "Show conversation info") { model.toggleInfoPanel() }
+                .keyboardShortcut("i")
+                .disabled(model.current == nil)
         }
         CommandGroup(replacing: .help) {
             Button("Check for signal-cli update") { model.checkForUpdates(silent: false) }
+            Button("Voice call setup …") { Task { await model.showCallSetup() } }
             Button("signal-cli on GitHub") { NSWorkspace.shared.open(URL(string: "https://github.com/AsamK/signal-cli")!) }
         }
     }

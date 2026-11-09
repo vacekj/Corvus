@@ -1,4 +1,5 @@
 import AppKit
+import CorvusCore
 
 /// Modal dialogs built on NSAlert. Shown as a sheet on the main window when it is visible,
 /// otherwise as an app-modal panel, so sequential flows (unlock, connect, …) read like the Qt code.
@@ -70,7 +71,7 @@ enum Dialogs {
     }
 
     enum PassphraseMode { case create, unlock, change }
-    static let minPassphraseLength = 8
+    static let minPassphraseLength = PassphrasePolicy.minLength
 
     /// Returns (old, new); old is only set for .change.
     static func passphrase(_ mode: PassphraseMode, error: String = "") async -> (old: String, new: String)? {

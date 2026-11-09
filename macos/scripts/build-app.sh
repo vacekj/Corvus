@@ -17,6 +17,11 @@ fi
 VERSION=$(sed -n 's/^project(corvus VERSION \([0-9.]*\).*/\1/p' "$REPO_DIR/CMakeLists.txt")
 VERSION=${VERSION:-0.0.0}
 
+# Code signature: ad hoc by default. With an ad-hoc signature every build is a "new" app for the
+# keychain, so macOS asks again for the history key. Set CORVUS_SIGN_IDENTITY to a signing identity
+# (e.g. from `security find-identity -v -p codesigning`) to keep "Always Allow" across rebuilds.
+SIGN_ID=${CORVUS_SIGN_IDENTITY:--}
+
 echo "==> Building Rust history store"
 cargo build --release --locked --manifest-path "$REPO_DIR/history-store/Cargo.toml"
 
@@ -57,8 +62,14 @@ xcrun clang++ -std=c++17 -O2 -mmacosx-version-min=14.0 "$REPO_DIR/src/SignalCliH
     -o "$HELPER/Contents/MacOS/corvus-signal-cli"
 sed "s/@PROJECT_VERSION@/$VERSION/g" "$REPO_DIR/packaging/macos/SignalCliHelper.plist.in" > "$HELPER/Contents/Info.plist"
 
-echo "==> Signing (ad hoc)"
-codesign --force --sign - --timestamp=none "$HELPER"
-codesign --force --sign - --timestamp=none "$APP"
+# Signal Desktop history import (tools/signal-desktop-import).
+echo "==> Building Signal Desktop import helper"
+cargo build --release --locked --manifest-path "$REPO_DIR/tools/signal-desktop-import/Cargo.toml"
+cp "$REPO_DIR/tools/signal-desktop-import/target/release/corvus-signal-import" "$APP/Contents/Helpers/"
+codesign --force --sign "$SIGN_ID" --timestamp=none "$APP/Contents/Helpers/corvus-signal-import"
+
+echo "==> Signing ($SIGN_ID)"
+codesign --force --sign "$SIGN_ID" --timestamp=none "$HELPER"
+codesign --force --sign "$SIGN_ID" --timestamp=none "$APP"
 
 echo "Done: $APP"

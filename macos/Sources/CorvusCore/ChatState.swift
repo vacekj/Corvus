@@ -19,6 +19,7 @@ public struct ChatState {
     public var contactNames: [String: String] = [:]   // key -> contact name from signal-cli
     public var pendingSends: [String: PendingSend] = [:]
     public var account = ""
+    var unmatchedReceipts: [ReceiptEvent] = []     // receipts for messages not (yet) in the history
 
     public init() {}
 
@@ -30,6 +31,21 @@ public struct ChatState {
         var c = Conversation(key: key, title: title.isEmpty ? key : title, isGroup: group)
         if c.title == key { c.title = contactNames[key] ?? key } // saved contact name, if known
         convs[key] = c
+    }
+
+    /// Drops the stored preview images of attachments (not of stickers). Returns how many were removed.
+    public mutating func stripAttachmentThumbnails() -> Int {
+        var n = 0
+        for key in convs.keys {
+            for i in convs[key]!.msgs.indices {
+                for a in convs[key]!.msgs[i].attachments.indices
+                where !convs[key]!.msgs[i].attachments[a].thumb.isEmpty && !convs[key]!.msgs[i].attachments[a].isSticker {
+                    convs[key]!.msgs[i].attachments[a].thumb = Data()
+                    n += 1
+                }
+            }
+        }
+        return n
     }
 
     public func displayName(_ key: String) -> String {
@@ -58,6 +74,10 @@ public struct ChatState {
             if nonEmpty.isEmpty || authorMatches(c, m, nonEmpty) { return i }
         }
         return nil
+    }
+
+    public func pendingTimestamps(_ key: String) -> Set<Int64> {
+        Set(pendingSends.values.lazy.filter { $0.conversationKey == key }.map(\.temporaryTimestamp))
     }
 
     public func isPendingPreview(_ key: String, ts: Int64) -> Bool {
@@ -111,6 +131,12 @@ public struct ChatState {
                 ensure(key, title: key, group: group)
                 convs[key]!.archived = jsonBool(o["v"])
                 convs[key]!.sigArchived = jsonBool(o["s"])
+            case "pin":
+                ensure(key, title: key, group: group)
+                convs[key]!.pinned = jsonBool(o["v"])
+            case "mu":
+                ensure(key, title: key, group: group)
+                convs[key]!.markedUnread = jsonBool(o["v"])
             default:
                 break
             }
@@ -126,6 +152,8 @@ public struct ChatState {
             if !c.localNickname.isEmpty { out.append(Records.nickname(c.key, c.localNickname)) }
             if c.archived || c.sigArchived { out.append(Records.archive(c.key, archived: c.archived, sigArchived: c.sigArchived)) }
             if c.muted { out.append(Records.mute(c.key, true)) }
+            if c.pinned { out.append(Records.pin(c.key, true)) }
+            if c.markedUnread { out.append(Records.markedUnread(c.key, true)) }
             out.append(Records.expiration(c.key, c.expirationSeconds))
             for m in c.msgs where !isPendingPreview(c.key, ts: m.ts) {
                 out.append(Records.message(c.key, m))
@@ -168,13 +196,44 @@ public struct ChatState {
         return Records.reaction(key, ts: m.ts, author: effectiveAuthor(c, m), by: reactor, emoji: emoji) // original ts = stable identity
     }
 
-    public mutating func applyEdit(_ key: String, targetTs: Int64, authors: [String], text: String, newTs: Int64) -> JSON? {
+    public mutating func applyEdit(_ key: String, targetTs: Int64, authors: [String], text: String, newTs: Int64,
+                                   styles: [TextStyleRange] = [], mentions: [MentionRange] = [],
+                                   linkPreview: LinkPreview = LinkPreview()) -> JSON? {
         guard let c = convs[key], let i = findMessage(c, ts: targetTs, authors: authors) else { return nil }
         if c.msgs[i].deleted || newTs <= c.msgs[i].latestTs { return nil } // deleted / already applied / outdated revision
         convs[key]!.msgs[i].text = text
+        convs[key]!.msgs[i].textStyles = styles
+        convs[key]!.msgs[i].mentions = mentions
         convs[key]!.msgs[i].editTs = newTs
         convs[key]!.msgs[i].editCount += 1
+        convs[key]!.msgs[i].linkPreview = linkPreview.isValid ? linkPreview : LinkPreview() // the edit carries its own preview
         return Records.edit(key, convs[key]!.msgs[i])
+    }
+
+    /// A vote on a poll (from anyone in the chat, including our other devices). Returns the record to persist.
+    public mutating func applyPollVote(_ key: String, targetTs: Int64, authors: [String], voter: String,
+                                       options: [Int], voteCount: Int) -> JSON? {
+        guard let c = convs[key], let i = findMessage(c, ts: targetTs, authors: authors) ?? findMessage(c, ts: targetTs, authors: []),
+              c.msgs[i].isPoll, !c.msgs[i].deleted, !c.msgs[i].poll.ended else { return nil }
+        guard convs[key]!.msgs[i].poll.applyVote(voter: voter, options: options, voteCount: voteCount) else { return nil }
+        return Records.pollUpdate(key, convs[key]!.msgs[i])
+    }
+
+    /// The author closed the poll: no more votes.
+    public mutating func applyPollTerminate(_ key: String, targetTs: Int64, authors: [String]) -> JSON? {
+        guard let c = convs[key], let i = findMessage(c, ts: targetTs, authors: authors),
+              c.msgs[i].isPoll, !c.msgs[i].poll.ended else { return nil }
+        convs[key]!.msgs[i].poll.ended = true
+        return Records.pollUpdate(key, convs[key]!.msgs[i])
+    }
+
+    /// View Once media was opened: the reference is dropped for good. Returns the record to persist.
+    public mutating func markViewOnceViewed(_ key: String, ts: Int64, authors: [String]) -> JSON? {
+        guard let c = convs[key], let i = findMessage(c, ts: ts, authors: authors), c.msgs[i].viewOnce,
+              !c.msgs[i].viewOnceViewed else { return nil }
+        convs[key]!.msgs[i].viewOnceViewed = true
+        convs[key]!.msgs[i].attachments = []
+        return Records.viewOnceUpdate(key, convs[key]!.msgs[i])
     }
 
     /// Delete for everyone (ours or the author's): the message turns into a placeholder.
@@ -187,6 +246,10 @@ public struct ChatState {
     }
 
     /// Starts the local timer of incoming disappearing messages (when the chat is looked at).
+    public func hasIncomingExpirationToStart(_ key: String) -> Bool {
+        convs[key]?.msgs.contains { !$0.outgoing && $0.expiresInSeconds > 0 && $0.expirationStartMs == 0 } ?? false
+    }
+
     public mutating func startIncomingExpirationTimers(_ key: String, now: Int64) -> [JSON] {
         guard convs[key] != nil else { return [] }
         var recs: [JSON] = []
@@ -250,7 +313,7 @@ public struct ChatState {
               })
         else {
             markDone(&self)
-            return addMessage(key, confirmed)?.records ?? []
+            return (addMessage(key, confirmed)?.records ?? []) + replayUnmatchedReceipts(for: ts)
         }
 
         // If an envelope already inserted the confirmed timestamp by another path, remove
@@ -276,7 +339,7 @@ public struct ChatState {
             recs.append(Records.archive(key, archived: false, sigArchived: convs[key]!.sigArchived))
         }
         markDone(&self)
-        return recs
+        return recs + replayUnmatchedReceipts(for: ts)
     }
 
     public mutating func removePendingPreview(_ pending: PendingSend) {
@@ -312,9 +375,10 @@ public struct ChatState {
 
     // MARK: - Sorting for the chat list
 
-    /// Conversations of one folder, newest activity first.
+    /// Conversations of one folder: pinned chats first, then newest activity first.
     public func sortedConversations(archived: Bool) -> [Conversation] {
         convs.values.filter { $0.archived == archived }.sorted { a, b in
+            if a.pinned != b.pinned { return a.pinned }
             if a.lastTs != b.lastTs { return a.lastTs > b.lastTs }
             return a.title.localizedStandardCompare(b.title) == .orderedAscending
         }

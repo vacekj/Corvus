@@ -5,12 +5,14 @@ import CorvusCore
 import SwiftUI
 
 /// Unsent composer state of one conversation.
-struct Draft {
+struct Draft: Equatable {
     var text = ""
     var reply = Quote()
     var files: [String] = []
     var gifAnalyticsUrl: URL?
     var isEmpty: Bool { text.isEmpty && !reply.valid && files.isEmpty }
+    /// "Draft: …" in the chat list.
+    var preview: String? { DraftPreview.text(text, attachments: files.count) }
 }
 
 struct UpdateHint: Equatable {
@@ -25,19 +27,60 @@ struct UpdateHint: Equatable {
 final class AppModel {
     // MARK: State shown by the views
 
-    var chats = ChatState()
-    var current: String?            // selected conversation
+    var chats = ChatState() {
+        didSet {
+            chatListCache.removeAll()
+            if chats.account != accountKey { accountKey = chats.account }
+        }
+    }
+    var current: String? {          // selected conversation
+        didSet {
+            SidebarSelection.shared.select(current)
+            if let current, current != oldValue { UserDefaults.standard.set(current, forKey: Self.lastChatKey) }
+        }
+    }
+    static let lastChatKey = "lastOpenChat"
+    /// Chats whose message list stays built while hidden, most recently opened first (see `ChatPane`).
+    var warmChats: [String] = []
+    static let warmLimit = 12
+
+    /// The chat that was open when the app was last used opens again.
+    private func reopenLastChat() {
+        guard current == nil, let key = UserDefaults.standard.string(forKey: Self.lastChatKey),
+              let c = chats.convs[key], !c.archived else { return }
+        openConversation(key)
+    }
+
+    /// The chats at the top of the list are the likely ones to open: their lists are built while idle
+    /// after launch (one per run loop pass), so opening them is only a show.
+    private func prewarmTopChats() {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(800))
+            for item in chatListItems(archived: false).prefix(6).reversed() { prewarm(item.key) }
+        }
+    }
+
+    /// Prepares a chat's message list ahead of a likely open (pointer resting on it in the chat list,
+    /// chats at the top of the list after launch), so opening it only has to show it.
+    func prewarm(_ key: String) {
+        guard chats.convs[key] != nil, !warmChats.contains(key) else { return }
+        warmChats.insert(key, at: min(1, warmChats.count))
+        if warmChats.count > Self.warmLimit { warmChats.removeLast(warmChats.count - Self.warmLimit) }
+    }
     var showArchived = false
     var connected = false
     var statusText = "Not connected"
     var flash: String?              // transient status bar message
     var updateHint: UpdateHint?
     var version = ""                // e.g. "0.13.12"
+    @ObservationIgnored var updatingCli = false
+    @ObservationIgnored var updateChecksStarted = false
     var historyProtectionMode = ""  // "keychain" | "passphrase"
     var historyReady = false
 
-    var appearance = Appearance.load()
+    var appearance = Appearance.load() { didSet { chatListCache.removeAll() } }
     var notify = NotificationSettings.load()
+    var privacy = PrivacySettings.load()
 
     // composer (for the current conversation; other conversations keep a Draft)
     var composerText = ""
@@ -49,18 +92,23 @@ final class AppModel {
     private var editDraft = ""
     var composerFocusRequest = 0    // incremented to put the caret into the composer
     var composerCursorToEnd = 0
-    private var drafts: [String: Draft] = [:]
+    private var drafts: [String: Draft] = [:] {
+        didSet { if oldValue.mapValues(\.preview) != drafts.mapValues(\.preview) { chatListCache.removeAll() } }
+    }
+    let linkDraft = LinkPreviewDraft()  // preview of the link in the composer text
 
     // search in the current conversation
     var searchVisible = false
-    var searchText = "" { didSet { updateSearch(selectFirst: true) } }
-    var searchResults: [Int] = []
+    var searchText = "" { didSet { if searchText != oldValue { updateSearch(selectFirst: true, debounce: true) } } }
+    var searchResults: [String] = []            // ids of the matching messages, oldest first
     var searchPosition = -1
+    var searchBusy = false                      // a search is taking long enough to say so
+    @ObservationIgnored private var searchTask: Task<Void, Never>?
     var scrollRequest: (id: String, serial: Int)?
     private var scrollSerial = 0
 
     // avatars (cached in memory only)
-    var avatars: [String: NSImage] = [:]
+    var avatars: [String: NSImage] = [:] { didSet { chatListCache.removeAll() } }
     @ObservationIgnored private var avatarTried: Set<String> = []
     @ObservationIgnored private var avatarBusy: Set<String> = []
     @ObservationIgnored private var avatarInFlight = 0
@@ -72,6 +120,8 @@ final class AppModel {
     @ObservationIgnored private var gifPending: Set<String> = []
     var animatedGifs: [String: Data] = [:]      // attachment token -> GIF data
     var videoURLs: [String: URL] = [:]          // attachment token -> local file for playback
+    @ObservationIgnored private var expiryScanRunning = false
+    @ObservationIgnored var videoFiles: [String: URL] = [:] // attachment token -> fetched video file (poster, playback)
     var videoLoading: Set<String> = []
 
     // audio playback
@@ -86,17 +136,63 @@ final class AppModel {
 
     // profile
     var profileUsername = ""
+    var profileName = ""            // own Signal profile name (given + family)
     var profileStatus: (text: String, error: Bool)?
 
     // sheets
     var linkSheetShown = false
     @ObservationIgnored private var linkContinuation: CheckedContinuation<Bool, Never>?
-    var giphyApiKey: String?        // non-nil = GIF picker shown
+
+    // stickers
+    var stickerPacks: [StickerPack] = []
+    var stickerImages: [String: Data] = [:]     // "packId:stickerId" -> image data
+    @ObservationIgnored var stickerPending: Set<String> = []
+    var stickerPackAddRequest = 0               // incremented to open the sticker picker's "add pack" field
+    @ObservationIgnored var stickerPackAddPending = false
+
+    // stories (memory only)
+    var stories: [Story] = []
+    var storiesShown = false
+
+    // sheets of the new features
+    var safetyNumberKey: String?               // conversation whose safety number is shown
+    var forwardMessageId: String?              // message to forward (in the current conversation)
+    var messageInfoId: String?                 // message whose info sheet is shown (in the current conversation)
+    var galleryShown = false
+    var importProgress: ImportProgress?        // Signal Desktop import sheet
+    var pollComposerShown = false
+
+    // groups, blocking and message requests (Groups.swift, MessageRequests.swift)
+    var roster = Roster() { didSet { chatListCache.removeAll() } }
+    /// Chat list rows (per folder), rebuilt only after a change to what they show.
+    @ObservationIgnored private var chatListCache: [Bool: (day: Int, items: [ChatListItem])] = [:]
+    var infoPanelShown = false                 // info panel (inspector) of the open chat
+    var nicknameFocusPending = false           // the info panel focuses its nickname field
+    var successorPick: SuccessorPick?          // "choose a new admin" sheet while leaving a group
+    @ObservationIgnored var successorContinuation: CheckedContinuation<String?, Never>?
+    var newGroupShown = false
+
+    // composer extras
+    var viewOnceNext = false                    // send the single attached photo/video as View Once
+    @ObservationIgnored var voiceNoteNext = false
+    var isRecording = false
+    var recordingStarted: Date?
+    @ObservationIgnored var recorder: AVAudioRecorder?
+
+    // voice calls
+    var call: CallSession?
+    var callSubscribed = false
+    var callSetupMissing: [String] = []     // what voice calls still need (checked when connecting)
+    @ObservationIgnored let audioBridge = CallAudioBridge()
+    @ObservationIgnored var ringTimer: Timer?
 
     // MARK: Services
 
     @ObservationIgnored let cli = SignalCli()
-    @ObservationIgnored let store = HistoryStore()
+    @ObservationIgnored let writer = HistoryWriter()   // every history write, off the main thread and in order
+    var store: HistoryStore { writer.store }
+    @ObservationIgnored var autoReconnects = 0
+    @ObservationIgnored var lastAutoReconnect: Date?
     @ObservationIgnored let notifier = Notifier()
     @ObservationIgnored let sound = SoundPlayer()
     @ObservationIgnored private var connectGen = 0
@@ -107,11 +203,25 @@ final class AppModel {
     @ObservationIgnored private var started = false
     @ObservationIgnored var openMainWindow: (() -> Void)?
 
-    var account: String { chats.account }
+    /// The own number, kept apart from `chats`: views showing "mine" would otherwise update on every
+    /// change to any chat.
+    var account: String { accountKey }
+    private(set) var accountKey = ""
 
     init() {
-        cli.onEnvelope = { [weak self] env in self?.onEnvelope(env) }
-        cli.onStopped = { [weak self] reason in self?.setConnected(false, info: reason) }
+        cli.onEnvelope = { [weak self] env in
+            guard let self else { return }
+            // signal-cli may start while the history is still being unlocked: keep messages until it is loaded.
+            if self.historyReady { self.onEnvelope(env) } else { self.earlyEnvelopes.append(env) }
+        }
+        cli.onCallEvent = { [weak self] ev in self?.onCallEvent(ev) }
+        cli.onStopped = { [weak self] reason in
+            // A quick start that did not hold: check signal-cli and the account properly next time.
+            if let t = self?.fastStartAt, Date().timeIntervalSince(t) < 30 { self?.fullCheckNext = true }
+            if self?.earlyStarted == true { self?.earlyStarted = false; self?.fullCheckNext = true }
+            self?.setConnected(false, info: reason)
+            self?.scheduleAutoReconnect()
+        }
         cli.onLogLine = { [weak self] line in self?.showFlash(line, seconds: 5) }
         notifier.onActivate = { [weak self] key in self?.activateConversation(key) }
     }
@@ -121,6 +231,7 @@ final class AppModel {
     func start() {
         guard !started else { return }
         started = true
+        Perf.mark("start")
         notifier.setUp()
         timers.append(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.expireMessages() }
@@ -132,19 +243,55 @@ final class AppModel {
                 self?.fetchMissingAvatars()
             }
         })
+        startCliEarly()
         Task {
             guard await unlockHistory() else {
+                cli.stop()
                 NSApp.terminate(nil)
                 return
             }
             historyReady = true
+            Perf.mark("history ready")
+            applyCachedRoster()
+            reopenLastChat()
+            prewarmTopChats()
+            let early = earlyEnvelopes
+            earlyEnvelopes = []
+            early.forEach(onEnvelope)
             guard await ensureExecutable() else { return }
             await connectAccount()
         }
     }
 
+    /// With a known account and signal-cli, the (slow to start) JVM is started while the history is being
+    /// unlocked; `connectAccount` then only has to use it.
+    private func startCliEarly() {
+        let exe = UserDefaults.standard.string(forKey: "executable") ?? ""
+        let acc = UserDefaults.standard.string(forKey: "account") ?? ""
+        guard !exe.isEmpty, !acc.isEmpty, FileManager.default.isExecutableFile(atPath: exe),
+              UserDefaults.standard.string(forKey: executableStamp(exe)) != nil else { return }
+        cli.executable = exe
+        fastStartAt = Date()
+        cli.start(account: acc)
+        earlyStarted = cli.isRunning
+        if earlyStarted { Perf.mark("signal-cli started early") }
+    }
+
+    /// Names and groups from the previous run, until signal-cli answers.
+    private func applyCachedRoster() {
+        let acc = UserDefaults.standard.string(forKey: "account") ?? ""
+        guard !acc.isEmpty, let cache = RosterCache.load(account: acc) else { return }
+        chats.account = acc
+        roster.load(account: acc)
+        if let c = cache.contacts { applyContacts(c) }
+        if let g = cache.groups { applyGroups(g) }
+        listChanged()
+        Perf.mark("cached names applied")
+    }
+
     func shutdown() {
         cli.stop()
+        writer.drain()
         store.close()
         try? FileManager.default.removeItem(at: AppPaths.tempDir)
     }
@@ -201,6 +348,35 @@ final class AppModel {
         Task { await connectAccount() }
     }
 
+    /// signal-cli died on its own (crash, killed): start it again after 3, 10, 30, 60 s. The counter resets
+    /// once a connection stayed up for two minutes, so a crash loop does not spin forever.
+    @ObservationIgnored var fastStartAt: Date?
+    @ObservationIgnored var earlyEnvelopes: [JSON] = []
+    @ObservationIgnored var earlyStarted = false
+    @ObservationIgnored var fullCheckNext = false
+
+    /// Identifies the installed signal-cli (path + modification date): its version is cached for it.
+    private func executableStamp(_ exe: String) -> String {
+        let mtime = ((try? FileManager.default.attributesOfItem(atPath: exe))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
+        return "cliVersion.\(exe).\(Int(mtime))"
+    }
+
+    func scheduleAutoReconnect() {
+        let now = Date()
+        if let since = lastAutoReconnect, now.timeIntervalSince(since) > 120 { autoReconnects = 0 }
+        let delays: [Double] = [3, 10, 30, 60]
+        guard autoReconnects < delays.count, !chats.account.isEmpty else { return }
+        let delay = delays[autoReconnects]
+        autoReconnects += 1
+        lastAutoReconnect = now
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, !self.connected else { return }
+                self.reconnect()
+            }
+        }
+    }
+
     func reconnect() {
         Task {
             if cli.executable.isEmpty { guard await ensureExecutable() else { return } }
@@ -214,9 +390,32 @@ final class AppModel {
         guard historyReady else { return }
         connectGen += 1
         let gen = connectGen
-        cli.stop()
+        let keepEarly = earlyStarted && cli.isRunning && !fullCheckNext
+        if !keepEarly { cli.stop() }
         setConnected(false)
         statusText = "Connecting …"
+
+        // Quick start: with a known account and an unchanged signal-cli, start the JSON-RPC process right
+        // away. `--version` and `listAccounts` each start a separate JVM (several seconds); they only run when
+        // something changed or the quick start failed.
+        let stamp = executableStamp(cli.executable)
+        let savedAccount = UserDefaults.standard.string(forKey: "account") ?? ""
+        if !fullCheckNext, !savedAccount.isEmpty, let cached = UserDefaults.standard.string(forKey: stamp) {
+            version = cached
+            chats.account = savedAccount
+            Perf.mark("account known (quick start)")
+            if !(earlyStarted && cli.isRunning) {
+                fastStartAt = Date()
+                cli.start(account: savedAccount)
+            }
+            earlyStarted = false
+            if cli.isRunning {
+                didStartCli()
+                return
+            }
+        }
+        fullCheckNext = false
+        fastStartAt = nil
 
         let (vr, versionLine) = await cli.queryVersion()
         guard gen == connectGen else { return }
@@ -225,6 +424,7 @@ final class AppModel {
             return
         }
         version = versionLine.split(separator: " ").last.map(String.init) ?? versionLine
+        UserDefaults.standard.set(version, forKey: stamp)
 
         let (ar, accounts) = await cli.queryAccounts()
         guard gen == connectGen else { return }
@@ -258,11 +458,18 @@ final class AppModel {
         guard gen == connectGen else { return } // reconnect requested while a dialog was open
 
         chats.account = acc
+        Perf.mark("account known")
         cli.start(account: acc)
         guard cli.isRunning else { return }
+        didStartCli()
+    }
+
+    private func didStartCli() {
         setConnected(true)
         loadContactsAndGroups()
-        checkForUpdates(silent: true) // silent: only a hint in the status bar
+        subscribeCallEvents()
+        loadStickerPacks()
+        startUpdateChecks() // installs signal-cli updates (Settings → General), otherwise a hint in the status bar
     }
 
     private func showCliProblem(_ title: String, _ r: CliResult) async {
@@ -279,6 +486,7 @@ final class AppModel {
 
     func setConnected(_ on: Bool, info: String = "") {
         connected = on
+        if !on { callConnectionLost() }
         if on {
             statusText = "Connected · signal-cli \(version)"
         } else {
@@ -311,49 +519,16 @@ final class AppModel {
     // MARK: - Contacts / groups
 
     private func loadContactsAndGroups() {
+        roster.load(account: account)
         avatarTried.removeAll() // ask signal-cli again, avatars may have changed
         avatarBusy.removeAll()
         avatarInFlight = 0
         Task {
             do {
                 let res = try await cli.call("listContacts")
-                for cv in jsonArray(res) {
-                    let c = jsonObject(cv)
-                    let number = jsonString(c["number"]), uuid = jsonString(c["uuid"])
-                    let key = !number.isEmpty ? number : uuid
-                    if key.isEmpty { continue }
-                    if !number.isEmpty && !uuid.isEmpty { chats.alias[uuid] = number }
-
-                    var title = jsonString(c["name"])
-                    if title.isEmpty { title = jsonString(c["profileName"]) }
-                    if !title.isEmpty { chats.contactNames[key] = title }
-
-                    // signal-cli lists every known recipient (address book, group members, …), not just people
-                    // we have chatted with. Only show a chat once there is one: local history, a new message,
-                    // or an archived chat on the phone.
-                    let sig = jsonBool(c["isArchived"])
-                    if jsonBool(c["isHidden"]) { continue }
-                    if chats.convs[key] == nil && !sig { continue }
-
-                    chats.ensure(key, title: key)
-                    let expiration = jsonInt(c["messageExpirationTime"])
-                    if chats.convs[key]!.expirationSeconds != expiration {
-                        chats.convs[key]!.expirationSeconds = expiration
-                        persist(Records.expiration(key, expiration))
-                    }
-                    let stored = chats.convs[key]!.storedName
-                    if title.isEmpty { title = stored.isEmpty ? key : stored }
-                    let nick = chats.convs[key]!.localNickname
-                    chats.convs[key]!.title = nick.isEmpty ? title : nick
-
-                    // Archive state: follow signal-cli only when *it* changed (e.g. archived on the phone);
-                    // otherwise keep the local state (e.g. auto-unarchived by a new message).
-                    if sig != chats.convs[key]!.sigArchived {
-                        chats.convs[key]!.sigArchived = sig
-                        chats.convs[key]!.archived = sig
-                        persist(Records.archive(key, archived: sig, sigArchived: sig))
-                    }
-                }
+                Perf.mark("contacts received")
+                applyContacts(res)
+                RosterCache.save(contacts: res, account: account)
                 listChanged()
             } catch {
                 showFlash("Could not load contacts: \(error.localizedDescription)", seconds: 8)
@@ -361,23 +536,73 @@ final class AppModel {
         }
         Task {
             guard let res = try? await cli.call("listGroups") else { return }
-            for gv in jsonArray(res) {
-                let g = jsonObject(gv)
-                if g["isMember"] != nil && !jsonBool(g["isMember"]) { continue }
-                let id = jsonString(g["id"])
-                if id.isEmpty { continue }
-                var title = jsonString(g["name"])
-                if title.isEmpty { title = "Group" }
-                let key = "g:" + id
-                chats.ensure(key, title: title, group: true)
-                chats.convs[key]!.title = title
-                let expiration = jsonInt(g["messageExpirationTime"])
-                if chats.convs[key]!.expirationSeconds != expiration {
-                    chats.convs[key]!.expirationSeconds = expiration
-                    persist(Records.expiration(key, expiration))
-                }
-            }
+            Perf.mark("groups received")
+            applyGroups(res)
+            RosterCache.save(groups: res, account: account)
             listChanged()
+        }
+    }
+
+    /// Names, aliases and chat states from a `listContacts` result (live, or the cached one at startup).
+    func applyContacts(_ res: Any) {
+        noteContacts(res)
+        for cv in jsonArray(res) {
+            let c = jsonObject(cv)
+            let number = jsonString(c["number"]), uuid = jsonString(c["uuid"])
+            let key = !number.isEmpty ? number : uuid
+            if key.isEmpty { continue }
+            if !number.isEmpty && !uuid.isEmpty { chats.alias[uuid] = number }
+
+            var title = jsonString(c["name"])
+            if title.isEmpty { title = jsonString(c["profileName"]) }
+            if !title.isEmpty { chats.contactNames[key] = title }
+
+            // signal-cli lists every known recipient (address book, group members, …), not just people
+            // we have chatted with. Only show a chat once there is one: local history, a new message,
+            // or an archived chat on the phone.
+            let sig = jsonBool(c["isArchived"])
+            if jsonBool(c["isHidden"]) { continue }
+            if chats.convs[key] == nil && !sig { continue }
+
+            chats.ensure(key, title: key)
+            let expiration = jsonInt(c["messageExpirationTime"])
+            if chats.convs[key]!.expirationSeconds != expiration {
+                chats.convs[key]!.expirationSeconds = expiration
+                persist(Records.expiration(key, expiration))
+            }
+            let stored = chats.convs[key]!.storedName
+            if title.isEmpty { title = stored.isEmpty ? key : stored }
+            let nick = chats.convs[key]!.localNickname
+            chats.convs[key]!.title = nick.isEmpty ? title : nick
+
+            // Archive state: follow signal-cli only when *it* changed (e.g. archived on the phone);
+            // otherwise keep the local state (e.g. auto-unarchived by a new message).
+            if sig != chats.convs[key]!.sigArchived {
+                chats.convs[key]!.sigArchived = sig
+                chats.convs[key]!.archived = sig
+                persist(Records.archive(key, archived: sig, sigArchived: sig))
+            }
+        }
+    }
+
+    /// Group chats and names from a `listGroups` result (live, or the cached one at startup).
+    func applyGroups(_ res: Any) {
+        noteGroups(res)
+        for gv in jsonArray(res) {
+            let g = jsonObject(gv)
+            if g["isMember"] != nil && !jsonBool(g["isMember"]) { continue }
+            let id = jsonString(g["id"])
+            if id.isEmpty { continue }
+            var title = jsonString(g["name"])
+            if title.isEmpty { title = "Group" }
+            let key = "g:" + id
+            chats.ensure(key, title: title, group: true)
+            chats.convs[key]!.title = title
+            let expiration = jsonInt(g["messageExpirationTime"])
+            if chats.convs[key]!.expirationSeconds != expiration {
+                chats.convs[key]!.expirationSeconds = expiration
+                persist(Records.expiration(key, expiration))
+            }
         }
     }
 
@@ -387,13 +612,19 @@ final class AppModel {
         let store = self.store, path = AppPaths.historyPath
         statusText = create ? "Creating chat history …" : "Unlocking chat history …"
         defer { statusText = "Not connected" }
+        Perf.mark("open store")
         return await Task.detached {
             do {
                 if create {
                     try store.create(path: path, passphrase: secret)
+                    let k = RosterCache.deriveKey(from: secret)
+                    await MainActor.run { RosterCache.setKey(k) }
                     return .success([])
                 }
-                return .success(try store.open(path: path, passphrase: secret))
+                let records = try store.open(path: path, passphrase: secret)
+                let k = RosterCache.deriveKey(from: secret)
+                await MainActor.run { RosterCache.setKey(k) }
+                return .success(records)
             } catch let e as HistoryStoreError {
                 return .failure(e)
             } catch {
@@ -500,104 +731,86 @@ final class AppModel {
     }
 
     private func loadHistory(_ records: [JSON]) {
+        Perf.mark("history decrypted+parsed (\(records.count) records)")
         chats.loadHistory(records)
+        Perf.mark("history applied")
+        // Older versions kept small preview copies of pictures in the history. Media is now shown from the
+        // original files, so they are dropped once (stickers keep theirs: for imported ones it is the sticker).
+        if chats.stripAttachmentThumbnails() > 0 { rewriteHistory("remove the stored picture previews") }
         listChanged()
     }
 
     func persist(_ record: JSON) {
-        do { try store.append(record) } catch {
-            showFlash("Could not save message: \(error.localizedDescription)")
+        writer.append(record) { [weak self] error in
+            if let error { self?.showFlash("Could not save message: \(error.localizedDescription)") }
         }
     }
 
     func persist(_ records: [JSON]) { records.forEach(persist) }
 
-    /// Compacts the file so the ciphertext of removed data is gone.
-    @discardableResult
-    private func rewriteHistory(_ what: String) -> Bool {
-        do {
-            try store.rewrite(chats.allRecords())
-            return true
-        } catch {
-            showFlash("Could not \(what): \(error.localizedDescription)")
-            return false
+    /// Compacts the file so the ciphertext of removed data is gone. Runs in the background after the writes
+    /// queued before it, on a snapshot of the current state; `done` gets the outcome on the main thread.
+    func rewriteHistory(_ what: String, done: ((Bool) -> Void)? = nil) {
+        writer.rewrite(chats) { [weak self] error in
+            if let error { self?.showFlash("Could not \(what): \(error.localizedDescription)") }
+            done?(error == nil)
         }
     }
 
     private func changePassphrase(old: String, new: String) async -> HistoryStoreError? {
-        let store = self.store
-        return await Task.detached { () -> HistoryStoreError? in
-            do { try store.changePassphrase(old: old, new: new); return nil } catch let e as HistoryStoreError { return e } catch {
-                return HistoryStoreError(code: 5)
+        do {
+            let k = try await writer.perform { store in
+                try store.changePassphrase(old: old, new: new)
+                return RosterCache.deriveKey(from: new)
             }
-        }.value
+            RosterCache.forget(); RosterCache.setKey(k) // rewritten when signal-cli answers
+            return nil
+        } catch let e as HistoryStoreError { return e } catch {
+            return HistoryStoreError(code: 5)
+        }
     }
 
-    func changeHistoryProtection() async {
-        guard store.isOpen else { return }
-        let isKeychain = historyProtectionMode == "keychain"
-        guard let choice = await Dialogs.ask("Chat history protection",
-                                             "Choose how to protect the encrypted chat history. It is currently protected by "
-                                                 + (isKeychain ? "the system keychain." : "a passphrase."),
-                                             buttons: ["System keychain", isKeychain ? "Passphrase" : "Change passphrase"],
-                                             cancel: true) else { return }
-        let useKeychain = choice == 0
-        if useKeychain && isKeychain { return }
+    // Settings › General › Chat history. Each returns nil on success or the message to show next to the fields.
 
-        if useKeychain {
-            var error = ""
-            while true {
-                guard let old = await Dialogs.passphrase(.unlock, error: error) else { return }
-                let newSecret = HistoryKeychain.generateSecret()
-                do { try HistoryKeychain.save(newSecret) } catch {
-                    await Dialogs.error("Chat history", error.localizedDescription)
-                    return
-                }
-                if let e = await changePassphrase(old: old.new, new: newSecret) {
-                    try? HistoryKeychain.clear()
-                    if e == .wrongPassphrase { error = e.localizedDescription; continue }
-                    await Dialogs.error("Chat history", e.localizedDescription)
-                    return
-                }
-                saveProtectionMode("keychain")
-                await Dialogs.info("Chat history", "The history is now protected by the system keychain.")
-                return
-            }
+    /// Passphrase → system keychain: the history is re-encrypted with a new random key kept in the keychain.
+    func protectHistoryWithKeychain(currentPassphrase old: String) async -> String? {
+        guard store.isOpen, historyProtectionMode != "keychain" else { return nil }
+        guard !old.isEmpty else { return "Enter the current passphrase." }
+        let newSecret = HistoryKeychain.generateSecret()
+        do { try HistoryKeychain.save(newSecret) } catch { return error.localizedDescription }
+        if let e = await changePassphrase(old: old, new: newSecret) {
+            try? HistoryKeychain.clear()
+            return e.localizedDescription
         }
+        saveProtectionMode("keychain")
+        return nil
+    }
 
-        if isKeychain {
-            let oldSecret: String
-            do {
-                guard let s = try HistoryKeychain.load() else { throw RpcError("No history key was found in the keychain.") }
-                oldSecret = s
-            } catch {
-                await Dialogs.error("Chat history", error.localizedDescription)
-                return
-            }
-            guard let pw = await Dialogs.passphrase(.create) else { return }
-            if let e = await changePassphrase(old: oldSecret, new: pw.new) {
-                await Dialogs.error("Chat history", e.localizedDescription)
-                return
-            }
-            saveProtectionMode("passphrase")
-            do { try HistoryKeychain.clear() } catch { await Dialogs.warn("Chat history", error.localizedDescription) }
-            await Dialogs.info("Chat history", "The history is now protected by your passphrase.")
-            return
+    /// System keychain → passphrase: re-encrypts with the passphrase, then removes the keychain key.
+    func protectHistoryWithPassphrase(_ new: String, repeated: String) async -> String? {
+        guard store.isOpen, historyProtectionMode == "keychain" else { return nil }
+        if let p = PassphrasePolicy.problem(new: new, repeated: repeated) { return p.isEmpty ? "Enter the passphrase twice." : p }
+        let oldSecret: String
+        do {
+            guard let s = try HistoryKeychain.load() else { throw RpcError("No history key was found in the keychain.") }
+            oldSecret = s
+        } catch {
+            return error.localizedDescription
         }
+        if let e = await changePassphrase(old: oldSecret, new: new) { return e.localizedDescription }
+        saveProtectionMode("passphrase")
+        do { try HistoryKeychain.clear() } catch {
+            return "The history is now protected by your passphrase, but the old key could not be removed from the keychain: "
+                + error.localizedDescription
+        }
+        return nil
+    }
 
-        var error = ""
-        while true {
-            guard let pw = await Dialogs.passphrase(.change, error: error) else { return }
-            guard let e = await changePassphrase(old: pw.old, new: pw.new) else {
-                await Dialogs.info("Chat history", "The passphrase has been changed.")
-                return
-            }
-            error = e.localizedDescription
-            if e != .wrongPassphrase {
-                await Dialogs.error("Chat history", error)
-                return
-            }
-        }
+    func changeHistoryPassphrase(old: String, new: String, repeated: String) async -> String? {
+        guard store.isOpen, historyProtectionMode != "keychain" else { return nil }
+        guard !old.isEmpty else { return "Enter the current passphrase." }
+        if let p = PassphrasePolicy.problem(new: new, repeated: repeated) { return p.isEmpty ? "Enter the new passphrase twice." : p }
+        return await changePassphrase(old: old, new: new)?.localizedDescription
     }
 
     // MARK: - Conversations
@@ -608,8 +821,21 @@ final class AppModel {
 
     func displayName(_ key: String) -> String { chats.displayName(key) }
 
+    /// Chat title as shown: the own number's chat is "Note to Self", like in the official clients.
+    func title(_ c: Conversation) -> String { !account.isEmpty && c.key == account ? "Note to Self" : c.title }
+
+    /// Rows of the chat list, newest first. Reading it registers the same dependencies as building it.
+    func chatListItems(archived: Bool) -> [ChatListItem] {
+        _ = chats.convs.count; _ = avatars.count; _ = appearance.showAvatars; _ = roster; _ = drafts
+        let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0 // "Yesterday" changes at midnight
+        if let c = chatListCache[archived], c.day == day { return c.items }
+        let items = chats.sortedConversations(archived: archived).map { ChatListItem($0, self) }
+        chatListCache[archived] = (day, items)
+        return items
+    }
+
     /// Called after changes to the list (order, unread counters, …).
-    private func listChanged() {
+    func listChanged() {
         if showArchived && !chats.convs.values.contains(where: \.archived) { showArchived = false } // folder became empty
         updateBadge()
         fetchMissingAvatars()
@@ -638,17 +864,47 @@ final class AppModel {
         persist(Records.nickname(key, nickname))
     }
 
-    func editNickname(_ key: String) async {
-        guard let c = chats.convs[key] else { return }
-        if let n = await Dialogs.text("Contact nickname", "Nickname for \(c.title):", initial: c.localNickname) {
-            setNickname(key, n.trimmingCharacters(in: .whitespaces))
-        }
+    /// Opens the chat's info panel with the nickname field focused.
+    func editNickname(_ key: String) {
+        guard chats.convs[key]?.isGroup == false else { return }
+        openConversation(key)
+        infoPanelShown = true
+        nicknameFocusPending = true
     }
 
     func setArchived(_ key: String, _ archived: Bool) {
         guard let c = chats.convs[key], c.archived != archived else { return }
         chats.convs[key]!.archived = archived
         persist(Records.archive(key, archived: archived, sigArchived: c.sigArchived))
+        listChanged()
+    }
+
+    func setPinned(_ key: String, _ pinned: Bool) {
+        guard let c = chats.convs[key], c.pinned != pinned else { return }
+        chats.convs[key]!.pinned = pinned
+        persist(Records.pin(key, pinned))
+        listChanged()
+    }
+
+    /// The chat list line of a chat that is not open but has an unsent draft.
+    func draftPreview(_ key: String) -> String? { drafts[key]?.preview }
+
+    /// "Mark as read" from the chat list: clears the unread counter and the "marked as unread" flag.
+    func markChatRead(_ key: String) {
+        guard let c = chats.convs[key] else { return }
+        if c.unread > 0 {
+            sendReadReceipts(key, newest: c.unread)
+            chats.convs[key]!.unread = 0
+            notifier.close(key)
+        }
+        setMarkedUnread(key, false)
+        listChanged()
+    }
+
+    func setMarkedUnread(_ key: String, _ marked: Bool) {
+        guard let c = chats.convs[key], c.markedUnread != marked else { return }
+        chats.convs[key]!.markedUnread = marked
+        persist(Records.markedUnread(key, marked))
         listChanged()
     }
 
@@ -687,8 +943,13 @@ final class AppModel {
         guard let c = chats.convs[key] else { return }
         guard await Dialogs.confirm("Delete conversation", "Delete “\(c.title)” and its stored messages from this computer?",
                                     ok: "Delete", destructive: true) else { return }
+        removeConversation(key)
+    }
+
+    /// Drops a conversation and its stored messages without asking.
+    func removeConversation(_ key: String) {
         if key == editKey { cancelEdit() }
-        chats.convs.removeValue(forKey: key)
+        let removed = chats.convs.removeValue(forKey: key)
         drafts.removeValue(forKey: key)
         if key == current {
             current = nil
@@ -697,31 +958,58 @@ final class AppModel {
             pendingFiles = []
             pendingGifAnalyticsUrl = nil
         }
-        rewriteHistory("update history")
+        rewriteHistory("update history") { [weak self] ok in
+            // The file still holds the chat: show it again rather than lose it on the next start.
+            guard !ok, let self, let removed, chats.convs[key] == nil else { return }
+            chats.convs[key] = removed
+            listChanged()
+        }
         listChanged()
     }
 
-    func newConversation() async {
-        guard let r = await Dialogs.text("New conversation", "Phone number or Signal username (e.g. username.1234):")?
-            .trimmingCharacters(in: .whitespaces), !r.isEmpty else { return }
+    func newConversation() async { KeyboardNavigation.shared.showSwitcher(newChat: true) }
+
+    func startConversation(_ key: String) {
+        let r = key.trimmingCharacters(in: .whitespaces)
+        guard !r.isEmpty else { return }
         chats.ensure(r)
         if chats.convs[r]!.archived { setArchived(r, false) }
         showArchived = false
         openConversation(r)
     }
 
+    /// ⌥↑ / ⌥↓: the chat above or below the current one in the chat list.
+    func openAdjacentChat(_ step: Int) {
+        let items = chatListItems(archived: showArchived)
+        guard !items.isEmpty else { return }
+        let i = items.firstIndex { $0.key == current }.map { $0 + step } ?? (step > 0 ? 0 : items.count - 1)
+        guard items.indices.contains(i) else { return }
+        openConversation(items[i].key)
+    }
+
     /// Selecting a chat: stashes the old chat's draft, restores this chat's draft, marks it read.
     func openConversation(_ key: String) {
         guard chats.convs[key] != nil else { return }
+        if warmChats.first != key {
+            warmChats.removeAll { $0 == key }
+            warmChats.insert(key, at: 0)
+            if warmChats.count > Self.warmLimit { warmChats.removeLast(warmChats.count - Self.warmLimit) }
+        }
         if key != current {
+            ChatScrollState.of(key).chatOpened(chats.convs[key]!) // before the unread counter is reset
             cancelEdit() // an edit in progress is dropped and the text typed before it comes back
             saveDraft()
             current = key
             loadDraft(key)
             closeSearch()
         }
-        chats.convs[key]!.unread = 0
-        persist(chats.startIncomingExpirationTimers(key, now: nowMs()))
+        // Only real changes: any write to `chats` makes every view showing chats update.
+        if chats.convs[key]!.unread != 0 {
+            sendReadReceipts(key, newest: chats.convs[key]!.unread)
+            chats.convs[key]!.unread = 0
+        }
+        if chats.convs[key]!.markedUnread { setMarkedUnread(key, false) }
+        if chats.hasIncomingExpirationToStart(key) { persist(chats.startIncomingExpirationTimers(key, now: nowMs())) }
         notifier.close(key) // the notification for this chat is obsolete now
         composerFocusRequest += 1
         listChanged()
@@ -730,11 +1018,13 @@ final class AppModel {
     private func saveDraft() {
         guard let key = current else { return }
         let d = Draft(text: composerText, reply: replyQuote, files: pendingFiles, gifAnalyticsUrl: pendingGifAnalyticsUrl)
-        if d.isEmpty { drafts.removeValue(forKey: key) } else { drafts[key] = d }
+        // Only real changes: the chat list shows drafts, and any write to `drafts` makes it update.
+        if d.isEmpty { if drafts[key] != nil { drafts[key] = nil } } else if drafts[key] != d { drafts[key] = d }
     }
 
     private func loadDraft(_ key: String) {
-        let d = drafts.removeValue(forKey: key) ?? Draft() // the composer owns it while the chat is open
+        let d = drafts[key] ?? Draft() // the composer owns it while the chat is open
+        if drafts[key] != nil { drafts[key] = nil }
         composerText = d.text
         replyQuote = d.reply
         pendingFiles = d.files
@@ -748,6 +1038,7 @@ final class AppModel {
         if let key = current, chats.convs[key] != nil {
             persist(chats.startIncomingExpirationTimers(key, now: nowMs()))
             if chats.convs[key]!.unread > 0 {
+                sendReadReceipts(key, newest: chats.convs[key]!.unread)
                 chats.convs[key]!.unread = 0
                 notifier.close(key)
                 listChanged()
@@ -772,9 +1063,22 @@ final class AppModel {
         return nowMs() - lastInputMs < 30_000
     }
 
+    /// The scan over every message runs off the main thread (on a copy), so the 1 s timer can't cause a
+    /// dropped frame while scrolling.
     private func expireMessages() {
+        guard historyReady, !expiryScanRunning else { return }
+        expiryScanRunning = true
+        let snapshot = chats, now = nowMs()
+        Task {
+            let found = await Task.detached(priority: .utility) { snapshot.hasExpiredMessages(now: now) }.value
+            expiryScanRunning = false
+            if found { removeExpiredMessages() }
+        }
+    }
+
+    private func removeExpiredMessages() {
         let now = nowMs()
-        guard historyReady, chats.hasExpiredMessages(now: now), chats.expireMessages(now: now) else { return }
+        guard chats.expireMessages(now: now) else { return }
         rewriteHistory("remove expired messages")
         if let key = current, chats.convs[key] != nil { updateSearch() }
     }
@@ -787,41 +1091,66 @@ final class AppModel {
     }
 
     func closeSearch() {
-        searchVisible = false
+        if searchVisible { searchVisible = false } // a write alone makes every view reading it update
         if !searchText.isEmpty { searchText = "" }
         composerFocusRequest += 1
     }
 
-    func updateSearch(selectFirst: Bool = false) {
-        let old = searchPosition
-        searchResults = []
+    /// Searches the current conversation off the main thread (on a copy of its messages); a newer search
+    /// cancels an older one. `selectFirst` jumps to the newest match, otherwise the selected match is kept.
+    func updateSearch(selectFirst: Bool = false, debounce: Bool = false, prefer: String? = nil) {
+        searchTask?.cancel()
         let needle = searchText.trimmingCharacters(in: .whitespaces)
-        if !needle.isEmpty, let c = currentConversation {
-            for (i, m) in c.msgs.enumerated() {
-                var s = m.sender + "\n" + m.text + "\n" + m.quote.text
-                for a in m.attachments { s += "\n" + a.filename }
-                if s.localizedCaseInsensitiveContains(needle) { searchResults.append(i) }
-            }
-        }
-        if searchResults.isEmpty {
+        guard !needle.isEmpty, let key = current, let msgs = chats.convs[key]?.msgs else {
+            searchTask = nil
+            if !searchResults.isEmpty { searchResults = [] }
             searchPosition = -1
+            if searchBusy { searchBusy = false }
             return
         }
-        searchPosition = selectFirst || old < 0 ? 0 : min(old, searchResults.count - 1)
-        if selectFirst { scrollToMessage(index: searchResults[searchPosition]) }
+        let selected = prefer ?? (selectFirst ? nil : searchMatchId)
+        searchTask = Task { [weak self] in
+            if debounce { try? await Task.sleep(for: .milliseconds(150)) }
+            guard !Task.isCancelled else { return }
+            let work = Task.detached(priority: .userInitiated) { ChatSearch.matches(msgs, needle) }
+            let slow = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(200))
+                if !Task.isCancelled { self?.searchBusy = true }
+            }
+            let found = await withTaskCancellationHandler { await work.value } onCancel: { work.cancel() }
+            slow.cancel()
+            guard let self, !Task.isCancelled else { return }
+            searchBusy = false
+            guard let found, current == key else { return }
+            searchResults = found
+            searchPosition = ChatSearch.position(in: found, keeping: selected)
+            if selectFirst || prefer != nil, searchPosition >= 0 {
+                scrollToMessage(id: found[searchPosition])
+                if prefer != nil { // a list that is just being created scrolls to its end first: ask again
+                    let id = found[searchPosition]
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { [weak self] in
+                        guard let self, self.current == key, self.searchVisible, self.searchMatchId == id else { return }
+                        self.scrollToMessage(id: id)
+                    }
+                }
+            }
+        }
     }
 
     func navigateSearch(backwards: Bool) {
         guard !searchResults.isEmpty else { return }
-        let n = searchResults.count
-        searchPosition = (searchPosition + (backwards ? n - 1 : 1)) % n
-        scrollToMessage(index: searchResults[searchPosition])
+        searchPosition = ChatSearch.step(searchPosition, count: searchResults.count, backwards: backwards)
+        scrollToMessage(id: searchResults[searchPosition])
     }
 
     var searchMatchId: String? {
-        guard searchVisible, searchPosition >= 0, searchPosition < searchResults.count, let c = currentConversation,
-              searchResults[searchPosition] < c.msgs.count else { return nil }
-        return c.msgs[searchResults[searchPosition]].id
+        guard searchVisible, searchPosition >= 0, searchPosition < searchResults.count else { return nil }
+        return searchResults[searchPosition]
+    }
+
+    func scrollToMessage(id: String) {
+        scrollSerial += 1
+        scrollRequest = (id, scrollSerial)
     }
 
     func scrollToMessage(index: Int) {
@@ -845,14 +1174,25 @@ final class AppModel {
     // MARK: - Receiving
 
     private func onEnvelope(_ env: JSON) {
+        if let receipt = parseReceipt(env) {
+            handleReceipt(receipt)
+            return
+        }
+        if let typing = parseTyping(env) {
+            handleTyping(typing)
+            return
+        }
         var pe = parseEnvelope(env)
         if pe.kind == .none { return }
         if !pe.mentions.isEmpty {
-            pe.msg.text = applyMentions(pe.msg.text, pe.mentions) { m in
+            let body = substituteMentions(pe.msg.text, pe.mentions, styles: pe.msg.textStyles) { m in
                 let key = chats.resolveKey(m.number.isEmpty ? m.uuid : m.number)
                 let n = key.isEmpty ? "" : displayName(key)
                 return n.isEmpty ? (m.name.isEmpty ? m.number : m.name) : n
             }
+            pe.msg.text = body.text
+            pe.msg.textStyles = body.styles
+            pe.msg.mentions = body.mentions
         }
 
         let group = !pe.groupId.isEmpty
@@ -877,13 +1217,29 @@ final class AppModel {
         case .edit:
             // Like the official clients: an edit is only applied to a known message written by the same author.
             let author = pe.outgoing ? account : srcKey
-            if let rec = chats.applyEdit(key, targetTs: pe.targetTs, authors: [author], text: pe.msg.text, newTs: pe.msg.ts) {
+            if let rec = chats.applyEdit(key, targetTs: pe.targetTs, authors: [author], text: pe.msg.text, newTs: pe.msg.ts,
+                                   styles: pe.msg.textStyles, mentions: pe.msg.mentions, linkPreview: pe.msg.linkPreview) {
                 persist(rec)
             }
             return
         case .remoteDelete:
             // Like the official clients: only the author can delete a message for everyone.
             applyDelete(key, ts: pe.targetTs, authors: [pe.outgoing ? account : srcKey])
+            return
+        case .pollVote:
+            let voter = pe.outgoing ? account : srcKey
+            if let rec = chats.applyPollVote(key, targetTs: pe.targetTs, authors: [pe.targetNumber, pe.targetUuid].map(chats.resolveKey),
+                                             voter: voter, options: pe.pollOptions, voteCount: pe.voteCount) {
+                persist(rec)
+            }
+            return
+        case .pollTerminate:
+            if let rec = chats.applyPollTerminate(key, targetTs: pe.targetTs, authors: [pe.outgoing ? account : srcKey]) {
+                persist(rec)
+            }
+            return
+        case .story:
+            receiveStory(pe, srcKey: srcKey)
             return
         default:
             break
@@ -892,6 +1248,7 @@ final class AppModel {
         var m = pe.msg
         m.outgoing = pe.outgoing
         m.authorKey = pe.outgoing ? account : srcKey
+        if m.isPoll && m.outgoing { m.poll.votes = [:] }
         if m.outgoing && m.expiresInSeconds > 0 { m.expirationStartMs = m.ts }
         if m.quote.valid { m.quote.authorKey = chats.resolveKey(m.quote.authorKey) }
         if !pe.outgoing {
@@ -913,6 +1270,7 @@ final class AppModel {
         guard addMessage(key, m, title: title, group: group) else { return }
         if !pe.outgoing && !group && !pe.srcName.isEmpty { learnName(key, pe.srcName) }
         if !pe.outgoing {
+            typingEnded(key, typer: srcKey)
             alertIncoming(key, m)
             if !group { refreshAvatar(key) } // the contact may have changed the picture
         }
@@ -920,7 +1278,7 @@ final class AppModel {
     }
 
     @discardableResult
-    private func addMessage(_ key: String, _ m0: Message, title: String = "", group: Bool = false) -> Bool {
+    func addMessage(_ key: String, _ m0: Message, title: String = "", group: Bool = false) -> Bool {
         var m = m0
         let looking = key == current && MainWindowTracker.shared.window?.isVisible == true
             && MainWindowTracker.shared.window?.isMiniaturized == false
@@ -928,15 +1286,17 @@ final class AppModel {
         guard let (_, recs) = chats.addMessage(key, m, title: title, group: group) else { return false } // duplicate
         persist(recs)
         // A message in the selected chat is only read while the user looks at it.
-        if !m.outgoing && !(key == current && userIsLooking()) { chats.convs[key]!.unread += 1 }
-        if !m.outgoing && !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+        let quiet = !m.outgoing && isQuiet(key, author: m.authorKey) // blocked sender or unaccepted request
+        if !m.outgoing && !quiet && !(key == current && userIsLooking()) { chats.convs[key]!.unread += 1 }
+        else if !m.outgoing && !quiet { sendReadReceipts(key, [m]) } // read right away
+        if !m.outgoing && !quiet && !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
         if key == current { updateSearch() }
         listChanged()
         return true
     }
 
-    private func alertIncoming(_ key: String, _ m: Message) {
-        guard let c = chats.convs[key], !c.muted else { return }
+    func alertIncoming(_ key: String, _ m: Message) {
+        guard let c = chats.convs[key], !c.muted, !isQuiet(key, author: m.authorKey) else { return }
         // Nothing to announce while the user is looking at this very conversation.
         if key == current && userIsLooking() { return }
 
@@ -944,7 +1304,11 @@ final class AppModel {
         if notify.notifications {
             var preview = m.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             if preview.count > 240 { preview = String(preview.prefix(240)) + "…" }
-            if preview.isEmpty, let a = m.attachments.first { preview = a.isImage ? "[Image]" : "[File] \(a.filename)" }
+            if m.isPoll { preview = "📊 " + m.poll.question }
+            if m.viewOnce { preview = "View once media" }
+            if preview.isEmpty, let a = m.attachments.first {
+                preview = a.isSticker ? "[Sticker]" : a.isImage ? "[Image]" : a.isAudio ? "[Voice message]" : "[File] \(a.filename)"
+            }
             var title = c.title, body: String
             switch notify.content {
             case .hidden:
@@ -969,7 +1333,7 @@ final class AppModel {
 
     // MARK: - Sending
 
-    private func addRecipient(_ params: inout JSON, _ c: Conversation) {
+    func addRecipient(_ params: inout JSON, _ c: Conversation) {
         if c.isGroup { params["groupId"] = String(c.key.dropFirst(2)) } else { params["recipient"] = [c.key] }
     }
 
@@ -989,21 +1353,36 @@ final class AppModel {
         composerFocusRequest += 1
     }
 
-    func sendMessage() {
-        if !editKey.isEmpty {
+    func sendMessage(sticker: Attachment? = nil) {
+        if !editKey.isEmpty && sticker == nil {
             sendEdit(composerText.trimmingCharacters(in: .whitespacesAndNewlines))
             return
         }
-        let text = composerText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let key = current, let c = chats.convs[key], !(text.isEmpty && pendingFiles.isEmpty) else { return }
+        let text = sticker == nil ? composerText.trimmingCharacters(in: .whitespacesAndNewlines) : ""
+        guard let key = current, let c = chats.convs[key], !(text.isEmpty && pendingFiles.isEmpty && sticker == nil) else { return }
         guard connected else {
             showFlash("Not connected to signal-cli.", seconds: 5)
             return
         }
-        let files = pendingFiles, quote = replyQuote, gifAnalytics = pendingGifAnalyticsUrl
+        guard !isSendLocked(key) else { return } // message request, blocked chat or left group
+        if sticker == nil && linkDraft.isPending(for: text) { // the link preview is still loading
+            deferSendForLinkPreview()
+            return
+        }
+        let files = sticker == nil ? pendingFiles : [], quote = replyQuote, gifAnalytics = pendingGifAnalyticsUrl
+        let voiceNote = voiceNoteNext && sticker == nil
+        voiceNoteNext = false
+        // View Once: exactly one photo or video, no text (like the official clients).
+        let viewOnce = viewOnceNext && sticker == nil && files.count == 1 && text.isEmpty
+            && ["image/", "video/"].contains { Media.mimeType(forFile: files[0]).hasPrefix($0) }
+        viewOnceNext = false
 
         var p: JSON = [:]
-        if !text.isEmpty { p["message"] = text }
+        let formatted = parseMarkdownStyles(text) // **bold**, _italic_, ~strike~, `mono`, ||spoiler||
+        if !text.isEmpty { p["message"] = formatted.text }
+        if !formatted.styles.isEmpty { p["textStyle"] = formatted.styles.map(\.cliString) }
+        let mentions = c.isGroup ? resolveMentions(text: formatted.text, candidates: mentionCandidates(key)) : []
+        if !mentions.isEmpty { p["mention"] = mentions.map { "\($0.start):\($0.length):\($0.uuid)" } }
         var atts: [Attachment] = []
         for f in files {
             var a = Attachment()
@@ -1012,21 +1391,25 @@ final class AppModel {
             a.size = ((try? FileManager.default.attributesOfItem(atPath: f))?[.size] as? NSNumber)?.int64Value ?? 0
             a.contentType = Media.mimeType(forFile: f)
             if a.isImage, let data = FileManager.default.contents(atPath: f) {
-                if let (w, h) = Media.pixelSize(data) {
+                if let (w, h) = MediaDecode.orientedSize(data) ?? Media.pixelSize(data) {
                     a.width = w
                     a.height = h
                 }
-                a.thumb = Media.makeThumbnail(data)
             }
             atts.append(a)
         }
         let staged = Media.stageForSignalCli(files)
         if !files.isEmpty { p["attachments"] = staged.paths }
+        if voiceNote { p["voiceNote"] = true }
+        if viewOnce { p["viewOnce"] = true }
+        if let sticker { p["sticker"] = "\(sticker.stickerPackId):\(sticker.stickerId)" }
         if quote.valid && !quote.authorKey.isEmpty {
             p["quoteTimestamp"] = quote.id
             p["quoteAuthor"] = quote.authorKey
             p["quoteMessage"] = quote.text
         }
+        let linkPreview = viewOnce ? nil : linkPreviewForSend(text: text, stageDir: staged.dir)
+        if let linkPreview { p.merge(linkPreview.params) { $1 } }
         addRecipient(&p, c)
 
         // Insert a temporary local message before waiting for signal-cli. It is kept out of
@@ -1035,12 +1418,16 @@ final class AppModel {
         preview.ts = nowMs()
         while chats.findMessage(chats.convs[key]!, ts: preview.ts, authors: []) != nil { preview.ts += 1 }
         preview.orderTs = max(preview.ts, (chats.convs[key]!.msgs.last?.sortTs ?? 0) + 1)
-        preview.text = text
+        preview.text = formatted.text
+        preview.textStyles = formatted.styles
+        preview.mentions = mentions
         preview.outgoing = true
         preview.authorKey = account
         preview.expiresInSeconds = c.expirationSeconds
         preview.quote = quote
-        preview.attachments = atts
+        preview.attachments = sticker.map { [$0] } ?? atts
+        preview.viewOnce = viewOnce
+        if let linkPreview { preview.linkPreview = linkPreview.preview }
 
         let pendingId = UUID().uuidString
         var pending = PendingSend()
@@ -1050,9 +1437,13 @@ final class AppModel {
         chats.pendingSends[pendingId] = pending
         chats.convs[key]!.insertSorted(preview)
 
-        composerText = ""
-        pendingFiles = []
+        if sticker == nil {
+            composerText = ""
+            pendingFiles = []
+            linkDraft.reset()
+        }
         replyQuote = Quote()
+        composerTypingReset()
         if !files.isEmpty { showFlash("Sending …", seconds: 120) }
         scrollToMessage(index: chats.convs[key]!.msgs.firstIndex { $0.id == preview.id } ?? 0)
 
@@ -1111,7 +1502,7 @@ final class AppModel {
         if editKey.isEmpty { editDraft = composerText } // keep an already running edit's draft
         editKey = c.key
         editTs = m.ts
-        composerText = m.text
+        composerText = markdownSource(text: m.text, styles: m.textStyles)
         composerCursorToEnd += 1
         composerFocusRequest += 1
     }
@@ -1122,7 +1513,7 @@ final class AppModel {
         guard let m = c.msgs.last(where: { $0.outgoing && $0.authorKey == account && !chats.isPendingPreview(c.key, ts: $0.ts) })
         else { return false }
         startEdit(m.id)
-        return true
+        return !editKey.isEmpty // false when the message can no longer be edited
     }
 
     func cancelEdit(restoreDraft: Bool = true) {
@@ -1146,7 +1537,8 @@ final class AppModel {
             showFlash("A message cannot be empty.", seconds: 6)
             return
         }
-        if text == m.text { // nothing changed
+        let formatted = parseMarkdownStyles(text)
+        if formatted.text == m.text && Set(formatted.styles) == Set(m.textStyles) { // nothing changed
             cancelEdit()
             return
         }
@@ -1156,11 +1548,25 @@ final class AppModel {
             return
         }
         // signal-cli: `send --edit-timestamp <ts>`; the target is the latest revision the peers know.
-        var p: JSON = ["message": text, "editTimestamp": m.latestTs]
+        // Mentions whose text was not touched stay mentions.
+        let units = Array(formatted.text.utf16), oldUnits = Array(m.text.utf16)
+        let keptMentions = m.mentions.filter { r in
+            r.start >= 0 && r.start + r.length <= units.count && r.start + r.length <= oldUnits.count && !r.uuid.isEmpty
+                && units[r.start..<(r.start + r.length)] == oldUnits[r.start..<(r.start + r.length)]
+        }
+        var p: JSON = ["message": formatted.text, "editTimestamp": m.latestTs]
+        if !formatted.styles.isEmpty { p["textStyle"] = formatted.styles.map(\.cliString) }
+        if !keptMentions.isEmpty { p["mention"] = keptMentions.map { "\($0.start):\($0.length):\($0.uuid)" } }
         if m.quote.valid && !m.quote.authorKey.isEmpty { // an edit keeps the reply it belongs to
             p["quoteTimestamp"] = m.quote.id
             p["quoteAuthor"] = m.quote.authorKey
             p["quoteMessage"] = m.quote.text
+        }
+        // Like the official clients: the preview stays when its link is still in the edited text.
+        let keptPreview = m.linkPreview.isValid && formatted.text.contains(m.linkPreview.url) ? m.linkPreview : LinkPreview()
+        if keptPreview.isValid {
+            let image = keptPreview.imageThumb.isEmpty ? nil : (try? Media.writeTemp(keptPreview.imageThumb, name: "preview.jpg"))?.path
+            p.merge(LinkPreviews.sendParams(keptPreview, imagePath: image)) { $1 }
         }
         addRecipient(&p, c)
         let key = c.key, origTs = m.ts
@@ -1170,7 +1576,8 @@ final class AppModel {
                 clearFlash()
                 var ts = jsonInt64(jsonObject(res)["timestamp"])
                 if ts <= 0 { ts = nowMs() }
-                if let rec = chats.applyEdit(key, targetTs: origTs, authors: [account], text: text, newTs: ts) { persist(rec) }
+                if let rec = chats.applyEdit(key, targetTs: origTs, authors: [account], text: formatted.text, newTs: ts,
+                                       styles: formatted.styles, mentions: keptMentions, linkPreview: keptPreview) { persist(rec) }
                 if editKey == key && editTs == origTs { cancelEdit(restoreDraft: true) }
             } catch {
                 // stay in edit mode with the typed text so nothing is lost
@@ -1234,12 +1641,14 @@ final class AppModel {
         guard let c = chats.convs[key], let i = chats.findMessage(c, ts: ts, authors: []) else { return false }
         let removed = chats.convs[key]!.msgs.remove(at: i)
         if editKey == key && editTs == removed.ts { cancelEdit() }
-        do {
-            try store.rewrite(chats.allRecords())
-        } catch {
-            chats.convs[key]!.insertSorted(removed)
+        writer.rewrite(chats) { [weak self] error in
+            guard let error, let self else { return }
+            // The file still holds the message: show it again.
+            if chats.convs[key] != nil, chats.findMessage(chats.convs[key]!, ts: ts, authors: []) == nil {
+                _ = chats.convs[key]!.insertSorted(removed)
+                updateSearch()
+            }
             showFlash("Could not remove message from history: \(error.localizedDescription)")
-            return false
         }
         updateSearch()
         return true
@@ -1252,9 +1661,8 @@ final class AppModel {
         if editKey == key && editTs == c.msgs[i].ts && !c.msgs[i].deleted { cancelEdit() }
         guard let rec = chats.applyDelete(key, targetTs: ts, authors: authors) else { return false }
         // Rewrite instead of append: the old ciphertext of the message must not stay in the file.
-        do {
-            try store.rewrite(chats.allRecords())
-        } catch {
+        writer.rewrite(chats) { [weak self] error in
+            guard let error, let self else { return }
             showFlash("Could not remove message from history: \(error.localizedDescription)")
             persist(rec) // at least keep the placeholder after a restart
         }
@@ -1315,46 +1723,20 @@ final class AppModel {
 
     func attachmentToken(_ m: Message, _ i: Int) -> String { "\(m.id)#\(i)" }
 
-    private func fetchThumbnails(_ key: String, ts: Int64, author: String, attempt: Int = 0) {
+    func fetchThumbnails(_ key: String, ts: Int64, author: String, attempt: Int = 0) {
         guard let c = chats.convs[key], let mi = chats.findMessage(c, ts: ts, authors: [author]) else { return }
         let m = c.msgs[mi]
-        for (a, att) in m.attachments.enumerated() {
-            if !att.isImage || !att.thumb.isEmpty || att.id.isEmpty || att.size > Media.maxThumbSource { continue }
-            let token = "\(key)|\(ts)|\(author)|\(a)"
-            if thumbPending.contains(token) { continue }
-            thumbPending.insert(token)
-            var p: JSON = ["id": att.id]
-            addRecipient(&p, c)
-            Task { [p] in
-                defer { thumbPending.remove(token) }
-                let data: Data
-                do {
-                    let res = try await cli.call("getAttachment", p)
-                    data = Data(base64Encoded: jsonString(jsonObject(res)["data"])) ?? Data()
-                } catch {
-                    // signal-cli may still be downloading it: retry a few times
-                    if attempt < 3 {
-                        try? await Task.sleep(for: .seconds(2 * (attempt + 1)))
-                        thumbPending.remove(token)
-                        fetchThumbnails(key, ts: ts, author: author, attempt: attempt + 1)
-                    }
-                    return
-                }
-                let thumb = Media.makeThumbnail(data)
-                guard !thumb.isEmpty, let c2 = chats.convs[key], let i = chats.findMessage(c2, ts: ts, authors: [author]),
-                      a < c2.msgs[i].attachments.count else { return }
-                if let (w, h) = Media.pixelSize(data) {
-                    chats.convs[key]!.msgs[i].attachments[a].width = w
-                    chats.convs[key]!.msgs[i].attachments[a].height = h
-                }
-                chats.convs[key]!.msgs[i].attachments[a].thumb = thumb
-                persist(Records.attachmentsUpdate(key, chats.convs[key]!.msgs[i]))
-            }
-        }
+        if m.viewOnce { return } // View Once media never gets a stored preview
+        fetchLinkPreviewThumbnail(key, ts: ts, author: author, attempt: attempt)
+        // Pictures are shown from the original file when they come into view (MediaDisplay.swift); no copy
+        // is kept in the history.
     }
 
     func fetchAttachmentData(_ key: String, _ att: Attachment) async throws -> Data {
         if !att.path.isEmpty, let d = FileManager.default.contents(atPath: att.path) { return d }
+        if !att.encPath.isEmpty { return try await Task.detached { try DesktopImport.data(att) }.value }
+        if let url = Self.signalCliAttachmentURL(att),
+           let d = try? await Task.detached(operation: { try Data(contentsOf: url, options: .mappedIfSafe) }).value, !d.isEmpty { return d }
         guard !att.id.isEmpty, let c = chats.convs[key] else { throw RpcError("The attachment is no longer available.") }
         var p: JSON = ["id": att.id]
         addRecipient(&p, c)
@@ -1396,10 +1778,7 @@ final class AppModel {
             Task {
                 defer { videoLoading.remove(token) }
                 do {
-                    let data = try await fetchAttachmentData(key, att)
-                    guard !data.isEmpty else { throw RpcError("The video file is empty.") }
-                    let suffix = AttachmentPolicy.mediaSuffix(filename: att.filename, contentType: att.contentType, fallback: "mp4")
-                    videoURLs[token] = try Media.writeAttachmentTemp(data, name: "video." + suffix)
+                    videoURLs[token] = try await videoFile(key, att, token: token)
                 } catch {
                     showFlash("Video playback failed: \(error.localizedDescription)")
                 }
@@ -1577,8 +1956,15 @@ final class AppModel {
     }
 
     func fetchMissingAvatars() {
+        guard avatarsWanted else { return }
+        // signal-cli keeps the pictures as files: read them directly (all at once, also before signal-cli
+        // has started) instead of asking for each one over JSON-RPC.
+        if FileManager.default.fileExists(atPath: Self.signalCliAvatarDir.path) {
+            loadLocalAvatars()
+            return
+        }
         // Only while connected (otherwise the request would just fail and never be retried).
-        guard avatarsWanted, cli.isRunning else { return }
+        guard cli.isRunning else { return }
         for key in chats.convs.keys {
             if avatarInFlight >= 4 { return } // continues when a request finishes
             if avatarTried.contains(key) || avatarBusy.contains(key) { continue }
@@ -1586,9 +1972,66 @@ final class AppModel {
         }
     }
 
+    nonisolated static var signalCliAvatarDir: URL {
+        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/signal-cli/avatars", isDirectory: true)
+    }
+
+    /// signal-cli's file names: "contact-<number|uuid>" (address book), "profile-<number|uuid>" (own picture)
+    /// and "group-<group id, URL-safe base64>".
+    nonisolated static func avatarFileNames(key: String, isGroup: Bool) -> [String] {
+        if isGroup {
+            let id = String(key.dropFirst(2)).replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+            return ["group-" + id]
+        }
+        return ["contact-" + key, "profile-" + key]
+    }
+
+    private func loadLocalAvatars(only keys: [String]? = nil) {
+        let wanted = (keys ?? Array(chats.convs.keys)).filter { !avatarTried.contains($0) && !avatarBusy.contains($0) }
+        guard !wanted.isEmpty else { return }
+        let jobs = wanted.compactMap { k in chats.convs[k].map { (k, $0.isGroup) } }
+        for (k, _) in jobs {
+            avatarTried.insert(k)
+            avatarBusy.insert(k)
+            avatarFetchedMs[k] = nowMs()
+        }
+        Task {
+            let found: [(String, Int, NSImage?)] = await Task.detached(priority: .userInitiated) {
+                let dir = AppModel.signalCliAvatarDir
+                return jobs.map { key, isGroup in
+                    for name in AppModel.avatarFileNames(key: key, isGroup: isGroup) where !name.contains("..") {
+                        if let d = try? Data(contentsOf: dir.appendingPathComponent(name)), !d.isEmpty,
+                           let img = MediaDecode.image(d, maxPixel: 128) {
+                            return (key, d.hashValue, Media.roundAvatar(img))
+                        }
+                    }
+                    return (key, 0, nil)
+                }
+            }.value
+            for (key, digest, img) in found {
+                avatarBusy.remove(key)
+                if let img {
+                    if avatarDigest[key] != digest || avatars[key] == nil {
+                        avatarDigest[key] = digest
+                        avatars[key] = img
+                    }
+                } else if avatars[key] != nil {
+                    avatars.removeValue(forKey: key)
+                    avatarDigest.removeValue(forKey: key)
+                }
+            }
+        }
+    }
+
     private func refreshAvatar(_ key: String) {
-        guard avatarsWanted, cli.isRunning, !avatarBusy.contains(key) else { return }
+        guard avatarsWanted, !avatarBusy.contains(key) else { return }
         if nowMs() - (avatarFetchedMs[key] ?? 0) < 60_000 { return } // a burst of messages is one request
+        if FileManager.default.fileExists(atPath: Self.signalCliAvatarDir.path) {
+            avatarTried.remove(key)
+            loadLocalAvatars(only: [key])
+            return
+        }
+        guard cli.isRunning else { return }
         fetchAvatar(key)
     }
 
@@ -1661,11 +2104,25 @@ final class AppModel {
                 }
                 let u = jsonString(me["username"])
                 profileUsername = u.isEmpty ? "not set" : u
+                let profile = jsonObject(me["profile"])
+                profileName = [jsonString(profile["givenName"]), jsonString(profile["familyName"])]
+                    .filter { !$0.isEmpty }.joined(separator: " ")
             } catch {
                 profileUsername = "unavailable"
                 reportProfileStatus("Could not read your Signal username: \(error.localizedDescription)", error: true)
             }
         }
+    }
+
+    /// The own profile picture: signal-cli's avatar file, else asked over JSON-RPC.
+    func ownAvatar() async -> NSImage? {
+        guard !account.isEmpty, !account.contains("/") else { return nil }
+        let file = Self.signalCliAvatarDir.appendingPathComponent("profile-" + account)
+        var data = (try? Data(contentsOf: file)) ?? Data()
+        if data.isEmpty, cli.isRunning, let res = try? await cli.call("getAvatar", ["profile": account]) {
+            data = Data(base64Encoded: jsonString(jsonObject(res)["data"])) ?? Data()
+        }
+        return data.isEmpty ? nil : NSImage(data: data).map { Media.roundAvatar($0, size: 128) }
     }
 
     private func reportProfileStatus(_ text: String, error: Bool) {
@@ -1692,6 +2149,7 @@ final class AppModel {
         Task {
             do {
                 try await cli.call("updateProfile", params)
+                if let given = params["givenName"] as? String { profileName = given }
                 reportProfileStatus(success, error: false)
             } catch {
                 reportProfileStatus("Could not update your Signal profile: \(error.localizedDescription)", error: true)
@@ -1701,46 +2159,22 @@ final class AppModel {
 
     // MARK: - GIPHY
 
-    func searchGifs() async {
-        guard current != nil else {
-            showFlash("Open a conversation before searching for GIFs.", seconds: 5)
-            return
-        }
-        var key: String
-        do { key = try GiphyApiKeyStore.load() } catch {
-            await Dialogs.warn("GIPHY API key", error.localizedDescription)
-            return
-        }
-        if key.isEmpty {
-            switch await Dialogs.ask("GIPHY API key required", "GIPHY requires an API key to search and send GIFs.",
-                                     buttons: ["Configure API key …", "Get an API key"], cancel: true) {
-            case 0:
-                await configureGiphyApiKey()
-                key = (try? GiphyApiKeyStore.load()) ?? ""
-                if key.isEmpty { return }
-            case 1:
-                NSWorkspace.shared.open(URL(string: "https://developers.giphy.com/dashboard/")!)
-                return
-            default:
-                return
-            }
-        }
-        giphyApiKey = key
-    }
+    static let giphyDashboard = URL(string: "https://developers.giphy.com/dashboard/")!
 
-    func configureGiphyApiKey() async {
-        let currentKey: String
-        do { currentKey = try GiphyApiKeyStore.load() } catch {
-            await Dialogs.warn("GIPHY API key", error.localizedDescription)
-            return
+    /// The saved GIPHY API key ("" when none is set).
+    func loadGiphyApiKey() throws -> String { try GiphyApiKeyStore.load() }
+
+    /// Saves the key (empty removes it); returns an error message on failure.
+    func saveGiphyApiKey(_ key: String) -> String? {
+        do {
+            try GiphyApiKeyStore.save(key)
+            return nil
+        } catch {
+            return error.localizedDescription
         }
-        guard let k = await Dialogs.text("GIPHY API key", "Enter your GIPHY API key. Create one at developers.giphy.com/dashboard. "
-                                            + "Leave it empty to remove the key.", initial: currentKey, secure: true) else { return }
-        do { try GiphyApiKeyStore.save(k) } catch { await Dialogs.warn("GIPHY API key", error.localizedDescription) }
     }
 
     func sendGif(url: URL, analytics: URL?) {
-        giphyApiKey = nil
         guard let key = current, url.scheme == "https" else {
             showFlash("The selected GIF could not be downloaded.", seconds: 8)
             return
@@ -1786,39 +2220,6 @@ final class AppModel {
             if x != y { return x < y ? .orderedAscending : .orderedDescending }
         }
         return .orderedSame
-    }
-
-    func checkForUpdates(silent: Bool) {
-        Task {
-            var req = URLRequest(url: URL(string: "https://api.github.com/repos/AsamK/signal-cli/releases/latest")!)
-            req.setValue("corvus", forHTTPHeaderField: "User-Agent")
-            req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
-            let o: JSON
-            do {
-                let (data, _) = try await URLSession.shared.data(for: req)
-                o = (try JSONSerialization.jsonObject(with: data)) as? JSON ?? [:]
-            } catch {
-                if !silent { await Dialogs.warn("Update check", "Could not reach GitHub:\n\(error.localizedDescription)") }
-                return
-            }
-            var latest = jsonString(o["tag_name"])
-            if latest.hasPrefix("v") { latest.removeFirst() }
-            let url = URL(string: jsonString(o["html_url"])) ?? URL(string: "https://github.com/AsamK/signal-cli/releases")!
-            let newer = !latest.isEmpty && AppModel.compareVersions(latest, version) == .orderedDescending
-            updateHint = newer ? UpdateHint(version: latest, url: url) : nil
-            if silent { return }
-            if newer {
-                let r = await Dialogs.ask("Update available",
-                                          "Installed: signal-cli \(version)\nLatest version: signal-cli \(latest)\n\nUpdate signal-cli the way you "
-                                              + "usually do (e.g. brew upgrade signal-cli) – this app does not need to be changed for that. "
-                                              + "Afterwards choose “File → Reconnect”.",
-                                          buttons: ["Open release page", "Close"])
-                if r == 0 { NSWorkspace.shared.open(url) }
-            } else {
-                await Dialogs.info("Update check", version.isEmpty ? "The installed signal-cli version is not known yet."
-                                       : "signal-cli \(version) is up to date.")
-            }
-        }
     }
 
     func showAbout() {

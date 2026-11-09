@@ -10,6 +10,11 @@ Environment:
   MOCK_INJECT  file: JSON lines appended here are emitted as `receive` envelopes
   MOCK_IDENTITY_FILE  file: JSON list replacing the identities of listIdentities (key changes)
   MOCK_EXTRA_GROUPS   set: also lists a group where we are no admin (permissions only for admins)
+
+Group / request methods (JSON-RPC camelCase params as in signal-cli(1) of 0.14): listGroups (detailed: members with
+isAdmin, pendingMembers, requestingMembers, banned, groupInviteLink, isBlocked), updateGroup (create without groupId;
+groupId, name, description, member, removeMember, admin, removeAdmin, link, resetLink, ...), quitGroup (groupId, admin),
+block / unblock (recipient and/or groupId), sendMessageRequestResponse (type accept|delete, recipient or groupId).
 """
 import base64, io, json, os, struct, sys, threading, time, wave, zlib
 
@@ -415,16 +420,39 @@ for line in sys.stdin:
                 contact["messageExpirationTime"] = p.get("expiration", 0)
         res = {}
     elif m in ("block", "unblock"):
+        # like signal-cli: "recipient" blocks people, "groupId" blocks groups (both accept one value or a list)
         targets = p.get("recipient", [])
         if isinstance(targets, str):
             targets = [targets]
+        group_ids = p.get("groupId", [])
+        if isinstance(group_ids, str):
+            group_ids = [group_ids]
         for contact in CONTACTS:
             if contact["number"] in targets or contact["uuid"] in targets:
                 contact["isBlocked"] = (m == "block")
         for g in GROUPS:
-            if any(gid in targets for gid in (g.get("id"),)):
+            if g.get("id") in group_ids or g.get("id") in targets:
                 g["isBlocked"] = (m == "block")
         res = {}
+    elif m == "sendMessageRequestResponse":
+        # signal-cli 0.14: --type accepts exactly "accept" or "delete" (lowercase); recipient or groupId names the chat
+        kind = p.get("type")
+        if kind not in ("accept", "delete"):
+            group_error(rid, "argument --type: could not convert '%s' (choose from 'accept', 'delete')" % kind)
+            continue
+        who = p.get("recipient", [])
+        if isinstance(who, str):
+            who = [who]
+        gid = p.get("groupId")
+        if isinstance(gid, list):
+            gid = gid[0] if gid else None
+        if not who and not gid:
+            group_error(rid, "Either recipient or group-id must be given")
+            continue
+        for contact in CONTACTS:
+            if (contact["number"] in who or contact["uuid"] in who) and kind == "accept":
+                contact["isHidden"] = False
+        res = {"timestamp": int(time.time() * 1000)}
     elif m == "removeContact":
         target = next((c for c in CONTACTS if p.get("recipient") in (c["number"], c["uuid"])), None)
         if target:
@@ -517,7 +545,7 @@ for line in sys.stdin:
             payload = png()
         res = {"data": base64.b64encode(payload).decode()}
     elif m == "listStickerPacks":
-        res = [{"packId": STICKER_PACK_ID, "title": "Corvus Animation", "author": "Corvus Test",
+        res = [{"packId": STICKER_PACK_ID, "title": "Corvus Animation", "author": "Corvus Test", "installed": True,
                 "stickers": [{"id": 0, "emoji": "\U0001F642"}, {"id": 1, "emoji": "\u2B50"},
                              {"id": 2, "emoji": "\U0001F422"}]}]
     elif m == "getSticker":
@@ -531,6 +559,16 @@ for line in sys.stdin:
         else:
             payload = STICKER_WEBP_STATIC     # single-frame sticker
         res = {"data": base64.b64encode(payload).decode()}
+    elif m in ("sendPollCreate", "sendPollVote", "sendPollTerminate", "sendStory"):
+        sent += 1
+        res = {"timestamp": int(time.time() * 1000) + sent, "results": []}
+    elif m == "subscribeCallEvents":
+        res = 1
+    elif m == "startCall":
+        res = {"callId": 4242, "state": "RINGING_OUTGOING", "inputDeviceName": "signal_input",
+               "outputDeviceName": "signal_output", "codec": "opus", "sampleRate": 48000, "channels": 1, "ptimeMs": 20}
+    elif m in ("acceptCall", "hangupCall", "rejectCall", "addStickerPack"):
+        res = {}
     else:
         emit({"jsonrpc": "2.0", "id": rid, "error": {"code": -32601, "message": "unknown method " + str(m)}})
         continue

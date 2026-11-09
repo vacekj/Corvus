@@ -22,10 +22,14 @@ Corvus is a desktop client for Signal with an encrypted local chat history. It r
 - Edit or delete messages, manage archived chats and disappearing messages.
 - Desktop notifications, notification sounds and a tray/menu-bar icon.
 - Encrypted local chat history, protected by the system keychain or a passphrase.
-- View a contact's safety number and mark the contact as verified (Qt version; right-click a chat → *View safety number …*).
-- Record and send voice messages (Qt version; 🎤 button next to the attach button; needs signal-cli 0.14.2 or newer, or corvus-cli, to arrive as a voice note).
-- Send and receive Signal View Once photos (Qt version; select exactly one image and press **1×**; requires signal-cli 0.13.18 or newer, or corvus-cli).
-- Forward text messages, attachments and stickers to up to five chats at once (Qt version; right-click a message → **Forward…**).
+- View a contact's safety number (with QR code) and mark the contact as verified.
+- Record and send voice messages (needs signal-cli 0.14.2 or newer, or corvus-cli, to arrive as a voice note).
+- Send and receive Signal View Once photos and videos (select exactly one image or video and press **1×**; requires signal-cli 0.13.18 or newer, or corvus-cli).
+- Forward messages and attachments to up to five chats at once (right-click a message → **Forward…**).
+- Delivery and read receipts, text formatting (bold, italic, strikethrough, monospace, spoilers) and mentions, link previews.
+- Group management (create, rename, members and admins, invite links, leave), blocking, and message requests.
+- macOS (SwiftUI) only: stickers (send, receive, add packs from signal.art links), polls (create, vote, end), stories (view, reply, react, post), a per-chat media gallery and 1:1 voice calls.
+- macOS (SwiftUI) only: import the history of Signal Desktop on the same Mac (File → Import from Signal Desktop …), including attachments. Messages Corvus already has are skipped, so the import can be repeated.
 - Customisable chat colours and appearance.
 
 Corvus is a graphical client; the connection to Signal is made by a separate backend program linked to your Signal account.
@@ -34,6 +38,27 @@ Corvus is a graphical client; the connection to Signal is made by a separate bac
 - **[signal-cli](https://github.com/AsamK/signal-cli) (optional alternative)** is the Java original. Corvus works with it as well; install it yourself and select it under **Settings → Advanced → Choose …** if you prefer it or already use it.
 
 Both speak the same JSON-RPC interface, but each has its own device link and its own account data: switching the backend means linking the computer with your phone again (the chat history in Corvus is kept).
+
+### Voice calls (macOS)
+
+signal-cli relays call audio through [signal-call-tunnel](https://github.com/visigoth/signal-call-tunnel) and two virtual audio devices. Corvus bridges them to your microphone and speakers. To enable calls:
+
+```sh
+git clone --recurse-submodules https://github.com/visigoth/signal-call-tunnel.git
+cargo install --path signal-call-tunnel/signal-call-tunnel
+cd signal-call-tunnel/third-party/ringrtc
+sudo bin/virtual_audio.sh --setup --input-source signal_input --output-sink signal_output
+```
+
+Corvus finds the tunnel in `~/.cargo/bin` or on `PATH`. Then choose File → Reconnect.
+
+Video calls and history transfer from a phone are not supported: signal-cli does not implement them. To get older history, link Signal Desktop (which can transfer it from the phone) and then use the Signal Desktop import.
+
+### Signal Desktop import (macOS)
+
+The import reads Signal Desktop's database with its key from the "Signal Safe Storage" keychain item (macOS asks once; choose *Always Allow*). Signal Desktop's data is not changed. Attachments are copied still encrypted with their Signal Desktop keys into `imported-attachments/` in the Corvus data folder and are decrypted only when shown. A count-only `import-report.json` (messages per chat, no content) is written for checking the result. Disappearing-timer notices are not imported; shared contact cards become text messages.
+
+Builds signed ad hoc look like a new app to the keychain after every rebuild. Set `CORVUS_SIGN_IDENTITY` to your signing identity when running `macos/scripts/build-app.sh` to keep keychain approvals across rebuilds.
 
 ## Install
 
@@ -126,6 +151,10 @@ Corvus starts `corvus-cli` or `signal-cli` as a separate program. On a first sta
 The Windows builds and the Flatpak include `corvus-cli`. On Linux, get it from the [corvus-cli releases](https://github.com/ada-h00k/corvus-cli/releases/latest); for the `signal-cli` alternative use your distribution's package instructions or the [official signal-cli releases](https://github.com/AsamK/signal-cli/releases). On macOS, install the recommended `corvus-cli` backend with `brew install --cask corvus-cli` as shown above. You can still use `signal-cli` as an alternative: install it separately and select it under **Settings → Advanced → Choose …**.
 
 **Updates of the backend:** **Help → Check for backend update** (also in Settings → Advanced) checks the backend you use: `signal-cli` is compared by version number, `corvus-cli` by build (it reports its commit in `--version`, and the latest [corvus-cli release](https://github.com/ada-h00k/corvus-cli/releases/latest) is compared with it). The Flatpak and the Windows setup bring a new `corvus-cli` with the next Corvus update.
+
+**macOS: prefer the Java build of signal-cli.** The native (GraalVM) build that Homebrew installs for 0.14.9 can crash shortly after start (a `StackOverflowError` while reporting a contact-discovery error from libsignal, exit code 134). Corvus then shows itself as disconnected and the composer stays disabled. Corvus reconnects automatically (after 3, 10, 30 and 60 seconds), but if the crash repeats, download the Java release from the [signal-cli releases](https://github.com/AsamK/signal-cli/releases), install a Java runtime (`brew install openjdk`) and point **Settings → Path to signal-cli** at its `bin/signal-cli`.
+
+**Startup (macOS):** Corvus starts signal-cli while it unlocks the history, skips the extra `--version` / `listAccounts` runs when nothing changed, reads profile pictures from signal-cli's files and shows the names from the previous run (kept encrypted with the history key in `roster-cache.bin`) until signal-cli answers. For the Java build it keeps a JVM class-data-sharing archive (about 40 MB) in `~/Library/Caches/io.github.corvus.mac`; delete it any time, or set `CORVUS_NO_CDS=1` to turn this off.
 
 ## Local data and encryption
 

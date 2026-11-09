@@ -51,6 +51,28 @@ enum DebugHooks {
             model.openSearch()
             model.searchText = arg
         case "archived": model.showArchived = arg == "on"
+        case "sticker":
+            let k = arg.split(separator: ":").map(String.init)
+            if k.count == 2, let id = Int(k[1]) { model.sendSticker(packId: k[0], stickerId: id) }
+        case "poll":
+            // poll <question>|<option>|<option>…
+            let f = arg.split(separator: "|").map(String.init)
+            if f.count >= 3 { model.createPoll(question: f[0], options: Array(f.dropFirst()), allowMultiple: true) }
+        case "vote-last": if let last { model.votePoll(last.id, options: arg.split(separator: ",").compactMap { Int($0) }) }
+        case "gallery": model.galleryShown = arg != "off"
+        case "stories": model.storiesShown = arg != "off"
+        case "safety": model.safetyNumberKey = arg.isEmpty ? nil : arg
+        case "forward-last": if let last { model.forward(messageId: last.id, to: [arg]) }
+        case "forward-sheet": model.forwardMessageId = arg == "off" ? nil : last?.id
+        case "viewonce":
+            if let m = model.currentConversation?.msgs.first(where: { $0.viewOnce && !$0.viewOnceConsumed }) { model.openViewOnce(m.id) }
+        case "poll-sheet": model.pollComposerShown = arg != "off"
+        case "callevent":
+            if let d = arg.data(using: .utf8), let o = (try? JSONSerialization.jsonObject(with: d)) as? JSON { model.onCallEvent(o) }
+        case "accept": if let k = model.current { model.acceptRequest(k) }
+        case "block": if let k = model.current { Task { await model.setBlocked(k, arg != "off") } }
+        case "group-info", "info": model.infoPanelShown = arg != "off"
+        case "new-group": model.newGroupShown = arg != "off"
         case "snapshot": snapshot(to: arg)
         case "quit": NSApp.terminate(nil)
         default: break
@@ -58,7 +80,17 @@ enum DebugHooks {
     }
 
     private static func snapshot(to path: String) {
-        guard let window = MainWindowTracker.shared.window, let view = window.contentView?.superview ?? window.contentView,
+        guard let window = MainWindowTracker.shared.window else { return }
+        write(window, path)
+        // Sheets and the call window are windows of their own.
+        if let sheet = window.attachedSheet { write(sheet, path.replacingOccurrences(of: ".png", with: "-sheet.png")) }
+        if let call = NSApp.windows.first(where: { $0.title == "Voice call" && $0.isVisible }) {
+            write(call, path.replacingOccurrences(of: ".png", with: "-call.png"))
+        }
+    }
+
+    private static func write(_ window: NSWindow, _ path: String) {
+        guard let view = window.contentView?.superview ?? window.contentView,
               let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return }
         view.cacheDisplay(in: view.bounds, to: rep)
         try? rep.representation(using: .png, properties: [:])?.write(to: URL(fileURLWithPath: path))

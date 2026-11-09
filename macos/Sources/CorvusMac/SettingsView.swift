@@ -9,9 +9,10 @@ struct SettingsView: View {
             GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
             AppearanceSettings().tabItem { Label("Appearance", systemImage: "paintpalette") }
             NotificationSettingsView().tabItem { Label("Notifications", systemImage: "bell.badge") }
+            PrivacySettingsView().tabItem { Label("Privacy", systemImage: "hand.raised") }
             ProfileSettings().tabItem { Label("Profile", systemImage: "person.crop.circle") }
         }
-        .frame(width: 520)
+        .frame(width: 540, height: 600) // one size for all tabs: the window does not jump
     }
 }
 
@@ -20,6 +21,9 @@ struct SettingsView: View {
 private struct GeneralSettings: View {
     @Environment(AppModel.self) private var model
     @AppStorage(MessageInput.spellCheckKey) private var spellCheck = false
+    @State private var giphyKey: String?
+
+    @AppStorage(AppModel.autoUpdateKey) private var autoUpdate = true
 
     var body: some View {
         Form {
@@ -36,24 +40,20 @@ private struct GeneralSettings: View {
                     Button("Reconnect") { model.reconnect() }
                     Button("Check for update") { model.checkForUpdates(silent: false) }
                 }
+                Toggle("Update signal-cli automatically", isOn: $autoUpdate)
             }
-            Section("Chat history") {
-                LabeledContent("File") {
-                    Text(AppPaths.historyPath).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
-                }
-                LabeledContent("Protection", value: model.historyProtectionMode == "keychain" ? "System keychain" : "Passphrase")
-                Button("Change history protection …") { Task { await model.changeHistoryProtection() } }
-                    .disabled(!model.historyReady)
-            }
+            HistoryProtectionSection()
             Section("Message field") {
                 Toggle("Check spelling while typing", isOn: $spellCheck)
             }
             Section("GIPHY") {
-                Button("GIPHY API key …") { Task { await model.configureGiphyApiKey() } }
+                if let giphyKey {
+                    GiphyKeyForm(initial: giphyKey, compact: true) { self.giphyKey = $0 }
+                }
             }
         }
         .formStyle(.grouped)
-        .frame(height: 400)
+        .onAppear { giphyKey = (try? model.loadGiphyApiKey()) ?? "" }
     }
 }
 
@@ -77,6 +77,9 @@ private struct AppearanceSettings: View {
             Section("Chat list") {
                 Toggle("Show contact avatars", isOn: $a.showAvatars)
             }
+            Section("Messages") {
+                Toggle("Generate link previews", isOn: $a.generateLinkPreviews)
+            }
             Section("Preview") {
                 VStack(spacing: 6) {
                     previewBubble("Hi! How are you?", outgoing: false)
@@ -93,7 +96,6 @@ private struct AppearanceSettings: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 520)
         .onAppear {
             if !loaded { a = model.appearance; loaded = true }
         }
@@ -182,7 +184,6 @@ private struct NotificationSettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .frame(height: 560)
         .onAppear {
             if !loaded { n = model.notify; loaded = true }
         }
@@ -202,11 +203,25 @@ private struct ProfileSettings: View {
     @Environment(AppModel.self) private var model
     @State private var username = ""
     @State private var displayName = ""
+    @State private var avatar: NSImage?
 
     var body: some View {
         Form {
             if !model.connected {
                 Text("Connect to signal-cli before editing your profile.").foregroundStyle(.secondary)
+            }
+            Section {
+                HStack(spacing: 14) {
+                    if let avatar {
+                        Image(nsImage: avatar).resizable().frame(width: 64, height: 64).clipShape(Circle())
+                    } else {
+                        Image(systemName: "person.crop.circle.fill").font(.system(size: 60)).foregroundStyle(.secondary)
+                    }
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(model.profileName.isEmpty ? "No profile name" : model.profileName).font(.title3.weight(.semibold))
+                        if !model.profileUsername.isEmpty { Text(model.profileUsername).foregroundStyle(.secondary) }
+                    }
+                }
             }
             Section("Signal username") {
                 LabeledContent("Current", value: model.profileUsername.isEmpty ? "…" : model.profileUsername)
@@ -240,11 +255,16 @@ private struct ProfileSettings: View {
         }
         .formStyle(.grouped)
         .disabled(!model.connected)
-        .frame(height: 380)
         .onAppear {
             model.profileStatus = nil
             model.loadSignalUsername()
+            if displayName.isEmpty { displayName = model.profileName }
         }
+        .onChange(of: model.profileName) { old, name in
+            if displayName.isEmpty || displayName == old { displayName = name } // keep what the user typed
+        }
+        .onChange(of: model.profileStatus?.text) { Task { avatar = await model.ownAvatar() } } // after an avatar change
+        .task { avatar = await model.ownAvatar() }
     }
 
     private func chooseAvatar() {

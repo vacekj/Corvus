@@ -19,6 +19,13 @@ enum Theme {
             : NSColor(srgbRed: 0.92, green: 0.92, blue: 0.93, alpha: 1)
     })
 
+    /// Background of the selected chat in the chat list.
+    static let selection = Color(nsColor: NSColor(name: nil) { a in
+        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+            ? NSColor(srgbRed: 0.26, green: 0.26, blue: 0.28, alpha: 1)
+            : NSColor(srgbRed: 0.86, green: 0.86, blue: 0.88, alpha: 1)
+    })
+
     /// Stable colour per contact for sender names in groups (readable on light and dark bubbles).
     static func senderColor(_ key: String) -> Color {
         let palette: [Color] = [
