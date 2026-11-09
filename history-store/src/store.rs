@@ -118,6 +118,9 @@ pub enum Record {
     Mute { c: String, v: bool },
     /// Signal disappearing-message timer in seconds (0 = disabled).
     Expiration { c: String, v: i64 },
+    /// Any other record type (e.g. `pin`, `mu`, newer app features). Kept
+    /// verbatim so the store never rejects records it does not interpret.
+    Other(Value),
 }
 
 /// Incremental writer for one flat JSON object with a fixed key order.
@@ -194,6 +197,11 @@ impl Record {
             Record::Archive { c, v, s } => ObjWriter::new("a").str("c", c).bool("v", *v).bool("s", *s).end(),
             Record::Mute { c, v } => ObjWriter::new("k").str("c", c).bool("v", *v).end(),
             Record::Expiration { c, v } => ObjWriter::new("e").str("c", c).int("v", *v).end(),
+            Record::Other(v) => {
+                let mut out = String::new();
+                v.write_to(&mut out);
+                out
+            }
         }
     }
 
@@ -228,7 +236,7 @@ impl Record {
             "a" => Record::Archive { c: f_str(o, "c")?, v: f_bool(o, "v")?, s: f_bool(o, "s")? },
             "k" => Record::Mute { c: f_str(o, "c")?, v: f_bool(o, "v")? },
             "e" => Record::Expiration { c: f_str(o, "c")?, v: f_i64(o, "v")? },
-            other => return Err(json::Error(format!("unknown record type `{other}`"))),
+            _ => Record::Other(v.clone()),
         })
     }
 
@@ -768,6 +776,8 @@ mod tests {
             Record::Archive { c: "+49".into(), v: true, s: false },
             Record::Mute { c: "+49".into(), v: true },
             Record::Expiration { c: "+49".into(), v: 300 },
+            Record::Other(Value::parse(r#"{"t": "pin", "c": "+49", "v": true}"#).unwrap()),
+            Record::Other(Value::parse(r#"{"t": "mu", "c": "+49", "v": false}"#).unwrap()),
         ];
         let mut s = Store::create(&p, "pw", FAST).unwrap();
         for r in &recs {
