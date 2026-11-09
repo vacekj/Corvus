@@ -199,6 +199,8 @@ struct AppCommands: Commands {
             Button("New group …") { model.newGroupShown = true }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
                 .disabled(!model.connected || !model.historyReady)
+            Button("Join group via link …") { model.askToJoinGroup(nil) }
+                .disabled(!model.connected || !model.historyReady)
             Button("Previous chat") { model.openAdjacentChat(-1) }
                 .keyboardShortcut(.upArrow, modifiers: .option)
             Button("Next chat") { model.openAdjacentChat(1) }
@@ -222,6 +224,8 @@ struct AppCommands: Commands {
                 .keyboardShortcut("s", modifiers: [.command, .shift])
             Button("Add sticker pack …") { model.requestStickerPackAdd() }
                 .disabled(!model.connected || model.current == nil)
+            Button("Create sticker pack …") { GroupExtras.shared.stickerCreatorShown = true }
+                .disabled(!model.connected)
         }
         CommandMenu("Conversation") {
             Button("Go to conversation …") { KeyboardNavigation.shared.showSwitcher(newChat: false) }

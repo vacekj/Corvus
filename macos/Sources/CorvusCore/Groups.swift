@@ -8,11 +8,21 @@ public struct GroupMember: Equatable, Hashable {
     public var number = ""
     public var uuid = ""
     public var isAdmin = false
+    /// Member label (signal-cli 0.14.10+): a short text the member shows next to their name in this group.
+    public var label = ""
+    public var labelEmoji = ""
 
-    public init(number: String = "", uuid: String = "", isAdmin: Bool = false) {
+    public init(number: String = "", uuid: String = "", isAdmin: Bool = false, label: String = "", labelEmoji: String = "") {
         self.number = number
         self.uuid = uuid
         self.isAdmin = isAdmin
+        self.label = label
+        self.labelEmoji = labelEmoji
+    }
+
+    /// "🎸 Guitar", "Guitar", "🎸" or "" (no label).
+    public var labelText: String {
+        [labelEmoji, label].map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }.joined(separator: " ")
     }
 
     /// The identifier signal-cli accepts as `member` (number if known, else UUID).
@@ -27,7 +37,8 @@ public struct GroupMember: Equatable, Hashable {
             return s.hasPrefix("+") ? GroupMember(number: s) : GroupMember(uuid: s)
         }
         guard let o = v as? JSON else { return nil }
-        let m = GroupMember(number: jsonString(o["number"]), uuid: jsonString(o["uuid"]), isAdmin: jsonBool(o["isAdmin"]))
+        let m = GroupMember(number: jsonString(o["number"]), uuid: jsonString(o["uuid"]), isAdmin: jsonBool(o["isAdmin"]),
+                            label: jsonString(o["label"]), labelEmoji: jsonString(o["labelEmoji"]))
         return m.id.isEmpty ? nil : m
     }
 }
@@ -40,6 +51,41 @@ public enum GroupPermission: String {
     static func parse(_ v: Any?) -> GroupPermission {
         let s = jsonString(v).replacingOccurrences(of: "-", with: "_").uppercased()
         return s == "ONLY_ADMINS" || s == "ONLYADMINS" ? .onlyAdmins : .everyMember
+    }
+
+    /// The value `updateGroup --set-permission-…` takes.
+    public var cliValue: String { self == .onlyAdmins ? "only-admins" : "every-member" }
+}
+
+/// The three group permissions an admin can change (`updateGroup --set-permission-…`).
+public enum GroupPermissionKind: CaseIterable {
+    case addMembers
+    case editDetails
+    case sendMessages
+
+    /// JSON-RPC parameter (camelCase of the long option).
+    public var param: String {
+        switch self {
+        case .addMembers: "setPermissionAddMember"
+        case .editDetails: "setPermissionEditDetails"
+        case .sendMessages: "setPermissionSendMessages"
+        }
+    }
+
+    public func value(in g: GroupInfo) -> GroupPermission {
+        switch self {
+        case .addMembers: g.permAddMember
+        case .editDetails: g.permEditDetails
+        case .sendMessages: g.permSendMessage
+        }
+    }
+
+    public func set(_ p: GroupPermission, in g: inout GroupInfo) {
+        switch self {
+        case .addMembers: g.permAddMember = p
+        case .editDetails: g.permEditDetails = p
+        case .sendMessages: g.permSendMessage = p
+        }
     }
 }
 
@@ -121,6 +167,25 @@ public struct GroupInfo: Equatable, Identifiable {
         member(who) != nil && (isAdmin(who) || permAddMember != .onlyAdmins)
     }
 
+    /// "Only admins can send messages" (announcement group): members who are not admins can only read.
+    public var isAnnouncementOnly: Bool { permSendMessage == .onlyAdmins }
+
+    public func canSendMessages(_ who: String) -> Bool {
+        member(who) != nil && (isAdmin(who) || permSendMessage != .onlyAdmins)
+    }
+
+    /// Member labels by number and UUID (members without a label are left out).
+    public var memberLabels: [String: String] {
+        var out: [String: String] = [:]
+        for m in members {
+            let t = m.labelText
+            if t.isEmpty { continue }
+            if !m.number.isEmpty { out[m.number] = t }
+            if !m.uuid.isEmpty { out[m.uuid] = t }
+        }
+        return out
+    }
+
     /// Removing members, changing admins and the invite link need an admin.
     public func canAdminister(_ who: String) -> Bool { isAdmin(who) }
 
@@ -134,8 +199,10 @@ public struct GroupInfo: Equatable, Identifiable {
 }
 
 /// Parameters (camelCase, as signal-cli's JSON-RPC expects them) of the group commands.
-/// Verified against signal-cli(1) of 0.14: `updateGroup` takes `groupId`, `name`, `description`, `member`,
-/// `removeMember`, `admin`, `removeAdmin`, `link`, `resetLink`; `quitGroup` takes `groupId`, `delete`, `admin`.
+/// Verified against signal-cli(1) of 0.14: `updateGroup` takes `groupId`, `name`, `description`, `avatar`, `member`,
+/// `removeMember`, `admin`, `removeAdmin`, `ban`, `unban`, `link`, `resetLink`, `setPermissionAddMember`,
+/// `setPermissionEditDetails`, `setPermissionSendMessages`, `memberLabel`, `memberLabelEmoji`;
+/// `quitGroup` takes `groupId`, `delete`, `admin`; `joinGroup` takes `uri`.
 public enum GroupParams {
     /// `updateGroup` without `groupId` creates a group; the caller is added automatically.
     public static func create(name: String, description: String = "", members: [String]) -> JSON {
@@ -157,8 +224,27 @@ public enum GroupParams {
     public static func removeMembers(_ ids: [String]) -> JSON { ["removeMember": ids] }
     public static func promote(_ ids: [String]) -> JSON { ["admin": ids] }
     public static func demote(_ ids: [String]) -> JSON { ["removeAdmin": ids] }
+    public static func ban(_ ids: [String]) -> JSON { ["ban": ids] }
+    public static func unban(_ ids: [String]) -> JSON { ["unban": ids] }
     public static func link(_ state: GroupLinkState) -> JSON { ["link": state.rawValue] }
     public static let resetLink: JSON = ["resetLink": true]
+
+    /// A new group picture (path of an image file signal-cli can read). signal-cli has no option to remove it.
+    public static func avatar(_ path: String) -> JSON { ["avatar": path] }
+
+    /// One permission; empty if it already has that value.
+    public static func permission(_ kind: GroupPermissionKind, _ value: GroupPermission, in g: GroupInfo) -> JSON {
+        kind.value(in: g) == value ? [:] : [kind.param: value.cliValue]
+    }
+
+    /// Our own member label in the group. Empty text and emoji clear it.
+    public static func memberLabel(_ text: String, emoji: String) -> JSON {
+        ["memberLabel": text.trimmingCharacters(in: .whitespacesAndNewlines),
+         "memberLabelEmoji": emoji.trimmingCharacters(in: .whitespacesAndNewlines)]
+    }
+
+    /// `joinGroup` for an invite link.
+    public static func join(_ link: GroupInviteLink) -> JSON { ["uri": link.url] }
 
     /// `quitGroup`: `successor` is required when the only admin leaves. `delete` also drops the local group data.
     public static func quit(groupId: String, successor: String? = nil, delete: Bool = false) -> JSON {

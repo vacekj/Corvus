@@ -11,7 +11,7 @@ struct SettingsView: View {
             ChatFolderSettings().tabItem { Label("Chats", systemImage: "folder") }
             NotificationSettingsView().tabItem { Label("Notifications", systemImage: "bell.badge") }
             PrivacySettingsView().tabItem { Label("Privacy", systemImage: "hand.raised") }
-            ProfileSettings().tabItem { Label("Profile", systemImage: "person.crop.circle") }
+            ProfileEditor().tabItem { Label("Profile", systemImage: "person.crop.circle") }
         }
         .frame(width: 540, height: 600) // one size for all tabs: the window does not jump
     }
@@ -204,85 +204,5 @@ private struct NotificationSettingsView: View {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.audio]
         if panel.runModal() == .OK, let url = panel.url { n.soundFile = url.path }
-    }
-}
-
-// MARK: - Profile
-
-private struct ProfileSettings: View {
-    @Environment(AppModel.self) private var model
-    @State private var username = ""
-    @State private var displayName = ""
-    @State private var avatar: NSImage?
-
-    var body: some View {
-        Form {
-            if !model.connected {
-                Text("Connect to signal-cli before editing your profile.").foregroundStyle(.secondary)
-            }
-            Section {
-                HStack(spacing: 14) {
-                    if let avatar {
-                        Image(nsImage: avatar).resizable().frame(width: 64, height: 64).clipShape(Circle())
-                    } else {
-                        Image(systemName: "person.crop.circle.fill").font(.system(size: 60)).foregroundStyle(.secondary)
-                    }
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(model.profileName.isEmpty ? "No profile name" : model.profileName).font(.title3.weight(.semibold))
-                        if !model.profileUsername.isEmpty { Text(model.profileUsername).foregroundStyle(.secondary) }
-                    }
-                }
-            }
-            Section("Signal username") {
-                LabeledContent("Current", value: model.profileUsername.isEmpty ? "…" : model.profileUsername)
-                HStack {
-                    TextField("New username (e.g. name.42 or just name)", text: $username)
-                    Button("Set") { model.applySignalUsername(username.trimmingCharacters(in: .whitespaces)) }
-                        .disabled(username.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
-            Section("Display name") {
-                HStack {
-                    TextField("Name shown to your contacts", text: $displayName)
-                    Button("Save") {
-                        model.sendProfileUpdate(["givenName": displayName.trimmingCharacters(in: .whitespaces), "familyName": "",
-                                                 "removeAvatar": false], success: "Signal display name updated.")
-                    }
-                    .disabled(displayName.trimmingCharacters(in: .whitespaces).isEmpty)
-                }
-            }
-            Section("Avatar") {
-                HStack {
-                    Button("Choose image …") { chooseAvatar() }
-                    Button("Remove avatar", role: .destructive) {
-                        model.sendProfileUpdate(["removeAvatar": true], success: "Signal avatar removed.")
-                    }
-                }
-            }
-            if let s = model.profileStatus {
-                Text(s.text).foregroundStyle(s.error ? .red : .secondary)
-            }
-        }
-        .formStyle(.grouped)
-        .disabled(!model.connected)
-        .onAppear {
-            model.profileStatus = nil
-            model.loadSignalUsername()
-            if displayName.isEmpty { displayName = model.profileName }
-        }
-        .onChange(of: model.profileName) { old, name in
-            if displayName.isEmpty || displayName == old { displayName = name } // keep what the user typed
-        }
-        .onChange(of: model.profileStatus?.text) { Task { avatar = await model.ownAvatar() } } // after an avatar change
-        .task { avatar = await model.ownAvatar() }
-    }
-
-    private func chooseAvatar() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.png, .jpeg, .gif, .webP, .heic]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        // The copy stays in the temporary directory until Corvus quits.
-        let avatar = Media.stageForSignalCli([url.path]).paths[0]
-        model.sendProfileUpdate(["avatar": avatar, "removeAvatar": false], success: "Signal avatar updated.")
     }
 }

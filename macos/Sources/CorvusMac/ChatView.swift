@@ -265,6 +265,7 @@ private struct MessageListHost: View {
                 // `searchVisible` first: while no search is open, switching chats does not touch this view
                 .environment(\.searchHighlightId, model.searchVisible && model.current == key ? model.searchMatchId : nil)
                 .environment(\.searchHighlightQuery, model.searchVisible && model.current == key ? model.searchHighlightQuery : nil)
+                .environment(\.groupMemberLabels, GroupExtras.shared.memberLabels[key] ?? [:])
                 .tint(Theme.signalBlue)
         }
     }
@@ -722,11 +723,7 @@ private struct Bubble: View {
         .opacity(pending ? 0.7 : 1)
     }
 
-    private var senderLabel: some View {
-        Text(message.sender.isEmpty ? model.displayName(message.authorKey) : message.sender)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(Theme.senderColor(message.authorKey))
-    }
+    private var senderLabel: some View { SenderNameLabel(message: message) }
 
     /// Joined sides of a run get small corners, like the official clients.
     private func bubbleShape(radius r: CGFloat) -> UnevenRoundedRectangle {

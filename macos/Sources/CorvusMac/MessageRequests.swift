@@ -46,6 +46,7 @@ extension AppModel {
         roster.update(contacts: result)
         roster.baselineContacts(existing: Array(chats.convs.keys), resolve: resolver)
         roster.save()
+        adoptSignalNicknames()
     }
 
     /// Invitations are shown as chats (message requests) even though signal-cli says we are not members yet.
@@ -53,6 +54,7 @@ extension AppModel {
         roster.update(groups: result)
         roster.baselineGroups()
         roster.save()
+        syncMemberLabels()
         for g in roster.groups.values where g.isInvitation(for: account) {
             chats.ensure(g.key, title: g.name.isEmpty ? "Group" : g.name, group: true)
             if !g.name.isEmpty { chats.convs[g.key]!.title = g.name }
@@ -133,6 +135,34 @@ extension AppModel {
         if c.isGroup { roster.groups.removeValue(forKey: key) }
     }
 
+    // MARK: - Block and delete
+
+    /// Signal's "Report spam and block" also reports the sender to the Signal server. signal-cli has no call
+    /// for that report, so this only blocks and deletes, and says so in its title.
+    func blockAndDeleteRequest(_ key: String) async {
+        guard let c = chats.convs[key], key != account else { return }
+        let what = c.isGroup
+            ? "You will leave “\(c.title)”, no longer receive its messages, and the conversation will be deleted."
+            : "“\(c.title)” will be blocked and the conversation deleted. They will not be able to message or call you."
+        guard await Dialogs.confirm("Block and delete?", what, ok: "Block and delete", destructive: true) else { return }
+        let target = c.isGroup ? key : chats.resolveKey(key)
+        do { try await cli.call("block", RequestParams.block(key: target)) } catch {
+            showFlash("Could not block: \(error.localizedDescription)", seconds: 8)
+            return
+        }
+        roster.setBlocked(key, true, resolve: resolver)
+        roster.save()
+        if c.isGroup, roster.groups[key]?.isMember == true || roster.groups[key]?.isInvitation(for: account) == true {
+            _ = try? await cli.call("quitGroup", GroupParams.quit(groupId: String(key.dropFirst(2))))
+        }
+        _ = try? await respond(.delete, key: key) // tells the other devices; the block already took effect
+        if key == current { closeSearch() }
+        removeConversation(key)
+        if c.isGroup { roster.groups.removeValue(forKey: key) }
+        showFlash("Blocked and deleted.", seconds: 4)
+        listChanged()
+    }
+
     // MARK: - Block
 
     func toggleBlocked(_ key: String) async {
@@ -188,9 +218,12 @@ struct RequestBanner: View {
                     .buttonStyle(.borderedProminent)
                 Button("Delete", role: .destructive) { Task { await model.deleteRequest(key) } }
                 Button("Block", role: .destructive) { Task { await model.toggleBlocked(key) } }
+                Button("Block and delete", role: .destructive) { Task { await model.blockAndDeleteRequest(key) } }
             }
         } else if conversation.isGroup, let g = model.roster.groups[key], !g.isMember {
             banner(icon: "person.fill.xmark", title: "You are no longer a member of this group", text: "") { EmptyView() }
+        } else if conversation.isGroup, let g = model.roster.groups[key], model.roster.isAdminOnlyForUs(g) {
+            banner(icon: "megaphone", title: "Only admins can send messages", text: "") { EmptyView() }
         }
     }
 

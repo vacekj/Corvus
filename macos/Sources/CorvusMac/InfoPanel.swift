@@ -29,7 +29,7 @@ struct ConversationInfoPanel: View {
                 if c.isGroup {
                     GroupInfoPanel(key: c.key)
                 } else if !isSelf {
-                    NicknameField(conversation: c)
+                    ContactDetailsFields(conversation: c)
                     Button { model.safetyNumberKey = c.key } label: { Label("View safety number …", systemImage: "checkmark.shield") }
                         .buttonStyle(.borderless)
                         .disabled(!model.connected)
@@ -95,47 +95,6 @@ struct ConversationInfoPanel: View {
             .buttonStyle(.borderless)
             .disabled(!model.connected || model.roster.groups[c.key]?.isMember != true)
         }
-    }
-}
-
-/// The local nickname of a contact, edited in place; saved on Return or when the field loses focus.
-private struct NicknameField: View {
-    @Environment(AppModel.self) private var model
-    let conversation: Conversation
-    @State private var text = ""
-    @State private var editingKey = ""
-    @FocusState private var focused: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Nickname").font(.headline)
-            TextField("Nickname", text: $text, prompt: Text("Add a nickname"))
-                .textFieldStyle(.roundedBorder)
-                .focused($focused)
-                .onSubmit(save)
-        }
-        .onChange(of: conversation.key, initial: true) { load() }
-        .onChange(of: conversation.localNickname) { if !focused { load() } }
-        .onChange(of: focused) { if !focused { save() } }
-        .onChange(of: model.nicknameFocusPending, initial: true) { focusIfRequested() }
-    }
-
-    private func load() {
-        if focused && !editingKey.isEmpty && editingKey != conversation.key { save() }
-        editingKey = conversation.key
-        text = conversation.localNickname
-    }
-
-    private func save() {
-        let n = text.trimmingCharacters(in: .whitespaces)
-        guard !editingKey.isEmpty, model.chats.convs[editingKey]?.localNickname != n else { return }
-        model.setNickname(editingKey, n)
-    }
-
-    private func focusIfRequested() {
-        guard model.nicknameFocusPending else { return }
-        model.nicknameFocusPending = false
-        DispatchQueue.main.async { focused = true }
     }
 }
 

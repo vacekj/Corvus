@@ -127,11 +127,6 @@ final class AppModel {
     // audio playback (VoiceNotes.swift)
     let audio = AudioPlayback()
 
-    // profile
-    var profileUsername = ""
-    var profileName = ""            // own Signal profile name (given + family)
-    var profileStatus: (text: String, error: Bool)?
-
     // sheets
     var linkSheetShown = false
     @ObservationIgnored private var linkContinuation: CheckedContinuation<Bool, Never>?
@@ -856,6 +851,7 @@ final class AppModel {
         chats.convs[key]!.title = nickname.isEmpty
             ? (chats.contactNames[key] ?? (c.storedName.isEmpty ? key : c.storedName)) : nickname
         persist(Records.nickname(key, nickname))
+        syncNicknameToSignal(key, nickname)
     }
 
     /// Opens the chat's info panel with the nickname field focused.
@@ -2003,31 +1999,6 @@ final class AppModel {
 
     // MARK: - Profile
 
-    func loadSignalUsername() {
-        guard connected else {
-            profileUsername = "unavailable"
-            return
-        }
-        Task {
-            do {
-                let res = try await cli.call("listContacts", ["recipients": [account]])
-                let me = jsonArray(res).map(jsonObject).first { jsonString($0["number"]) == account || jsonString($0["uuid"]) == account }
-                guard let me else {
-                    profileUsername = "unavailable"
-                    return
-                }
-                let u = jsonString(me["username"])
-                profileUsername = u.isEmpty ? "not set" : u
-                let profile = jsonObject(me["profile"])
-                profileName = [jsonString(profile["givenName"]), jsonString(profile["familyName"])]
-                    .filter { !$0.isEmpty }.joined(separator: " ")
-            } catch {
-                profileUsername = "unavailable"
-                reportProfileStatus("Could not read your Signal username: \(error.localizedDescription)", error: true)
-            }
-        }
-    }
-
     /// The own profile picture: signal-cli's avatar file, else asked over JSON-RPC.
     func ownAvatar() async -> NSImage? {
         guard !account.isEmpty, !account.contains("/") else { return nil }
@@ -2037,38 +2008,6 @@ final class AppModel {
             data = Data(base64Encoded: jsonString(jsonObject(res)["data"])) ?? Data()
         }
         return data.isEmpty ? nil : NSImage(data: data).map { Media.roundAvatar($0, size: 128) }
-    }
-
-    private func reportProfileStatus(_ text: String, error: Bool) {
-        profileStatus = (text, error)
-        showFlash(text)
-    }
-
-    func applySignalUsername(_ username: String) {
-        guard connected else { return reportProfileStatus("Connect to signal-cli before editing your profile.", error: true) }
-        Task {
-            do {
-                let res = try await cli.call("updateAccount", ["username": username, "deleteUsername": false])
-                let updated = jsonString(jsonObject(res)["username"])
-                if !updated.isEmpty { profileUsername = updated }
-                reportProfileStatus(updated.isEmpty ? "Signal username updated." : "Signal username: \(updated)", error: false)
-            } catch {
-                reportProfileStatus("Could not change your Signal username: \(error.localizedDescription)", error: true)
-            }
-        }
-    }
-
-    func sendProfileUpdate(_ params: JSON, success: String) {
-        guard connected else { return reportProfileStatus("Connect to signal-cli before editing your profile.", error: true) }
-        Task {
-            do {
-                try await cli.call("updateProfile", params)
-                if let given = params["givenName"] as? String { profileName = given }
-                reportProfileStatus(success, error: false)
-            } catch {
-                reportProfileStatus("Could not update your Signal profile: \(error.localizedDescription)", error: true)
-            }
-        }
     }
 
     // MARK: - GIPHY

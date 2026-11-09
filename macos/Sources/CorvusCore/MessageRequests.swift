@@ -30,22 +30,34 @@ public struct ContactEntry: Equatable, Identifiable {
     public var profileName = ""
     public var isBlocked = false
     public var isHidden = false
+    /// Signal nickname and note (set by us on any device; synced through the storage service).
+    public var nickGivenName = ""
+    public var nickFamilyName = ""
+    public var note = ""
 
     public init(number: String = "", uuid: String = "", name: String = "", profileName: String = "",
-                isBlocked: Bool = false, isHidden: Bool = false) {
+                isBlocked: Bool = false, isHidden: Bool = false,
+                nickGivenName: String = "", nickFamilyName: String = "", note: String = "") {
         self.number = number
         self.uuid = uuid
         self.name = name
         self.profileName = profileName
         self.isBlocked = isBlocked
         self.isHidden = isHidden
+        self.nickGivenName = nickGivenName
+        self.nickFamilyName = nickFamilyName
+        self.note = note
     }
 
     public init(json c: JSON) {
         self.init(number: jsonString(c["number"]), uuid: jsonString(c["uuid"]), name: jsonString(c["name"]),
                   profileName: jsonString(c["profileName"]), isBlocked: jsonBool(c["isBlocked"]),
-                  isHidden: jsonBool(c["isHidden"]))
+                  isHidden: jsonBool(c["isHidden"]), nickGivenName: jsonString(c["nickGivenName"]),
+                  nickFamilyName: jsonString(c["nickFamilyName"]), note: jsonString(c["note"]))
     }
+
+    /// The Signal nickname as shown ("given family"); empty when none is set.
+    public var nickname: String { ContactParams.join(given: nickGivenName, family: nickFamilyName) }
 
     public var key: String { number.isEmpty ? uuid : number }
     public var id: String { key }
@@ -111,6 +123,23 @@ public struct Roster {
                 if c.isBlocked { blocked.insert(k) } else { blocked.remove(k) }
             }
         }
+    }
+
+    /// Records a nickname or note change that was sent to signal-cli (nil: unchanged). Only contacts signal-cli
+    /// already listed are updated; returns false if there is none for `key`.
+    @discardableResult
+    public mutating func setContactDetails(_ key: String, nickGivenName: String? = nil, nickFamilyName: String? = nil,
+                                           note: String? = nil) -> Bool {
+        guard let found = contactIndex[key], let i = contacts.firstIndex(where: { $0.key == found.key }) else { return false }
+        var c = contacts[i]
+        if let nickGivenName { c.nickGivenName = nickGivenName }
+        if let nickFamilyName { c.nickFamilyName = nickFamilyName }
+        if let note { c.note = note }
+        guard c != contacts[i] else { return true }
+        contacts[i] = c
+        if !c.number.isEmpty { contactIndex[c.number] = c }
+        if !c.uuid.isEmpty { contactIndex[c.uuid] = c }
+        return true
     }
 
     /// People we can pick for a group: not hidden, not ourselves, sorted by name.
@@ -209,11 +238,17 @@ public struct Roster {
 
     // MARK: Rules used by the app
 
-    /// Nothing can be sent to a request, a blocked chat or a group we are no longer in.
+    /// Nothing can be sent to a request, a blocked chat, a group we are no longer in, or a group where only
+    /// admins may send and we are not one.
     public func isSendLocked(_ c: Conversation, resolve: (String) -> String = { $0 }) -> Bool {
         if isBlocked(c.key, resolve: resolve) || isRequest(c, resolve: resolve) { return true }
-        if c.isGroup, let g = groups[c.key], !g.isMember { return true }
+        if c.isGroup, let g = groups[c.key], !g.isMember || isAdminOnlyForUs(g) { return true }
         return false
+    }
+
+    /// The group is announcement-only and we are a member but not an admin.
+    public func isAdminOnlyForUs(_ g: GroupInfo) -> Bool {
+        g.isMember && g.isAnnouncementOnly && g.member(account) != nil && !g.canSendMessages(account)
     }
 
     /// Notifications, sounds, the unread counter and the dock bounce are only for chats the user accepted and

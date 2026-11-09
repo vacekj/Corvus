@@ -81,6 +81,11 @@ struct FormattedMessageText: View {
             .environment(\.openURL, OpenURLAction { url in
                 let s = url.absoluteString
                 guard s.hasPrefix(Self.spoilerScheme), let i = Int(s.dropFirst(Self.spoilerScheme.count)) else {
+                    // A group invite link asks whether to join instead of opening the browser.
+                    if let link = GroupInviteLink.parse(s) {
+                        model.askToJoinGroup(link)
+                        return .handled
+                    }
                     return .systemAction
                 }
                 revealed.insert(i)

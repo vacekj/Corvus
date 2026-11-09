@@ -12,6 +12,13 @@ struct GroupSheets: ViewModifier {
             .sheet(item: Binding(get: { model.successorPick }, set: { if $0 == nil { model.finishSuccessorPick(nil) } })) { pick in
                 SuccessorSheet(pick: pick)
             }
+            .sheet(item: Binding(get: { GroupExtras.shared.joinRequest }, set: { GroupExtras.shared.joinRequest = $0 })) { request in
+                JoinGroupSheet(request: request)
+            }
+            .sheet(isPresented: Binding(get: { GroupExtras.shared.stickerCreatorShown },
+                                        set: { GroupExtras.shared.stickerCreatorShown = $0 })) {
+                StickerPackCreatorSheet()
+            }
     }
 }
 
@@ -134,6 +141,7 @@ struct GroupInfoPanel: View {
                     .disabled(busy)
                 }
             }
+            GroupPhotoButton(key: key)
         } else if !g.description.isEmpty {
             Text(g.description).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
         }
@@ -181,8 +189,14 @@ struct GroupInfoPanel: View {
             }
         }
 
+        if !g.banned.isEmpty { BannedMembersSection(group: g, admin: admin).padding(.top, 4) }
+
         Divider()
-        inviteLink(g, admin: admin)
+        GroupLinkSection(group: g, admin: admin)
+        if admin && g.isMember {
+            Divider()
+            GroupPermissionsSection(group: g)
+        }
 
         if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         if busy { ProgressView().controlSize(.small) }
@@ -195,6 +209,11 @@ struct GroupInfoPanel: View {
             PickerRow(person: p)
                 .onTapGesture { if !isMe { model.startConversation(p.key) } }
                 .help(isMe ? "" : "Message \(p.title)")
+            if isMe {
+                OwnMemberLabelButton(key: key, member: m)
+            } else if !m.labelText.isEmpty {
+                MemberLabelBadge(text: m.labelText)
+            }
             if m.isAdmin {
                 Text("Admin").font(.caption2.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Capsule().fill(Theme.signalBlue.opacity(0.15))).foregroundStyle(Theme.signalBlue)
@@ -209,41 +228,14 @@ struct GroupInfoPanel: View {
                         Button("Make admin") { run(GroupParams.promote([m.id])) }
                     }
                     Button("Remove from group", role: .destructive) { run(GroupParams.removeMembers([m.id])) }
+                    Button("Remove and ban", role: .destructive) {
+                        run(GroupParams.removeMembers([m.id]).merging(GroupParams.ban([m.id])) { a, _ in a })
+                    }
                 } label: { Image(systemName: "ellipsis.circle") }
                 .menuStyle(.borderlessButton)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .disabled(busy)
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func inviteLink(_ g: GroupInfo, admin: Bool) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Invite link").font(.headline)
-            if g.inviteLinkEnabled {
-                Text(g.inviteLink).font(.caption.monospaced()).lineLimit(2).textSelection(.enabled)
-                HStack {
-                    Button("Copy") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(g.inviteLink, forType: .string)
-                        model.showFlash("Invite link copied.", seconds: 3)
-                    }
-                    if admin {
-                        Button("Reset link") { run(GroupParams.resetLink) }
-                        Button("Turn off") { run(GroupParams.link(.disabled)) }
-                    }
-                }
-                .disabled(busy)
-            } else {
-                HStack {
-                    Text("The invite link is off.").foregroundStyle(.secondary)
-                    Spacer()
-                    if admin && g.isMember {
-                        Button("Turn on") { run(GroupParams.link(.enabled)) }.disabled(busy)
-                    }
-                }
             }
         }
     }

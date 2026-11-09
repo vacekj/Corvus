@@ -49,6 +49,7 @@ extension AppModel {
         // and a write to `roster` or `chats` makes the whole chat list update.
         var changed = false
         if roster.groups[g.key] != g || roster.blocked.contains(g.key) != g.isBlocked { roster.set(group: g); changed = true }
+        syncMemberLabels([g.key])
         if let c = chats.convs[g.key] {
             if !g.name.isEmpty && c.title != g.name { chats.convs[g.key]!.title = g.name; changed = true }
             if c.expirationSeconds != g.expiration { chats.convs[g.key]!.expirationSeconds = g.expiration; changed = true }
