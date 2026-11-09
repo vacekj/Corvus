@@ -485,7 +485,7 @@ private struct ConversationRow: View, Equatable {
                     if let status = c.lastStatus, c.unread == 0 {
                         ReceiptTicks(status: status < 0 ? nil : status)
                             .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(status >= 2 ? Theme.signalBlue : Color.secondary)
+                            .foregroundStyle(status >= 2 ? Color.primary : Color.secondary) // as in the bubbles: read is the full colour
                     }
                     if c.markedUnread && c.unread == 0 {
                         Circle().fill(c.muted ? Color.secondary : Theme.signalBlue).frame(width: 10, height: 10)
