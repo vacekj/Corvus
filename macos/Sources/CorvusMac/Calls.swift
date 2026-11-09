@@ -314,6 +314,7 @@ extension AppModel {
             if !i.isEmpty { s.inputDevice = i }
             if !o.isEmpty { s.outputDevice = o }
             call = s
+            CallHistoryStore.shared.begin(callId: s.callId, peerKey: key, outgoing: true)
         } catch {
             showFlash("The call could not be started: \(error.localizedDescription)")
         }
@@ -364,7 +365,13 @@ extension AppModel {
 
         if call == nil || call?.callId != id {
             // A new incoming call. A second call while one is active is declined by the tunnel/peer timeout.
-            guard state == .ringingIncoming, call?.isActive != true else { return }
+            guard state == .ringingIncoming else { return }
+            guard call?.isActive != true else {
+                // Shown as missed, like the official apps do for a call that rings while another is going on.
+                CallHistoryStore.shared.begin(callId: id, peerKey: peerKey, outgoing: false)
+                if let r = CallHistoryStore.shared.ended(callId: id, reason: "busy") { notifyMissedCall(r) }
+                return
+            }
             var s = CallSession()
             s.callId = id
             s.peerKey = peerKey
@@ -372,6 +379,7 @@ extension AppModel {
             s.state = state
             call = s
             chats.ensure(peerKey)
+            CallHistoryStore.shared.begin(callId: id, peerKey: peerKey, outgoing: s.outgoing)
             startRinging()
             alertIncomingCall(peerKey)
             openMainWindow?() // the incoming-call banner is in the main window
@@ -385,6 +393,7 @@ extension AppModel {
         case .connected:
             stopRinging()
             if call?.connectedAt == nil { call?.connectedAt = Date() }
+            CallHistoryStore.shared.connected(callId: id)
             if !audioBridge.isRunning, let s = call {
                 do {
                     try audioBridge.start(inputDevice: s.inputDevice, outputDevice: s.outputDevice)
@@ -404,6 +413,7 @@ extension AppModel {
         stopRinging()
         audioBridge.stop()
         guard var s = call else { return }
+        if let r = CallHistoryStore.shared.ended(callId: s.callId, reason: reason) { notifyMissedCall(r) }
         s.state = .ended
         s.endReason = reason
         call = s

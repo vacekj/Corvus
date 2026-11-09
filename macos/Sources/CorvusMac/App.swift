@@ -87,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
         DisplaySettings.applyAtLaunch()
+        model.installAppChrome()
         model.start()
         ScrollBench.shared.arm(model)
         #if DEBUG
@@ -125,6 +126,12 @@ struct CorvusMacApp: App {
             AppCommands(model: model)
             ZoomCommands()
         }
+
+        // "Open in new window": one window per chat (opening it again brings that window to the front).
+        WindowGroup("Chat", id: ChatPopups.windowId, for: String.self) { $key in
+            if let key { ChatPopupWindow(key: key).environment(model) }
+        }
+        .defaultSize(width: 440, height: 600)
 
         Settings {
             SettingsView()
@@ -168,24 +175,6 @@ private struct MenuBarLabel: View {
     }
 }
 
-private struct MenuBarContent: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.openWindow) private var openWindow
-
-    var body: some View {
-        let unread = model.totalUnread
-        Text(unread > 0 ? "\(unread) unread message\(unread == 1 ? "" : "s")" : "No unread messages")
-        Divider()
-        Button("Show window") {
-            openWindow(id: "main")
-            NSApp.activate(ignoringOtherApps: true)
-        }
-        Divider()
-        Button("Quit Corvus") { NSApp.terminate(nil) }
-            .keyboardShortcut("q")
-    }
-}
-
 struct AppCommands: Commands {
     let model: AppModel
 
@@ -222,6 +211,8 @@ struct AppCommands: Commands {
                 .disabled(model.current == nil || !model.connected)
             Button("Stories") { model.storiesShown = true }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
+            Button("Calls") { AppChrome.shared.callsShown = true }
+                .disabled(!model.historyReady)
             Button("Add sticker pack …") { model.requestStickerPackAdd() }
                 .disabled(!model.connected || model.current == nil)
             Button("Create sticker pack …") { GroupExtras.shared.stickerCreatorShown = true }
@@ -247,6 +238,10 @@ struct AppCommands: Commands {
                 .disabled(model.current == nil)
         }
         CommandGroup(replacing: .help) {
+            Button("Keyboard shortcuts") { AppChrome.shared.shortcutsShown = true; model.openMainWindow?() }
+                .keyboardShortcut("/")
+            Divider()
+            Button("Check for Corvus updates …") { AppUpdater.shared.check(silent: false) }
             Button("Check for signal-cli update") { model.checkForUpdates(silent: false) }
             Button("Voice call setup …") { Task { await model.showCallSetup() } }
             Button("signal-cli on GitHub") { NSWorkspace.shared.open(URL(string: "https://github.com/AsamK/signal-cli")!) }

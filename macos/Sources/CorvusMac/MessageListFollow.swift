@@ -114,7 +114,7 @@ struct JumpToBottomButton: View {
                 .shadow(color: .black.opacity(0.15), radius: 6, y: 2)
             }
             .buttonStyle(.plain)
-            .help("Jump to the newest message")
+            .iconHelp("Jump to the newest message")
             .padding(16)
             .transition(.opacity)
         }

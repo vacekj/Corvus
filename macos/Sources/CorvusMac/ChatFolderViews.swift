@@ -343,7 +343,7 @@ struct ChatFolderSettings: View {
                         Button("Edit …") { editing = ChatFolderEditRequest(folder: f, isNew: false) }
                         Button { Task { await model.deleteFolder(f) } } label: { Image(systemName: "trash") }
                             .buttonStyle(.borderless)
-                            .help("Delete folder")
+                            .iconHelp("Delete folder")
                     }
                 }
                 .onMove { store.move(from: $0, to: $1) }

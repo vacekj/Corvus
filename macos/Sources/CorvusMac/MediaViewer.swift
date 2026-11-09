@@ -332,14 +332,14 @@ struct ImageViewerOverlay: View {
                         ImageViewerWindow.close()
                         model.forwardMessageId = ref.messageId
                     } label: { Image(systemName: "arrowshape.turn.up.right") }
-                        .help("Forward …")
+                        .iconHelp("Forward", tooltip: "Forward …")
                 }
                 Button { save(item) } label: { Image(systemName: "square.and.arrow.down") }
-                    .help("Save …")
+                    .iconHelp("Save", tooltip: "Save …")
                     .disabled(item.data.isEmpty && item.videoFile == nil)
             }
             Button { ImageViewerWindow.close() } label: { Image(systemName: "xmark") }
-                .help("Close (Esc)")
+                .iconHelp("Close", tooltip: "Close (Esc)")
         }
         .buttonStyle(.borderless)
         .font(.system(size: 15, weight: .semibold))

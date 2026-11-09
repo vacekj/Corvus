@@ -76,7 +76,7 @@ struct StickerPicker: View {
                     Spacer()
                     Button { adding.toggle() } label: { Image(systemName: adding ? "xmark" : "plus") }
                         .buttonStyle(.borderless)
-                        .help(adding ? "Cancel" : "Add sticker pack …")
+                        .iconHelp(adding ? "Cancel" : "Add sticker pack", tooltip: adding ? "Cancel" : "Add sticker pack …")
                 }
                 .padding(10)
                 Divider()
@@ -575,7 +575,7 @@ struct RecordingBar: View {
                     .frame(width: 32, height: 32).background(Circle().fill(Theme.signalBlue))
             }
             .buttonStyle(.borderless)
-            .help("Send voice message")
+            .iconHelp("Send voice message")
         }
         .padding(.horizontal, 10)
         .frame(height: 40)

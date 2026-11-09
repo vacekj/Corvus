@@ -22,6 +22,9 @@
     <string>@VERSION@</string>
     <key>CFBundleVersion</key>
     <string>@VERSION@</string>
+    <!-- Commit the app was built from: Corvus compares it with the per-commit releases (AppUpdater.swift). -->
+    <key>CorvusBuildCommit</key>
+    <string>@COMMIT@</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.social-networking</string>
     <!-- Quarantine files created by the app by default.

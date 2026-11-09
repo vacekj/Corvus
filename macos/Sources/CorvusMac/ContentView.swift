@@ -88,6 +88,7 @@ struct ContentView: View {
             ImportProgressSheet()
         }
         .modifier(GroupSheets())
+        .modifier(AppChromeSheets())
         .onAppear {
             KeyboardNavigation.shared.installTabMonitor(model)
             SheetOutsideClick.install()
@@ -268,6 +269,7 @@ private struct Sidebar: View {
                         Button { filter = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.borderless)
                             .foregroundStyle(.secondary)
+                            .iconHelp("Clear search")
                     }
                     ChatListUnreadFilterButton()
                 }
@@ -281,18 +283,20 @@ private struct Sidebar: View {
                         }
                 }
                 .buttonStyle(.borderless)
-                .help("Stories")
+                .iconHelp("Stories")
                 .disabled(!model.historyReady)
+                CallsButton()
                 Button { Task { await model.newConversation() } } label: {
                     Image(systemName: "square.and.pencil").font(.system(size: 15))
                 }
                 .buttonStyle(.borderless)
-                .help("New conversation (⌘N)")
+                .iconHelp("New conversation", tooltip: "New conversation (⌘N)")
                 .disabled(!model.historyReady)
             }
             .padding(.horizontal, 12)
             .padding(.top, 6)
             .padding(.bottom, 8)
+            AppUpdateBanner()
             if q.isEmpty && !model.showArchived && !folders.folders.isEmpty { ChatFolderTabs(items: all) }
 
             // The selection is drawn by the rows (not the list), so switching chats never flashes the
@@ -638,6 +642,8 @@ private struct ConversationMenu: View {
 
     var body: some View {
         let c = conversation
+        OpenInNewWindowButton(key: c.key)
+        Divider()
         GroupMenuItems(conversation: c)
         if !c.isGroup {
             Button { Task { await model.startCall(c.key) } } label: { Label("Voice call", systemImage: "phone") }

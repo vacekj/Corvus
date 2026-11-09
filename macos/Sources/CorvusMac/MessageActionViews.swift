@@ -41,7 +41,7 @@ struct ReactionPicker: View {
                         .background(Circle().fill(Theme.field))
                 }
                 .buttonStyle(.borderless)
-                .help("More reactions")
+                .iconHelp("More reactions")
             }
             .padding(8)
         }
@@ -163,7 +163,7 @@ struct PinnedMessagesBar: View {
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
                 .disabled(!model.connected)
-                .help("Unpin message")
+                .iconHelp("Unpin message")
             }
             .padding(.horizontal, 14)
             .padding(.vertical, 6)
@@ -276,7 +276,7 @@ private struct SelectionBar: View {
         HStack(spacing: 12) {
             Button { selection.end() } label: { Image(systemName: "xmark") }
                 .buttonStyle(.borderless)
-                .help("Cancel (Esc)")
+                .iconHelp("Cancel", tooltip: "Cancel (Esc)")
             Text(msgs.count == 1 ? "1 selected" : "\(msgs.count) selected")
                 .font(.body.weight(.medium))
                 .monospacedDigit()

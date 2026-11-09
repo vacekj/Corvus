@@ -38,6 +38,8 @@ public struct RpcError: Error, LocalizedError {
 @MainActor
 public final class SignalCli {
     public var executable = ""
+    /// Global options put before every command except `--version` (e.g. `--tls-proxy host`).
+    public var globalOptions: [String] = []
 
     public var onEnvelope: ((JSON) -> Void)?
     public var onCallEvent: ((JSON) -> Void)?
@@ -173,6 +175,7 @@ public final class SignalCli {
 
     public func run(_ args: [String], timeout: TimeInterval) async -> CliResult {
         let exe = executable
+        let args = args == ["--version"] ? args : globalOptions + args
         return await Task.detached { SignalCli.runBlocking(exe: exe, args: args, timeout: timeout) }.value
     }
 
@@ -247,7 +250,7 @@ public final class SignalCli {
     public func start(account: String) {
         stop()
         let p = Process()
-        SignalCli.configure(p, executable: executable, arguments: ["-a", account, "jsonRpc"])
+        SignalCli.configure(p, executable: executable, arguments: globalOptions + ["-a", account, "jsonRpc"])
         p.environment = SignalCli.javaEnvironment(SignalCli.childEnvironment(), executable: executable)
         p.qualityOfService = .userInitiated
         let input = Pipe(), output = Pipe(), errors = Pipe()

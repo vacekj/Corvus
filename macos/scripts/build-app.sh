@@ -16,6 +16,8 @@ fi
 
 VERSION=$(sed -n 's/^project(corvus VERSION \([0-9.]*\).*/\1/p' "$REPO_DIR/CMakeLists.txt")
 VERSION=${VERSION:-0.0.0}
+# The commit is compared with the release tags ("build-<sha>") by the app's update check.
+COMMIT=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
 
 # Code signature: ad hoc by default. With an ad-hoc signature every build is a "new" app for the
 # keychain, so macOS asks again for the history key. Set CORVUS_SIGN_IDENTITY to a signing identity
@@ -37,7 +39,7 @@ cp "$BIN/corvus" "$APP/Contents/MacOS/"
 # SwiftPM resource bundle (sound) and the emoji data shared with the Qt app.
 cp -R "$BIN/CorvusMac_CorvusMac.bundle" "$APP/Contents/Resources/"
 cp "$REPO_DIR/resources/emoji-catalog.json" "$REPO_DIR/resources/emoji-names.json" "$APP/Contents/Resources/"
-sed "s/@VERSION@/$VERSION/g" "$MACOS_DIR/Support/Info.plist" > "$APP/Contents/Info.plist"
+sed -e "s/@VERSION@/$VERSION/g" -e "s/@COMMIT@/$COMMIT/g" "$MACOS_DIR/Support/Info.plist" > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 
 # Icon from the shared SVG (Quick Look renders SVG; sips/iconutil build the .icns).

@@ -6,7 +6,21 @@ import UserNotifications
 @MainActor
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var onActivate: ((String) -> Void)?
+    /// "Reply" typed into a message notification: conversation key and text.
+    var onReply: ((String, String) -> Void)?
+    /// "Mark as read" on a message notification.
+    var onMarkRead: ((String) -> Void)?
     private var authorized: Bool?
+
+    /// What a notification offers besides opening the chat (like Signal Desktop's notifications).
+    enum Kind: String {
+        case plain = ""
+        case message = "corvus.message"               // Reply, Mark as read
+        case privateMessage = "corvus.message.private" // Mark as read only: the notification does not say who wrote
+    }
+
+    static let replyAction = "corvus.reply"
+    static let markReadAction = "corvus.markRead"
 
     /// UNUserNotificationCenter only works inside an app bundle (not for `swift run`).
     var available: Bool { Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app" }
@@ -14,7 +28,15 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     private var center: UNUserNotificationCenter? { available ? .current() : nil }
 
     func setUp() {
-        center?.delegate = self
+        guard let center else { return }
+        center.delegate = self
+        let reply = UNTextInputNotificationAction(identifier: Self.replyAction, title: "Reply", options: [],
+                                                  textInputButtonTitle: "Send", textInputPlaceholder: "Message")
+        let markRead = UNNotificationAction(identifier: Self.markReadAction, title: "Mark as read", options: [])
+        center.setNotificationCategories([
+            UNNotificationCategory(identifier: Kind.message.rawValue, actions: [reply, markRead], intentIdentifiers: []),
+            UNNotificationCategory(identifier: Kind.privateMessage.rawValue, actions: [markRead], intentIdentifiers: []),
+        ])
     }
 
     func requestAuthorization() async -> Bool {
@@ -25,7 +47,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         return ok
     }
 
-    func notify(key: String, title: String, body: String, icon: NSImage?) {
+    func notify(key: String, title: String, body: String, icon: NSImage?, kind: Kind = .plain) {
         guard let center else { return }
         Task {
             guard await requestAuthorization() else { return }
@@ -34,6 +56,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
             content.body = body
             content.threadIdentifier = key
             content.userInfo = ["key": key]
+            content.categoryIdentifier = kind.rawValue
             if let icon, let png = Media.pngData(icon),
                let url = try? Media.writeTemp(png, name: "avatar.png"),
                let att = try? UNNotificationAttachment(identifier: "avatar", url: url) {
@@ -53,7 +76,16 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
 
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse) async {
         let key = response.notification.request.content.userInfo["key"] as? String ?? ""
-        await MainActor.run { self.onActivate?(key) }
+        let action = response.actionIdentifier
+        let text = (response as? UNTextInputNotificationResponse)?.userText ?? ""
+        await MainActor.run {
+            switch action {
+            case Notifier.replyAction: self.onReply?(key, text)
+            case Notifier.markReadAction: self.onMarkRead?(key)
+            case UNNotificationDismissActionIdentifier: break
+            default: self.onActivate?(key)
+            }
+        }
     }
 
     /// The app decides itself when to alert (not while the user looks at the chat), so show banners in the foreground too.

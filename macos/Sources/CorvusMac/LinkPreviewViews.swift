@@ -83,7 +83,7 @@ struct LinkPreviewChip: View {
             Button(action: remove) { Image(systemName: "xmark.circle.fill").font(.system(size: 15)) }
                 .buttonStyle(.borderless)
                 .foregroundStyle(.secondary)
-                .help("Remove link preview")
+                .iconHelp("Remove link preview")
         }
         .padding(8)
         .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(Theme.field))

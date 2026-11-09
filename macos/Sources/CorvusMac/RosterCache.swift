@@ -15,7 +15,18 @@ enum RosterCache {
                                info: Data("corvus roster cache v1".utf8), outputByteCount: 32)
     }
 
-    static func setKey(_ k: SymmetricKey) { key = k }
+    static func setKey(_ k: SymmetricKey) {
+        key = k
+        keyChanged.forEach { $0() }
+    }
+
+    /// Other local caches encrypted the same way (the call history) re-read or re-save themselves here.
+    static var keyChanged: [@MainActor () -> Void] = []
+
+    /// A key for another local cache, derived from this one (so it changes with the history secret too).
+    static func subkey(_ info: String) -> SymmetricKey? {
+        key.map { HKDF<SHA256>.deriveKey(inputKeyMaterial: $0, info: Data(info.utf8), outputByteCount: 32) }
+    }
 
     static func forget() {
         key = nil

@@ -12,6 +12,7 @@ struct SettingsView: View {
             NotificationSettingsView().tabItem { Label("Notifications", systemImage: "bell.badge") }
             PrivacySettingsView().tabItem { Label("Privacy", systemImage: "hand.raised") }
             ProfileEditor().tabItem { Label("Profile", systemImage: "person.crop.circle") }
+            AdvancedSettings().tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
         }
         .frame(width: 540, height: 600) // one size for all tabs: the window does not jump
     }
@@ -29,6 +30,7 @@ private struct GeneralSettings: View {
 
     var body: some View {
         Form {
+            AppGeneralSections()
             Section("signal-cli") {
                 LabeledContent("Path") {
                     Text(model.cli.executable.isEmpty ? "not found" : model.cli.executable)
@@ -118,7 +120,7 @@ private struct AppearanceSettings: View {
             if a[keyPath: kp] != nil {
                 Button { a[keyPath: kp] = nil } label: { Image(systemName: "arrow.uturn.backward") }
                     .buttonStyle(.borderless)
-                    .help("Back to the default colour")
+                    .iconHelp("Back to the default colour")
             }
         }
     }

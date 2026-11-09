@@ -110,10 +110,10 @@ private struct SearchBar: View {
             .padding(.vertical, 6)
             .background(Capsule().fill(Theme.field))
             Button { model.navigateSearch(backwards: true) } label: { Image(systemName: "chevron.up") }
-                .help("Previous match")
+                .iconHelp("Previous match")
                 .disabled(model.searchResults.isEmpty)
             Button { model.navigateSearch(backwards: false) } label: { Image(systemName: "chevron.down") }
-                .help("Next match")
+                .iconHelp("Next match")
                 .disabled(model.searchResults.isEmpty)
             Button("Done") { model.closeSearch() }
         }
@@ -513,13 +513,13 @@ private struct MessageRow: View {
                 // A plain button with a popover: a `Menu` is an AppKit pop-up button and costly to build.
                 Button { reactionsShown = true } label: { Image(systemName: "face.smiling") }
                     .buttonStyle(.borderless)
-                    .help("React")
+                    .iconHelp("React")
                     .popover(isPresented: $reactionsShown, arrowEdge: .top) {
                         ReactionPicker(message: message) { reactionsShown = false }
                     }
                 Button { model.startReply(message.id) } label: { Image(systemName: "arrowshape.turn.up.left") }
                     .buttonStyle(.borderless)
-                    .help("Reply")
+                    .iconHelp("Reply")
             }
             // The same items as the context menu; built only while the pointer is over this message.
             Menu {
@@ -528,7 +528,7 @@ private struct MessageRow: View {
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
             .fixedSize()
-            .help("More")
+            .iconHelp("More actions", tooltip: "More")
         }
         .foregroundStyle(.secondary)
     }

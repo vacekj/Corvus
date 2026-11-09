@@ -41,7 +41,7 @@ struct ComposerArea: View {
                     Button { emojiShown.toggle() } label: {
                         Image(systemName: "face.smiling").font(.system(size: 17)).frame(width: 28, height: 30)
                     }
-                    .help("Emoji")
+                    .iconHelp("Emoji")
                     .popover(isPresented: $emojiShown, arrowEdge: .top) {
                         EmojiPicker { e in
                             NotificationCenter.default.post(name: MessageInput.insertText, object: e)
@@ -62,14 +62,14 @@ struct ComposerArea: View {
                         .overlay(RoundedRectangle(cornerRadius: 4).strokeBorder(lineWidth: 1.5))
                         .frame(width: 30, height: 34)
                 }
-                .help("Search GIPHY GIFs")
+                .iconHelp("GIFs", tooltip: "Search GIPHY GIFs")
                 .popover(isPresented: $gifsShown, arrowEdge: .top) {
                     GifPopover { gifsShown = false }
                 }
                 Button { stickersShown.toggle() } label: {
                     Image(systemName: "seal").font(.system(size: 17)).frame(width: 30, height: 34)
                 }
-                .help("Stickers")
+                .iconHelp("Stickers")
                 .popover(isPresented: $stickersShown, arrowEdge: .top) {
                     StickerPicker { stickersShown = false }
                 }
@@ -86,7 +86,7 @@ struct ComposerArea: View {
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .frame(width: 30, height: 34)
-                .help("Attach files (hold for more: poll)")
+                .iconHelp("Attach files", tooltip: "Attach files (hold for more: poll)")
                 if model.canSendViewOnce {
                     Button { model.viewOnceNext.toggle() } label: {
                         Text("1×").font(.system(size: 13, weight: .bold))
@@ -95,13 +95,13 @@ struct ComposerArea: View {
                             .background(Circle().fill(model.viewOnceNext ? Theme.signalBlue : Color.clear))
                             .overlay(Circle().strokeBorder(Color.secondary.opacity(0.5)))
                     }
-                    .help(model.viewOnceNext ? "View once: on" : "Send as view once")
+                    .iconHelp(model.viewOnceNext ? "View once: on" : "Send as view once")
                 }
                 if !canSend && model.editKey.isEmpty {
                     Button { model.startRecording() } label: {
                         Image(systemName: "mic").font(.system(size: 17)).frame(width: 30, height: 34)
                     }
-                    .help("Record a voice message")
+                    .iconHelp("Record a voice message")
                 }
                 Button { model.sendMessage() } label: {
                     Image(systemName: model.editKey.isEmpty ? "arrow.up" : "checkmark")
@@ -110,7 +110,7 @@ struct ComposerArea: View {
                         .frame(width: 32, height: 32)
                         .background(Circle().fill(canSend ? Theme.signalBlue : Color.secondary.opacity(0.35)))
                 }
-                .help(model.editKey.isEmpty ? "Send (Return)" : "Save edit (Return)")
+                .iconHelp(model.editKey.isEmpty ? "Send" : "Save edit", tooltip: model.editKey.isEmpty ? "Send (Return)" : "Save edit (Return)")
                 .disabled(!canSend)
                 .animation(.easeOut(duration: 0.15), value: canSend)
             }
@@ -195,6 +195,7 @@ private struct AttachmentTray: View {
                                 .font(.system(size: 16))
                         }
                         .buttonStyle(.plain)
+                        .iconHelp("Remove \((f as NSString).lastPathComponent)")
                         .offset(x: 5, y: -5)
                     }
                 }

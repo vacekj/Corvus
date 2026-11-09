@@ -77,7 +77,8 @@ struct LinkView: View {
         status = "Waiting for signal-cli …"
         running = true
         let p = Process()
-        SignalCli.configure(p, executable: executable, arguments: ["link", "-n", name.trimmingCharacters(in: .whitespaces)])
+        SignalCli.configure(p, executable: executable,
+                            arguments: SignalProxy.arguments(ProxySetting.value) + ["link", "-n", name.trimmingCharacters(in: .whitespaces)])
         p.environment = SignalCli.childEnvironment()
         let out = Pipe(), err = Pipe()
         p.standardOutput = out

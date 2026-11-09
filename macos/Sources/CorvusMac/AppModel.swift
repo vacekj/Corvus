@@ -1284,6 +1284,7 @@ final class AppModel {
         guard let c = chats.convs[key], !c.isMuted(at: nowMs()), !isQuiet(key, author: m.authorKey) else { return }
         // Nothing to announce while the user is looking at this very conversation.
         if key == current && userIsLooking() { return }
+        if alertSuppressed(key) { return } // notifications muted, or the chat is open in its own window
 
         // Notification and sound are independent switches.
         if notify.notifications {
@@ -1305,7 +1306,8 @@ final class AppModel {
                 body = c.isGroup && !m.sender.isEmpty ? m.sender + ": " + preview : preview
             }
             // The sender's picture instead of a generic icon; not when the notification hides who wrote.
-            notifier.notify(key: key, title: title, body: body, icon: notify.content == .hidden ? nil : avatarImage(c))
+            notifier.notify(key: key, title: title, body: body, icon: notify.content == .hidden ? nil : avatarImage(c),
+                            kind: notify.content == .hidden ? .privateMessage : .message)
         }
         if notify.sound {
             let now = nowMs()
