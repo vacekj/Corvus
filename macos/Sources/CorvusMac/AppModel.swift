@@ -1241,6 +1241,9 @@ final class AppModel {
         case .story:
             receiveStory(pe, srcKey: srcKey)
             return
+        case .pin, .unpin:
+            handlePinEnvelope(pe, key: key)
+            return
         default:
             break
         }
@@ -1456,23 +1459,10 @@ final class AppModel {
             guard let pendingNow = chats.pendingSends[pendingId] else { return }
 
             if let err, !pendingNow.echoReceived {
-                chats.removePendingPreview(pendingNow)
-                chats.pendingSends.removeValue(forKey: pendingId)
-                showFlash("Sending failed: \(err)")
-                if key != current {
-                    // The user has moved on to another chat: put the unsent message back into that chat's
-                    // draft, never into the composer of the chat that is open now.
-                    var d = drafts[key] ?? Draft()
-                    if d.isEmpty { d = Draft(text: text, reply: quote, files: files) }
-                    drafts[key] = d.isEmpty ? nil : d
-                    return
-                }
-                if composerText.isEmpty { // don't overwrite a newer draft
-                    composerText = text
-                    if pendingFiles.isEmpty { pendingFiles = files }
-                    if !replyQuote.valid { replyQuote = quote }
-                    composerCursorToEnd += 1
-                }
+                // Like Signal Desktop: the message stays in the chat, marked failed, with Retry / Delete.
+                if let rec = chats.failPendingSend(pendingId) { persist(rec) }
+                listChanged()
+                showFlash("Sending failed: \(err)", seconds: 8)
                 return
             }
 
@@ -1511,7 +1501,7 @@ final class AppModel {
     /// ↑ in an empty composer edits the last own message.
     func editLastMessage() -> Bool {
         guard composerText.isEmpty, editKey.isEmpty, pendingFiles.isEmpty, let c = currentConversation else { return false }
-        guard let m = c.msgs.last(where: { $0.outgoing && $0.authorKey == account && !chats.isPendingPreview(c.key, ts: $0.ts) })
+        guard let m = c.msgs.last(where: { $0.outgoing && $0.authorKey == account && !$0.sendFailed && !chats.isPendingPreview(c.key, ts: $0.ts) })
         else { return false }
         startEdit(m.id)
         return !editKey.isEmpty // false when the message can no longer be edited
@@ -1590,19 +1580,22 @@ final class AppModel {
     // MARK: Reactions, deletion
 
     func sendReaction(_ id: String, _ emoji: String) {
-        guard let c = currentConversation, let (_, m) = message(withId: id), !m.deleted else { return }
+        guard let c = currentConversation, let (_, m) = message(withId: id), MessageSelectionRules.canInteract(m),
+              !chats.isPendingPreview(c.key, ts: m.ts) else { return }
         let author = chats.effectiveAuthor(c, m)
-        let remove = m.reactions[account] == emoji // same emoji again = take it back
+        let previous = m.reactions[account] ?? ""
+        let remove = previous == emoji // same emoji again = take it back; another emoji replaces it
         var p: JSON = ["emoji": emoji, "targetAuthor": author, "targetTimestamp": m.latestTs, "remove": remove]
         addRecipient(&p, c)
         let key = c.key, ts = m.ts
+        // Shown at once; persisted once signal-cli has sent it, taken back if it could not.
+        guard let rec = chats.applyReaction(key, ts: ts, authors: [author], reactor: account, emoji: remove ? "" : emoji) else { return }
         Task { [p] in
             do {
                 try await cli.call("sendReaction", p)
-                if let rec = chats.applyReaction(key, ts: ts, authors: [author], reactor: account, emoji: remove ? "" : emoji) {
-                    persist(rec)
-                }
+                persist(rec)
             } catch {
+                _ = chats.applyReaction(key, ts: ts, authors: [author], reactor: account, emoji: previous)
                 showFlash("Reaction failed: \(error.localizedDescription)", seconds: 8)
             }
         }
@@ -1614,8 +1607,7 @@ final class AppModel {
             showFlash("Wait until the message has finished sending before deleting it.", seconds: 6)
             return
         }
-        let age = nowMs() - m.ts
-        let forEveryone = m.outgoing && !m.deleted && age >= 0 && age <= 24 * 60 * 60 * 1000
+        let forEveryone = MessageSelectionRules.canDeleteForEveryone(m, now: nowMs())
         let r = await Dialogs.ask("Delete message",
                                   forEveryone ? "Delete this message from this device or for everyone?" : "Delete this message from this device?",
                                   buttons: forEveryone ? ["Delete for me", "Delete for everyone"] : ["Delete for me"],
@@ -1657,7 +1649,7 @@ final class AppModel {
 
     /// Delete for everyone (ours or the author's): the message turns into a placeholder.
     @discardableResult
-    private func applyDelete(_ key: String, ts: Int64, authors: [String]) -> Bool {
+    func applyDelete(_ key: String, ts: Int64, authors: [String]) -> Bool {
         guard let c = chats.convs[key], let i = chats.findMessage(c, ts: ts, authors: authors) else { return false }
         if editKey == key && editTs == c.msgs[i].ts && !c.msgs[i].deleted { cancelEdit() }
         guard let rec = chats.applyDelete(key, targetTs: ts, authors: authors) else { return false }

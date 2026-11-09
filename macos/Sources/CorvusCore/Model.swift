@@ -166,6 +166,12 @@ public struct Message: Equatable, Identifiable {
     // (self excluded, aliases resolved). Empty for other messages and for imported history that did
     // not record it; the hover detail then shows only the recipients of known receipts.
     public var sentToKeys: [String] = []
+    // Own message signal-cli could not send: it stays in the chat, marked failed, until it is sent again
+    // or deleted (like Signal Desktop). Local only.
+    public var sendFailed = false
+    // Signal pinned message: when it was pinned (0 = not pinned) and when the pin ends (0 = never).
+    public var pinnedAtMs: Int64 = 0
+    public var pinExpiresMs: Int64 = 0
 
     public init() {}
 
@@ -195,6 +201,8 @@ public struct Message: Equatable, Identifiable {
         viewOnceExpired = false
         poll = Poll()
         linkPreview = LinkPreview()
+        pinnedAtMs = 0
+        pinExpiresMs = 0
     }
 
     /// View Once media that has been opened (or was sent by us): only a placeholder remains.
@@ -203,7 +211,7 @@ public struct Message: Equatable, Identifiable {
     public var isPoll: Bool { poll.isValid }
 
     public func canEdit(nowMs: Int64) -> Bool {
-        outgoing && !deleted && !isPoll && !text.isEmpty && editCount < Message.maxEdits && nowMs - ts <= Message.editWindowMs
+        outgoing && !deleted && !sendFailed && !isPoll && !text.isEmpty && editCount < Message.maxEdits && nowMs - ts <= Message.editWindowMs
     }
 }
 
@@ -221,6 +229,7 @@ public struct Conversation: Identifiable {
     public var pinned = false         // kept at the top of the chat list (local, persisted)
     public var markedUnread = false   // "Mark as unread" (local, persisted); cleared when the chat is opened
     public var expirationSeconds = 0  // Signal disappearing-message timer; 0 = disabled
+    public var pins: [MessagePin] = []  // pinned messages (cache of the messages' pin state), oldest first
 
     public init(key: String = "", title: String = "", isGroup: Bool = false) {
         self.key = key

@@ -371,7 +371,14 @@ struct ForwardSheet: View {
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Forward") {
-                    model.forward(messageId: messageId, to: selected)
+                    // Several messages when the sheet was opened from the selection bar.
+                    let batch = MessageSelection.shared.forwardIds
+                    if batch.contains(messageId) {
+                        model.forward(messageIds: batch, to: selected)
+                        MessageSelection.shared.end()
+                    } else {
+                        model.forward(messageId: messageId, to: selected)
+                    }
                     dismiss()
                 }
                 .keyboardShortcut(.return, modifiers: .command)
@@ -381,6 +388,7 @@ struct ForwardSheet: View {
         }
         .padding(20)
         .frame(width: 440)
+        .onDisappear { MessageSelection.shared.forwardIds = [] }
     }
 
     private func toggle(_ key: String) {

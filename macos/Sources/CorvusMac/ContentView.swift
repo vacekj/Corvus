@@ -396,7 +396,7 @@ struct ChatListItem: Equatable {
     var pinned: Bool
     var markedUnread: Bool
     var isDraft: Bool
-    /// Ticks of the last message when it is our own: nil for none, -1 while sending, else 0 sent … 2 read.
+    /// Ticks of the last message when it is our own: nil for none, -1 while sending, -2 failed, else 0 sent … 2 read.
     var lastStatus: Int?
 
     @MainActor init(_ c: Conversation, _ model: AppModel) {
@@ -415,7 +415,7 @@ struct ChatListItem: Equatable {
         isDraft = false
         lastStatus = nil
         if let m = c.msgs.last, m.outgoing, !model.isMessageRequest(c.key) {
-            lastStatus = model.chats.pendingTimestamps(c.key).contains(m.ts) ? -1 : m.deliveryStatus
+            lastStatus = m.sendFailed ? -2 : model.chats.pendingTimestamps(c.key).contains(m.ts) ? -1 : m.deliveryStatus
         }
         // (The open chat has no stored draft: the composer holds it.)
         if !model.isMessageRequest(c.key), let d = model.draftPreview(c.key) {
@@ -482,7 +482,12 @@ private struct ConversationRow: View, Equatable {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    if let status = c.lastStatus, c.unread == 0 {
+                    if c.lastStatus == -2 {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.red)
+                            .accessibilityLabel("Failed to send")
+                    } else if let status = c.lastStatus, c.unread == 0 {
                         ReceiptTicks(status: status < 0 ? nil : status)
                             .font(.system(size: 11, weight: .medium))
                             .foregroundStyle(status >= 2 ? Color.primary : Color.secondary) // as in the bubbles: read is the full colour

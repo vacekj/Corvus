@@ -2,7 +2,7 @@ import Foundation
 
 /// A signal-cli "receive" envelope reduced to what the GUI needs.
 public struct ParsedEnvelope {
-    public enum Kind { case none, message, reaction, edit, remoteDelete, expirationUpdate, pollVote, pollTerminate, story }
+    public enum Kind { case none, message, reaction, edit, remoteDelete, expirationUpdate, pollVote, pollTerminate, story, pin, unpin }
 
     public var kind: Kind = .none
     public var outgoing = false        // sent by one of our own other devices (sync message)
@@ -26,6 +26,9 @@ public struct ParsedEnvelope {
     // Poll vote: target poll = targetNumber/targetUuid + targetTs
     public var pollOptions: [Int] = []
     public var voteCount = 0
+
+    // Pin / unpin (target = targetNumber/targetUuid + targetTs); pin duration in seconds, <= 0 = forever
+    public var pinDurationSeconds = 0
 
     // Story (kind == .story) and story replies / story reactions (storyContext)
     public var story = Story()
@@ -203,6 +206,23 @@ private func parseBody(_ dm: JSON, _ out: inout ParsedEnvelope, envelopeTs: Int6
     if !rd.isEmpty {
         out.targetTs = jsonInt64(rd["timestamp"])
         if out.targetTs > 0 { out.kind = .remoteDelete }
+        return
+    }
+
+    // Pinned message: {"pinMessage": {"targetAuthor", "targetAuthorNumber", "targetAuthorUuid",
+    // "targetSentTimestamp", "pinDurationSeconds"}}; {"unpinMessage": {...the same without the duration}}
+    let pin = jsonObject(dm["pinMessage"]), unpin = jsonObject(dm["unpinMessage"])
+    if !pin.isEmpty || !unpin.isEmpty {
+        let o = pin.isEmpty ? unpin : pin
+        out.targetNumber = jsonString(o["targetAuthorNumber"])
+        if out.targetNumber.isEmpty { out.targetNumber = jsonString(o["targetAuthor"]) }
+        out.targetUuid = jsonString(o["targetAuthorUuid"])
+        out.targetTs = jsonInt64(o["targetSentTimestamp"])
+        out.pinDurationSeconds = jsonInt(o["pinDurationSeconds"])
+        var ts = jsonInt64(dm["timestamp"])
+        if ts <= 0 { ts = envelopeTs }
+        out.msg.ts = ts > 0 ? ts : nowMs()
+        if out.targetTs > 0 { out.kind = pin.isEmpty ? .unpin : .pin }
         return
     }
 

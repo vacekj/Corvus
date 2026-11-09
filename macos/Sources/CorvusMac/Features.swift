@@ -318,73 +318,80 @@ extension AppModel {
     static let maxForwardTargets = 5
 
     /// Forwards text, attachments or a sticker to up to five chats (like Signal Desktop).
-    func forward(messageId: String, to targets: [String]) {
-        guard let source = current, let (_, m) = message(withId: messageId), !m.deleted, !m.viewOnce, !m.isPoll else { return }
+    func forward(messageId: String, to targets: [String]) { forward(messageIds: [messageId], to: targets) }
+
+    /// Forwards several messages (oldest first) to up to five chats; each target gets them in order.
+    func forward(messageIds: [String], to targets: [String]) {
+        guard let source = current else { return }
+        let msgs = messages(withIds: Set(messageIds)).filter(MessageSelectionRules.canForward)
         let keys = Array(targets.prefix(AppModel.maxForwardTargets)).filter { chats.convs[$0] != nil && !isSendLocked($0) }
-        guard !keys.isEmpty else { return }
+        guard !msgs.isEmpty, !keys.isEmpty else { return }
         forwardMessageId = nil
         showFlash("Forwarding …", seconds: 120)
         Task {
-            defer { clearFlash() }
-            // Attachment data is fetched once and staged for all targets.
-            var files: [String] = []
-            let tmp = AppPaths.tempDir.appendingPathComponent("forward-\(UUID().uuidString)")
-            defer { try? FileManager.default.removeItem(at: tmp) }
-            let sticker = m.attachments.first(where: \.isSticker)
-            if sticker == nil {
-                do {
-                    try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
-                    for (i, att) in m.attachments.enumerated() {
-                        let data = try await fetchAttachmentData(source, att)
-                        var name = (att.filename as NSString).lastPathComponent
-                        if name.isEmpty { name = "attachment-\(i)." + Media.preferredSuffix(forMime: att.contentType) }
-                        let url = tmp.appendingPathComponent("\(i)-" + name)
-                        try data.write(to: url)
-                        files.append(url.path)
-                    }
-                } catch {
-                    showFlash("Could not forward the attachment: \(error.localizedDescription)")
-                    return
-                }
-            }
+            // (Every way out shows its own flash, which replaces "Forwarding …".)
             var failed: [String] = []
-            for key in keys {
-                guard let c = chats.convs[key] else { continue }
-                var p: JSON = [:]
-                if !m.text.isEmpty { p["message"] = m.text }
-                if !m.text.isEmpty && !m.textStyles.isEmpty { p["textStyle"] = m.textStyles.map(\.cliString) }
-                if let sticker { p["sticker"] = "\(sticker.stickerPackId):\(sticker.stickerId)" }
-                let staged = Media.stageForSignalCli(files)
-                if !files.isEmpty { p["attachments"] = staged.paths }
-                addRecipient(&p, c)
-                do {
-                    let res = try await cli.call("send", p)
-                    var ts = jsonInt64(jsonObject(res)["timestamp"])
-                    if ts <= 0 { ts = nowMs() }
-                    var copy = Message()
-                    copy.ts = ts
-                    copy.text = m.text
-                    copy.textStyles = m.textStyles
-                    copy.outgoing = true
-                    copy.authorKey = account
-                    copy.attachments = m.attachments.enumerated().map { i, a in
-                        var b = a
-                        b.id = ""
-                        if i < files.count { b.path = "" }
-                        return b
+            for m in msgs {
+                // Attachment data is fetched once per message and staged for all targets.
+                var files: [String] = []
+                let tmp = AppPaths.tempDir.appendingPathComponent("forward-\(UUID().uuidString)")
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                let sticker = m.attachments.first(where: \.isSticker)
+                if sticker == nil {
+                    do {
+                        try FileManager.default.createDirectory(at: tmp, withIntermediateDirectories: true)
+                        for (i, att) in m.attachments.enumerated() {
+                            let data = try await fetchAttachmentData(source, att)
+                            var name = (att.filename as NSString).lastPathComponent
+                            if name.isEmpty { name = "attachment-\(i)." + Media.preferredSuffix(forMime: att.contentType) }
+                            let url = tmp.appendingPathComponent("\(i)-" + name)
+                            try data.write(to: url)
+                            files.append(url.path)
+                        }
+                    } catch {
+                        showFlash("Could not forward the attachment: \(error.localizedDescription)")
+                        return
                     }
-                    copy.expiresInSeconds = c.expirationSeconds
-                    if copy.expiresInSeconds > 0 { copy.expirationStartMs = ts }
-                    addMessage(key, copy)
-                } catch {
-                    failed.append(c.title)
                 }
-                try? FileManager.default.removeItem(at: staged.dir)
+                for key in keys {
+                    guard let c = chats.convs[key] else { continue }
+                    var p: JSON = [:]
+                    if !m.text.isEmpty { p["message"] = m.text }
+                    if !m.text.isEmpty && !m.textStyles.isEmpty { p["textStyle"] = m.textStyles.map(\.cliString) }
+                    if let sticker { p["sticker"] = "\(sticker.stickerPackId):\(sticker.stickerId)" }
+                    let staged = Media.stageForSignalCli(files)
+                    if !files.isEmpty { p["attachments"] = staged.paths }
+                    addRecipient(&p, c)
+                    do {
+                        let res = try await cli.call("send", p)
+                        var ts = jsonInt64(jsonObject(res)["timestamp"])
+                        if ts <= 0 { ts = nowMs() }
+                        var copy = Message()
+                        copy.ts = ts
+                        copy.text = m.text
+                        copy.textStyles = m.textStyles
+                        copy.outgoing = true
+                        copy.authorKey = account
+                        copy.attachments = m.attachments.enumerated().map { i, a in
+                            var b = a
+                            b.id = ""
+                            if i < files.count { b.path = "" }
+                            return b
+                        }
+                        copy.expiresInSeconds = c.expirationSeconds
+                        if copy.expiresInSeconds > 0 { copy.expirationStartMs = ts }
+                        addMessage(key, copy)
+                    } catch {
+                        if !failed.contains(c.title) { failed.append(c.title) }
+                    }
+                    try? FileManager.default.removeItem(at: staged.dir)
+                }
             }
             if !failed.isEmpty {
                 showFlash("Forwarding failed for: \(failed.joined(separator: ", "))")
             } else {
-                showFlash(keys.count == 1 ? "Forwarded." : "Forwarded to \(keys.count) chats.", seconds: 4)
+                let what = msgs.count == 1 ? "Forwarded" : "Forwarded \(msgs.count) messages"
+                showFlash(keys.count == 1 ? "\(what)." : "\(what) to \(keys.count) chats.", seconds: 4)
             }
         }
     }

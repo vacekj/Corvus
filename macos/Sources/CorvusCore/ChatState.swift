@@ -141,6 +141,7 @@ public struct ChatState {
                 break
             }
         }
+        rebuildPins()
     }
 
     /// Everything that is needed to recreate the current state (for compaction).

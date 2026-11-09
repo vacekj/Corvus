@@ -12,6 +12,7 @@ struct ChatPane: View {
     var body: some View {
         VStack(spacing: 0) {
             if model.searchVisible { SearchBar() }
+            if !conversation.pins.isEmpty { PinnedMessagesBar(conversation: conversation) }
             // In an overlay the list's changing content size never re-runs the layout of the window around it
             // (composer, toolbar): a VStack measures its children, and a scroll view measures its content.
             // Recently used chats keep their message list alive, hidden, each in its own hosting view: building
@@ -48,7 +49,7 @@ struct ChatPane: View {
                     }
                 }
             RequestBanner(conversation: conversation)
-            ComposerArea().disabled(model.isSendLocked(conversation.key))
+            ComposerOrSelectionBar(conversation: conversation) { ComposerArea().disabled(model.isSendLocked(conversation.key)) }
         }
         .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { providers in
             handleDrop(providers)
@@ -454,6 +455,7 @@ private struct MessageRow: View {
     let avatar: NSImage?
     @State private var hovering = false
     @State private var reactionsShown = false
+    @Environment(\.conversationKey) private var conversationKey
 
     private var showAvatarColumn: Bool { isGroup && !message.outgoing }
 
@@ -482,6 +484,7 @@ private struct MessageRow: View {
                 }
             hoverActions
         }
+        .modifier(SelectableRow(id: m.id))
         .onHover { hovering = $0 }
     }
 
@@ -490,7 +493,8 @@ private struct MessageRow: View {
     /// scrolling through long chats drop frames.
     private var hoverActions: some View {
         ZStack {
-            if (hovering || reactionsShown) && model.connected && !message.deleted { hoverButtons.transition(.opacity) }
+            if (hovering || reactionsShown) && model.connected && !message.deleted
+                && !MessageSelection.shared.isActive(conversationKey) { hoverButtons.transition(.opacity) }
         }
         .frame(width: 70, height: 22)
         .padding(.bottom, 6)
@@ -499,25 +503,18 @@ private struct MessageRow: View {
 
     private var hoverButtons: some View {
         HStack(spacing: 2) {
-            // A plain button with a popover: a `Menu` is an AppKit pop-up button and costly to build.
-            Button { reactionsShown = true } label: { Image(systemName: "face.smiling") }
-                .buttonStyle(.borderless)
-                .help("React")
-                .popover(isPresented: $reactionsShown, arrowEdge: .top) {
-                    HStack(spacing: 4) {
-                        ForEach(EmojiCatalog.quickReactions, id: \.self) { e in
-                            Button {
-                                reactionsShown = false
-                                model.sendReaction(message.id, e)
-                            } label: { Text(e).font(.system(size: 22)) }
-                            .buttonStyle(.borderless)
-                        }
+            if MessageSelectionRules.canInteract(message) {
+                // A plain button with a popover: a `Menu` is an AppKit pop-up button and costly to build.
+                Button { reactionsShown = true } label: { Image(systemName: "face.smiling") }
+                    .buttonStyle(.borderless)
+                    .help("React")
+                    .popover(isPresented: $reactionsShown, arrowEdge: .top) {
+                        ReactionPicker(message: message) { reactionsShown = false }
                     }
-                    .padding(8)
-                }
-            Button { model.startReply(message.id) } label: { Image(systemName: "arrowshape.turn.up.left") }
-                .buttonStyle(.borderless)
-                .help("Reply")
+                Button { model.startReply(message.id) } label: { Image(systemName: "arrowshape.turn.up.left") }
+                    .buttonStyle(.borderless)
+                    .help("Reply")
+            }
             // The same items as the context menu; built only while the pointer is over this message.
             Menu {
                 MessageMenu(message: message)
@@ -805,7 +802,9 @@ private struct MetaRow: View {
             } else {
                 Text(message.time.formatted(date: .omitted, time: .shortened))
             }
-            if message.outgoing {
+            if message.sendFailed {
+                FailedSendBadge(message: message)
+            } else if message.outgoing {
                 DeliveryTicks(message: message, pending: pending, isGroup: isGroup,
                               muted: color, read: readColor)
             }
@@ -921,7 +920,11 @@ private struct MessageMenu: View {
 
     var body: some View {
         let m = message
-        if !m.deleted {
+        if m.sendFailed {
+            Button { model.retrySend(m.id) } label: { Label("Retry", systemImage: "arrow.clockwise") }
+                .disabled(!model.connected)
+            Divider()
+        } else if !m.deleted {
             Button { model.startReply(m.id) } label: { Label("Reply", systemImage: "arrowshape.turn.up.left") }
             if m.outgoing && m.authorKey == model.account && m.canEdit(nowMs: nowMs()) {
                 Button { model.startEdit(m.id) } label: { Label("Edit", systemImage: "pencil") }
@@ -933,11 +936,8 @@ private struct MessageMenu: View {
             if m.isPoll && m.outgoing && !m.poll.ended {
                 Button { model.endPoll(m.id) } label: { Label("End poll", systemImage: "stop.circle") }
             }
-            Menu {
-                ForEach(EmojiCatalog.quickReactions, id: \.self) { e in
-                    Button(m.reactions[model.account] == e ? "\(e)  (remove)" : e) { model.sendReaction(m.id, e) }
-                }
-            } label: { Label("React", systemImage: "face.smiling") }
+            Menu { ReactionMenuItems(message: m) } label: { Label("React", systemImage: "face.smiling") }
+            PinMenuItems(message: m)
             Divider()
         }
         if !m.text.isEmpty && !m.isPoll {
@@ -953,6 +953,9 @@ private struct MessageMenu: View {
         }
         if !m.deleted {
             Button { model.messageInfoId = m.id } label: { Label("Info …", systemImage: "info.circle") }
+        }
+        if let key = model.current {
+            Button { MessageSelection.shared.begin(key, m.id) } label: { Label("Select", systemImage: "checkmark.circle") }
         }
         Divider()
         Button(role: .destructive) { Task { await model.deleteMessage(m.id) } } label: { Label("Delete …", systemImage: "trash") }

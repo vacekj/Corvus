@@ -74,6 +74,9 @@ public enum Records {
         if m.outgoing && m.receiptStatus > 0 { d["rs"] = min(m.receiptStatus, 2) }
         if m.outgoing && !m.recipientReceipts.isEmpty { d["rr"] = recipientReceiptsToJson(m.recipientReceipts) }
         if let lp = linkPreviewExtra(m) { d["lp"] = lp }
+        // Local-only extras (the Qt app ignores them): a failed send and a pinned message.
+        if m.outgoing && m.sendFailed && !m.deleted { d["fs"] = true }
+        if m.pinnedAtMs > 0 && !m.deleted { d["pn"] = pinToJson(m) }
         var rec: JSON = ["t": "m", "c": conv, "ts": m.ts, "s": m.sender, "x": m.deleted ? "" : m.text,
                          "o": m.outgoing, "au": m.authorKey]
         if m.editCount > 0 && !m.deleted { d["ed"] = editToJson(m) }
@@ -90,6 +93,17 @@ public enum Records {
     /// Delete for everyone: an "update" record with the extra "dl"; ts = original timestamp.
     public static func deletion(_ conv: String, _ m: Message) -> JSON {
         ["t": "u", "c": conv, "ts": m.ts, "au": m.authorKey, "d": ["dl": true] as JSON]
+    }
+
+    /// Pinned / unpinned message: "pn" {at: pinned at, ex: pin ends (0 = never)}; an empty object unpins.
+    public static func pinUpdate(_ conv: String, _ m: Message) -> JSON {
+        ["t": "u", "c": conv, "ts": m.ts, "au": m.authorKey, "d": ["pn": m.pinnedAtMs > 0 ? pinToJson(m) : JSON()] as JSON]
+    }
+
+    static func pinToJson(_ m: Message) -> JSON {
+        var o: JSON = ["at": m.pinnedAtMs]
+        if m.pinExpiresMs > 0 { o["ex"] = m.pinExpiresMs }
+        return o
     }
 
     public static func expirationUpdate(_ conv: String, _ m: Message) -> JSON {
@@ -175,6 +189,11 @@ public enum Records {
         if d["ve"] != nil { m.viewOnceExpired = jsonBool(d["ve"]) }
         if let pl = d["pl"] as? JSON { m.poll = pollFromJson(pl) }
         if let lp = d["lp"] as? JSON { m.linkPreview = linkPreviewFromJson(lp) }
+        if d["fs"] != nil { m.sendFailed = m.outgoing && jsonBool(d["fs"]) }
+        if let pn = d["pn"] as? JSON {
+            m.pinnedAtMs = jsonInt64(pn["at"])
+            m.pinExpiresMs = m.pinnedAtMs > 0 ? jsonInt64(pn["ex"]) : 0
+        }
         if d["at"] != nil {
             m.attachments = jsonArray(d["at"]).map { attachmentFromJson(jsonObject($0)) }
         }
