@@ -76,6 +76,9 @@ public struct TypingTracker: Equatable {
     public func typers(in key: String) -> [String] { (since[key] ?? [:]).keys.sorted() }
 
     public var isEmpty: Bool { since.isEmpty }
+
+    /// Conversations in which somebody is typing.
+    public var conversations: Set<String> { Set(since.keys) }
 }
 
 /// When the composer sends "typing started" / "typing stopped", like the official clients: started on the

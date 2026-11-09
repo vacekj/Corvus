@@ -75,11 +75,8 @@ struct ConversationInfoPanel: View {
             Label("Disappearing messages", systemImage: "timer")
         }
         .disabled(!model.connected)
-        Toggle(isOn: Binding(get: { c.muted }, set: { model.setMuted(c.key, $0) })) {
-            Label("Mute notifications", systemImage: "bell.slash")
-        }
-        .toggleStyle(.switch)
-        .controlSize(.small)
+        MuteInfoRow(conversation: c)
+        ChatWallpaperRow(conversation: c)
     }
 
     @ViewBuilder

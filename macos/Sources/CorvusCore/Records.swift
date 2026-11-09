@@ -222,7 +222,14 @@ public enum Records {
         ["t": "a", "c": conv, "v": archived, "s": sigArchived]
     }
 
-    public static func mute(_ conv: String, _ muted: Bool) -> JSON { ["t": "k", "c": conv, "v": muted] }
+    /// "u" (local-only extra, ignored by the Qt app): end of a timed mute in ms; absent = until unmuted.
+    public static func mute(_ conv: String, _ muted: Bool, until: Int64 = 0) -> JSON {
+        muted && until > 0 ? ["t": "k", "c": conv, "v": true, "u": until] : ["t": "k", "c": conv, "v": muted]
+    }
+    /// Chat folders the chat was picked for (local only; the Qt app ignores the record).
+    public static func folders(_ conv: String, _ ids: Set<String>) -> JSON { ["t": "fo", "c": conv, "v": ids.sorted()] }
+    /// Wallpaper of one chat (local only); empty follows the global wallpaper.
+    public static func wallpaper(_ conv: String, _ id: String) -> JSON { ["t": "wp", "c": conv, "v": id] }
     public static func expiration(_ conv: String, _ seconds: Int) -> JSON { ["t": "e", "c": conv, "v": seconds] }
     public static func name(_ conv: String, _ n: String) -> JSON { ["t": "n", "c": conv, "n": n] }
     public static func nickname(_ conv: String, _ n: String) -> JSON { ["t": "p", "c": conv, "n": n] }

@@ -241,7 +241,8 @@ private struct Sidebar: View {
         let archivedUnread = archived.reduce(0) { $0 + $1.unread }
         let q = filter.trimmingCharacters(in: .whitespaces)
         let all = model.chatListItems(archived: model.showArchived)
-        let list = q.isEmpty ? all : all.filter {
+        let folders = ChatFolderStore.shared // folder tabs and the unread filter (ChatFolderViews.swift)
+        let list = q.isEmpty ? folders.visible(all, archived: model.showArchived) : all.filter {
             $0.title.localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q)
         }
 
@@ -268,6 +269,7 @@ private struct Sidebar: View {
                             .buttonStyle(.borderless)
                             .foregroundStyle(.secondary)
                     }
+                    ChatListUnreadFilterButton()
                 }
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
@@ -291,6 +293,7 @@ private struct Sidebar: View {
             .padding(.horizontal, 12)
             .padding(.top, 6)
             .padding(.bottom, 8)
+            if q.isEmpty && !model.showArchived && !folders.folders.isEmpty { ChatFolderTabs(items: all) }
 
             // The selection is drawn by the rows (not the list), so switching chats never flashes the
             // focused-list accent colour; a chat opens on mouse down.
@@ -305,7 +308,7 @@ private struct Sidebar: View {
                         Text("Archived chats")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
-                    } else if !archived.isEmpty && q.isEmpty {
+                    } else if !archived.isEmpty && q.isEmpty && !folders.isFiltering {
                         SidebarRow(selected: false, action: { model.showArchived = true }) {
                             HStack(spacing: 10) {
                                 Image(systemName: "archivebox")
@@ -329,7 +332,7 @@ private struct Sidebar: View {
                         }
                     }
                     if list.isEmpty && messageHits.isEmpty && model.historyReady {
-                        Text(q.isEmpty ? "No chats yet" : "No chats match “\(q)”")
+                        Text(chatListEmptyText(query: q))
                             .foregroundStyle(.secondary)
                             .frame(maxWidth: .infinity)
                             .padding(.top, 20)
@@ -349,6 +352,8 @@ private struct Sidebar: View {
 
             ConnectionFooter()
         }
+        .background(KeepOpenChatListed())
+        .modifier(ChatFolderSheets())
         .onChange(of: KeyboardNavigation.shared.sidebarSearchFocus) { searchFocused = true }
         .task(id: q) { await searchMessages(q) }
     }
@@ -398,6 +403,8 @@ struct ChatListItem: Equatable {
     var isDraft: Bool
     /// Ticks of the last message when it is our own: nil for none, -1 while sending, -2 failed, else 0 sent … 2 read.
     var lastStatus: Int?
+    /// Chat folders the chat was picked for (filtering only, not shown).
+    var folders: Set<String>
 
     @MainActor init(_ c: Conversation, _ model: AppModel) {
         key = c.key
@@ -412,6 +419,7 @@ struct ChatListItem: Equatable {
         avatar = model.appearance.showAvatars ? model.avatarImage(c) : nil
         pinned = c.pinned
         markedUnread = c.markedUnread
+        folders = c.folders
         isDraft = false
         lastStatus = nil
         if let m = c.msgs.last, m.outgoing, !model.isMessageRequest(c.key) {
@@ -458,29 +466,28 @@ private struct ConversationRow: View, Equatable {
 
     var body: some View {
         let c = item
+        let d = DisplaySettings.shared // text size (Settings → Appearance, ⌘+ / ⌘-)
         HStack(spacing: 10) {
             if let avatar = c.avatar {
-                AvatarView(image: avatar, size: 40)
+                AvatarView(image: avatar, size: d.size(40))
             }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 4) {
                     Text(c.title)
-                        .font(.system(size: 13, weight: c.unread > 0 ? .bold : .semibold))
+                        .font(.system(size: d.size(13), weight: c.unread > 0 ? .bold : .semibold))
                         .lineLimit(1)
                     if c.muted { Image(systemName: "bell.slash.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
                     if c.blocked { Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.red) }
                     Spacer(minLength: 4)
                     if c.pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
                     Text(c.time)
-                        .font(.caption2)
+                        .font(.system(size: d.size(DisplaySettings.caption2Size)))
                         .foregroundStyle(c.unread > 0 ? Theme.signalBlue : .secondary)
                 }
                 HStack(spacing: 4) {
-                    Text(c.preview)
-                        .font(.caption)
-                        .italic(c.isDraft)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    // "typing" replaces the preview; only this part of the row observes it.
+                    ChatRowPreview(key: c.key, preview: c.preview, isDraft: c.isDraft,
+                                   fontSize: d.size(DisplaySettings.captionSize))
                     Spacer(minLength: 4)
                     if c.lastStatus == -2 {
                         Image(systemName: "exclamationmark.circle.fill")
@@ -655,9 +662,8 @@ private struct ConversationMenu: View {
         Button { model.setArchived(c.key, !c.archived) } label: {
             Label(c.archived ? "Unarchive" : "Archive", systemImage: c.archived ? "tray.and.arrow.up" : "archivebox")
         }
-        Button { model.setMuted(c.key, !c.muted) } label: {
-            Label(c.muted ? "Unmute notifications" : "Mute notifications", systemImage: c.muted ? "bell" : "bell.slash")
-        }
+        FolderMenu(conversation: c)
+        MuteMenu(conversation: c)
         Menu {
             ForEach(AppModel.expirationChoices, id: \.1) { label, seconds in
                 Button {

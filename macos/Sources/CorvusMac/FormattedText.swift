@@ -72,7 +72,7 @@ struct FormattedMessageText: View {
                   let ar = Range(r, in: s) else { continue }
             var weight: Font.Weight = run.styles.contains(.bold) ? .bold : .regular
             if run.mention != nil && weight == .regular { weight = .semibold }
-            var font = Font.system(size: Self.size, weight: weight, design: run.styles.contains(.monospace) ? .monospaced : .default)
+            var font = Font.system(size: DisplaySettings.shared.size(Self.size), weight: weight, design: run.styles.contains(.monospace) ? .monospaced : .default)
             if run.styles.contains(.italic) { font = font.italic() }
             s[ar].font = font
             if run.styles.contains(.strikethrough) { s[ar].strikethroughStyle = .single }

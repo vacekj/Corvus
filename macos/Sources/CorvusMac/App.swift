@@ -86,6 +86,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 MainWindowTracker.shared.window?.close()
             }
         }
+        DisplaySettings.applyAtLaunch()
         model.start()
         ScrollBench.shared.arm(model)
         #if DEBUG
@@ -120,7 +121,10 @@ struct CorvusMacApp: App {
                 .frame(minWidth: 720, minHeight: 460)
         }
         .defaultSize(width: 1020, height: 680)
-        .commands { AppCommands(model: model) }
+        .commands {
+            AppCommands(model: model)
+            ZoomCommands()
+        }
 
         Settings {
             SettingsView()

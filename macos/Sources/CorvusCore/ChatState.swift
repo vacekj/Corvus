@@ -124,6 +124,13 @@ public struct ChatState {
             case "k":
                 ensure(key, title: key, group: group)
                 convs[key]!.muted = jsonBool(o["v"])
+                convs[key]!.muteUntilMs = convs[key]!.muted ? jsonInt64(o["u"]) : 0
+            case "fo":
+                ensure(key, title: key, group: group)
+                convs[key]!.folders = Set(jsonArray(o["v"]).map(jsonString).filter { !$0.isEmpty })
+            case "wp":
+                ensure(key, title: key, group: group)
+                convs[key]!.wallpaper = jsonString(o["v"])
             case "e":
                 ensure(key, title: key, group: group)
                 convs[key]!.expirationSeconds = jsonInt(o["v"])
@@ -152,7 +159,9 @@ public struct ChatState {
             if !c.storedName.isEmpty { out.append(Records.name(c.key, c.storedName)) }
             if !c.localNickname.isEmpty { out.append(Records.nickname(c.key, c.localNickname)) }
             if c.archived || c.sigArchived { out.append(Records.archive(c.key, archived: c.archived, sigArchived: c.sigArchived)) }
-            if c.muted { out.append(Records.mute(c.key, true)) }
+            if c.muted { out.append(Records.mute(c.key, true, until: c.muteUntilMs)) }
+            if !c.folders.isEmpty { out.append(Records.folders(c.key, c.folders)) }
+            if !c.wallpaper.isEmpty { out.append(Records.wallpaper(c.key, c.wallpaper)) }
             if c.pinned { out.append(Records.pin(c.key, true)) }
             if c.markedUnread { out.append(Records.markedUnread(c.key, true)) }
             out.append(Records.expiration(c.key, c.expirationSeconds))

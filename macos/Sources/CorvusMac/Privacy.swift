@@ -45,6 +45,7 @@ struct PrivacySettingsView: View {
                 Text("Never sent for message requests you have not accepted or to blocked people.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            AccountPrivacySections()
         }
         .formStyle(.grouped)
         .onAppear {

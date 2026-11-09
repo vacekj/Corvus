@@ -69,7 +69,10 @@ extension AppModel {
     /// Creates a group (`updateGroup` without `groupId`) and opens it; returns the error text, nil on success.
     func createGroup(name: String, description: String, members: [String]) async -> String? {
         let res: Any
-        do { res = try await cli.call("updateGroup", GroupParams.create(name: name, description: description, members: members)) } catch {
+        var params = GroupParams.create(name: name, description: description, members: members)
+        let timer = AccountPrivacy.shared.defaultExpirationSeconds // Settings → Privacy: new chats disappear
+        if timer > 0 { params["expiration"] = timer }
+        do { res = try await cli.call("updateGroup", params) } catch {
             return error.localizedDescription
         }
         let id = jsonString(jsonObject(res)["groupId"])

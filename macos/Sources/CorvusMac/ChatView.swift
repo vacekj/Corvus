@@ -22,7 +22,7 @@ struct ChatPane: View {
                 if WarmListsContainer.hosted {
                     // The chat background (not the window's) shows while a list is being built.
                     WarmMessageLists(model: model, keys: model.warmChats, current: conversation.key)
-                        .background(model.appearance.backgroundColor)
+                        .background(ChatBackground(key: conversation.key))
                 } else {
                     ZStack {
                         ForEach(model.warmChats, id: \.self) { key in
@@ -330,7 +330,7 @@ private struct MessageList: View, Equatable {
                 }
             }
             .environment(\.conversationKey, conversation.key)
-            .background(model.appearance.backgroundColor)
+            .background(ChatBackground(key: conversation.key))
             // New messages scroll into view only while the end of the list is in view (own messages always);
             // otherwise "↓ N new" counts them.
             .onChange(of: LastMessageMark(msgs.last)) { old, new in
@@ -623,7 +623,7 @@ private struct Bubble: View {
                     VStack(alignment: .leading, spacing: 6) {
                         if showSender { senderLabel }
                         Text(m.deletedText)
-                            .font(.system(size: NSFont.systemFontSize + 1).italic())
+                            .font(.system(size: DisplaySettings.shared.size(NSFont.systemFontSize + 1)).italic())
                             .foregroundStyle(fg.opacity(0.7))
                     }
                     MetaRow(message: m, pending: pending, color: fg.opacity(0.7), readColor: fg, isGroup: isGroup)
@@ -681,7 +681,7 @@ private struct Bubble: View {
             } else if Bubble.isEmojiOnly(m.text) && !m.quote.valid && m.attachments.isEmpty {
                 VStack(alignment: m.outgoing ? .trailing : .leading, spacing: 2) {
                     if showSender { senderLabel }
-                    Text(m.text).font(.system(size: 44))
+                    Text(m.text).font(.system(size: DisplaySettings.shared.size(44)))
                     MetaRow(message: m, pending: pending, color: .secondary, readColor: .primary, isGroup: isGroup)
                 }
             } else {
@@ -750,7 +750,8 @@ private struct Bubble: View {
 
     /// Link detection is slow; rows are rebuilt on every scroll into view, so results are kept.
     static func linkified(_ text: String, emojiOnly: Bool = false) -> AttributedString {
-        let key = ((emojiOnly ? "1" : "0") + text) as NSString
+        let zoom = DisplaySettings.shared.textZoom // Settings → Appearance → Text size
+        let key = ((emojiOnly ? "1" : "0") + "\(zoom)|" + text) as NSString
         if let hit = linkCache.object(forKey: key) { return hit.value }
         let s = makeLinkified(text, emojiOnly: emojiOnly)
         linkCache.setObject(LinkifiedBox(s), forKey: key)
@@ -759,7 +760,8 @@ private struct Bubble: View {
 
     private static func makeLinkified(_ text: String, emojiOnly: Bool) -> AttributedString {
         var s = AttributedString(text)
-        s.font = emojiOnly ? .system(size: 40) : .system(size: NSFont.systemFontSize + 1)
+        let d = DisplaySettings.shared
+        s.font = emojiOnly ? .system(size: d.size(40)) : .system(size: d.size(NSFont.systemFontSize + 1))
         guard !emojiOnly, let detector = linkDetector else { return s }
         let ns = text as NSString
         for match in detector.matches(in: text, range: NSRange(location: 0, length: ns.length)) {

@@ -8,6 +8,7 @@ struct SettingsView: View {
         TabView {
             GeneralSettings().tabItem { Label("General", systemImage: "gearshape") }
             AppearanceSettings().tabItem { Label("Appearance", systemImage: "paintpalette") }
+            ChatFolderSettings().tabItem { Label("Chats", systemImage: "folder") }
             NotificationSettingsView().tabItem { Label("Notifications", systemImage: "bell.badge") }
             PrivacySettingsView().tabItem { Label("Privacy", systemImage: "hand.raised") }
             ProfileSettings().tabItem { Label("Profile", systemImage: "person.crop.circle") }
@@ -66,6 +67,7 @@ private struct AppearanceSettings: View {
 
     var body: some View {
         Form {
+            DisplaySettingsSections()
             Section("Bubbles") {
                 colorRow("Your messages", \.outBg, a.outBgColor)
                 colorRow("Text of your messages", \.outText, a.outTextColor)

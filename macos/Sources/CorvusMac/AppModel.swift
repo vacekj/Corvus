@@ -253,6 +253,7 @@ final class AppModel {
             historyReady = true
             Perf.mark("history ready")
             applyCachedRoster()
+            refreshMuteExpiry()
             reopenLastChat()
             prewarmTopChats()
             let early = earlyEnvelopes
@@ -909,11 +910,8 @@ final class AppModel {
     }
 
     /// Local per-chat mute (signal-cli does not report mute state): no notification, no sound.
-    func setMuted(_ key: String, _ muted: Bool) {
-        guard let c = chats.convs[key], c.muted != muted else { return }
-        chats.convs[key]!.muted = muted
-        persist(Records.mute(key, muted))
-    }
+    /// Timed mutes: `setMute(_:_:)` (MuteDurations.swift).
+    func setMuted(_ key: String, _ muted: Bool) { setMute(key, muted ? .always : nil) }
 
     static let expirationChoices: [(String, Int)] = [
         ("Off", 0), ("30 seconds", 30), ("1 minute", 60), ("5 minutes", 300), ("1 hour", 3600), ("6 hours", 6 * 3600),
@@ -976,11 +974,12 @@ final class AppModel {
         if chats.convs[r]!.archived { setArchived(r, false) }
         showArchived = false
         openConversation(r)
+        applyDefaultExpiration(r) // a chat without messages gets the default timer (Settings → Privacy)
     }
 
     /// ⌥↑ / ⌥↓: the chat above or below the current one in the chat list.
     func openAdjacentChat(_ step: Int) {
-        let items = chatListItems(archived: showArchived)
+        let items = ChatFolderStore.shared.visible(chatListItems(archived: showArchived), archived: showArchived, keep: current)
         guard !items.isEmpty else { return }
         let i = items.firstIndex { $0.key == current }.map { $0 + step } ?? (step > 0 ? 0 : items.count - 1)
         guard items.indices.contains(i) else { return }
@@ -1299,7 +1298,7 @@ final class AppModel {
     }
 
     func alertIncoming(_ key: String, _ m: Message) {
-        guard let c = chats.convs[key], !c.muted, !isQuiet(key, author: m.authorKey) else { return }
+        guard let c = chats.convs[key], !c.isMuted(at: nowMs()), !isQuiet(key, author: m.authorKey) else { return }
         // Nothing to announce while the user is looking at this very conversation.
         if key == current && userIsLooking() { return }
 

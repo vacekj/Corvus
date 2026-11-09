@@ -8,7 +8,9 @@ import SwiftUI
 final class TypingIndicators {
     static let shared = TypingIndicators()
 
-    private(set) var tracker = TypingTracker()
+    private(set) var tracker = TypingTracker() {
+        didSet { ChatListTyping.shared.update(tracker.conversations) } // the chat list rows
+    }
     @ObservationIgnored private var outbox = TypingOutbox()
     @ObservationIgnored private var timer: Timer?
 
