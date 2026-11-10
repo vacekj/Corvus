@@ -2,13 +2,14 @@ import AppKit
 import CorvusCore
 import SwiftUI
 
-/// State of the app's "chrome" around the chats: the call list, the keyboard shortcuts sheet and the
-/// menu bar's notification mute. Kept out of `AppModel` so none of it makes the chat views update.
+/// State of the app's "chrome" around the chats: which tab the sidebar shows (chats or calls), the
+/// keyboard shortcuts sheet and the menu bar's notification mute. Kept out of `AppModel` so none of it makes the chat views update.
 @MainActor @Observable
 final class AppChrome {
     static let shared = AppChrome()
 
-    var callsShown = false
+    enum SidebarTab { case chats, calls }
+    var sidebarTab = SidebarTab.chats
     var shortcutsShown = false
     var mute = NotificationMute.load() {
         didSet {
@@ -69,14 +70,13 @@ extension AppModel {
     }
 }
 
-/// The sheets of the main window that belong to the app chrome (call list, keyboard shortcuts).
+/// The sheets of the main window that belong to the app chrome (keyboard shortcuts).
 struct AppChromeSheets: ViewModifier {
     private let chrome = AppChrome.shared
 
     func body(content: Content) -> some View {
         @Bindable var chrome = chrome
         content
-            .sheet(isPresented: $chrome.callsShown) { CallHistorySheet() }
             .sheet(isPresented: $chrome.shortcutsShown) { KeyboardShortcutsSheet() }
     }
 }

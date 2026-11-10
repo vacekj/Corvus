@@ -480,6 +480,7 @@ private struct PopupTextInput: NSViewRepresentable {
         scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
         let tv = PlaceholderTextView()
+        if #available(macOS 15.0, *) { tv.writingToolsBehavior = .none }
         tv.delegate = context.coordinator
         tv.isRichText = false
         tv.allowsUndo = true

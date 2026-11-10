@@ -218,7 +218,7 @@ struct AppCommands: Commands {
                 .disabled(model.current == nil || !model.connected)
             Button("Stories") { model.storiesShown = true }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
-            Button("Calls") { AppChrome.shared.callsShown = true }
+            Button("Calls") { AppChrome.shared.sidebarTab = .calls }
                 .disabled(!model.historyReady)
             Button("Add sticker pack …") { model.requestStickerPackAdd() }
                 .disabled(!model.connected || model.current == nil)

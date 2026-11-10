@@ -109,43 +109,63 @@ extension AppModel {
 
 // MARK: - Views
 
-/// The Calls button next to Stories above the chat list, with the number of missed calls not yet seen.
-struct CallsButton: View {
+/// The tabs at the bottom of the sidebar: chats and calls (with a dot for missed calls not yet seen).
+struct SidebarTabBar: View {
     @Environment(AppModel.self) private var model
+    private let chrome = AppChrome.shared
     private let store = CallHistoryStore.shared
 
     var body: some View {
-        Button { AppChrome.shared.callsShown = true } label: {
-            Image(systemName: "phone").font(.system(size: 15))
-                .overlay(alignment: .topTrailing) {
-                    if store.unseenMissed > 0 { Circle().fill(Color.red).frame(width: 7, height: 7).offset(x: 3, y: -2) }
-                }
+        VStack(spacing: 0) {
+            Divider()
+            HStack(spacing: 0) {
+                tab(.chats, "Chats", "bubble.left.and.bubble.right", dot: model.totalUnread > 0 ? Theme.signalBlue : nil)
+                tab(.calls, "Calls", "phone", dot: store.unseenMissed > 0 ? Color.red : nil)
+                    .disabled(!model.historyReady)
+            }
+            .padding(.vertical, 4)
         }
-        .buttonStyle(.borderless)
-        .iconHelp(store.unseenMissed > 0 ? "Calls, \(store.unseenMissed) missed" : "Calls")
-        .disabled(!model.historyReady)
+    }
+
+    private func tab(_ tab: AppChrome.SidebarTab, _ title: String, _ symbol: String, dot: Color?) -> some View {
+        let on = chrome.sidebarTab == tab
+        return Button { chrome.sidebarTab = tab } label: {
+            VStack(spacing: 2) {
+                Image(systemName: on ? symbol + ".fill" : symbol)
+                    .font(.system(size: 15))
+                    .frame(height: 18) // the symbols differ in height: both tabs keep one size
+                    .overlay(alignment: .topTrailing) {
+                        if let dot { Circle().fill(dot).frame(width: 7, height: 7).offset(x: 4, y: -2) }
+                    }
+                Text(title).font(.caption2)
+            }
+            .foregroundStyle(on ? Theme.signalBlue : Color.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(title)
+        .accessibilityAddTraits(on ? .isSelected : [])
     }
 }
 
-struct CallHistorySheet: View {
+/// The call history, shown in the sidebar while its tab is selected.
+struct SidebarCalls: View {
     @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
     private let store = CallHistoryStore.shared
     @State private var missedOnly = false
 
     var body: some View {
         let records = store.log.filtered(missedOnly: missedOnly)
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
-                Text("Calls").font(.title3.weight(.semibold))
-                Spacer()
+            HStack(spacing: 8) {
                 Picker("Show", selection: $missedOnly) {
                     Text("All").tag(false)
                     Text("Missed").tag(true)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
-                .frame(width: 150)
                 Menu {
                     Button("Clear call history …", role: .destructive) { Task { await clear() } }
                         .disabled(store.log.records.isEmpty)
@@ -155,9 +175,9 @@ struct CallHistorySheet: View {
                     .fixedSize()
                     .iconHelp("More")
             }
-            .padding(.horizontal, 16)
-            .padding(.vertical, 12)
-            Divider()
+            .padding(.horizontal, 12)
+            .padding(.top, 6)
+            .padding(.bottom, 8)
             if records.isEmpty {
                 VStack(spacing: 8) {
                     Image(systemName: missedOnly ? "phone.arrow.down.left" : "phone").font(.system(size: 28)).foregroundStyle(.tertiary)
@@ -166,37 +186,20 @@ struct CallHistorySheet: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(records) { r in
-                    CallRow(record: r) { open(r.peerKey) }
+                    CallRow(record: r) { model.openPicked(r.peerKey) }
                         .contextMenu {
-                            Button("Call back") { callBack(r.peerKey) }
+                            Button("Call back") { Task { await model.startCall(r.peerKey) } }
                                 .disabled(model.callUnavailableReason(r.peerKey) != nil)
-                            Button("Open chat") { open(r.peerKey) }
+                            Button("Open chat") { model.openPicked(r.peerKey) }
                             Divider()
                             Button("Remove from call history", role: .destructive) { store.remove(r.id) }
                         }
                 }
-                .listStyle(.inset)
+                .listStyle(.sidebar)
             }
-            Divider()
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
-            }
-            .padding(12)
         }
-        .frame(width: 460, height: 540)
         .onAppear { store.markSeen() }
         .onDisappear { store.markSeen() }
-    }
-
-    private func open(_ key: String) {
-        dismiss()
-        model.openPicked(key)
-    }
-
-    private func callBack(_ key: String) {
-        dismiss()
-        Task { await model.startCall(key) }
     }
 
     private func clear() async {

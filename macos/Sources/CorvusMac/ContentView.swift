@@ -61,9 +61,15 @@ struct ContentView: View {
                         .disabled(model.current == nil)
                 }
             }
+            // The header's background is drawn here, exactly as wide as the chat: the window toolbar's own
+            // background starts a little to the left of it, over the edge of the sidebar.
+            .toolbarBackground(.hidden, for: .windowToolbar)
+            .background(alignment: .top) { Theme.chrome.ignoresSafeArea(edges: .top).frame(height: 0) }
+            .overlay(alignment: .top) { Divider().allowsHitTesting(false) }
         }
         .navigationTitle(model.totalUnread > 0 ? "(\(model.totalUnread)) Corvus" : "Corvus")
         .hidingWindowTitle()
+        .withoutWritingTools()
         .tint(Theme.signalBlue)
         .overlay { QuickSwitcherOverlay() }
         .animation(.easeOut(duration: 0.1), value: KeyboardNavigation.shared.quickSwitcherShown)
@@ -251,117 +257,113 @@ private struct Sidebar: View {
         }
 
         VStack(spacing: 0) {
-            HStack(spacing: 8) {
-                HStack(spacing: 6) {
-                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-                    TextField("Search chats", text: $filter).textFieldStyle(.plain)
-                        .focused($searchFocused)
-                        // ↓ or Return opens the first hit, Esc clears the search.
-                        .onSubmit { openFirstHit(list, query: q) }
-                        .onKeyPress(.downArrow) { openFirstHit(list, query: q) ? .handled : .ignored }
-                        .onKeyPress(.escape) {
-                            if filter.isEmpty {
-                                searchFocused = false
-                                model.composerFocusRequest += 1
-                            } else {
-                                filter = ""
+            if AppChrome.shared.sidebarTab == .calls {
+                SidebarCalls()
+            } else {
+                HStack(spacing: 8) {
+                    HStack(spacing: 6) {
+                        Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                        TextField("Search chats", text: $filter).textFieldStyle(.plain)
+                            .focused($searchFocused)
+                            // ↓ or Return opens the first hit, Esc clears the search.
+                            .onSubmit { openFirstHit(list, query: q) }
+                            .onKeyPress(.downArrow) { openFirstHit(list, query: q) ? .handled : .ignored }
+                            .onKeyPress(.escape) {
+                                if filter.isEmpty {
+                                    searchFocused = false
+                                    model.composerFocusRequest += 1
+                                } else {
+                                    filter = ""
+                                }
+                                return .handled
                             }
-                            return .handled
+                        if !filter.isEmpty {
+                            Button { filter = "" } label: { Image(systemName: "xmark.circle.fill") }
+                                .buttonStyle(.borderless)
+                                .foregroundStyle(.secondary)
+                                .iconHelp("Clear search")
                         }
-                    if !filter.isEmpty {
-                        Button { filter = "" } label: { Image(systemName: "xmark.circle.fill") }
-                            .buttonStyle(.borderless)
-                            .foregroundStyle(.secondary)
-                            .iconHelp("Clear search")
+                        ChatListUnreadFilterButton()
                     }
-                    ChatListUnreadFilterButton()
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Capsule().fill(Theme.field))
-                Button { model.storiesShown = true } label: {
-                    Image(systemName: "circle.dashed.inset.filled").font(.system(size: 15))
-                        .overlay(alignment: .topTrailing) {
-                            if model.unviewedStories > 0 { Circle().fill(Theme.signalBlue).frame(width: 7, height: 7).offset(x: 3, y: -2) }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Capsule().fill(Theme.field))
+                    // Archived chats (the folder exists only while it holds chats).
+                    if !archived.isEmpty || model.showArchived {
+                        Button { model.showArchived.toggle() } label: {
+                            Image(systemName: model.showArchived ? "archivebox.fill" : "archivebox").font(.system(size: 15))
+                                .overlay(alignment: .topTrailing) {
+                                    if archivedUnread > 0 { Circle().fill(Theme.signalBlue).frame(width: 7, height: 7).offset(x: 3, y: -2) }
+                                }
                         }
+                        .buttonStyle(.borderless)
+                        .iconHelp(model.showArchived ? "Back to chats" : "Archived chats, \(archived.count)")
+                        .disabled(!model.historyReady)
+                    }
+                    Button { Task { await model.newConversation() } } label: {
+                        Image(systemName: "square.and.pencil").font(.system(size: 15))
+                    }
+                    .buttonStyle(.borderless)
+                    .iconHelp("New conversation", tooltip: "New conversation (⌘N)")
+                    .disabled(!model.historyReady)
                 }
-                .buttonStyle(.borderless)
-                .iconHelp("Stories")
-                .disabled(!model.historyReady)
-                CallsButton()
-                Button { Task { await model.newConversation() } } label: {
-                    Image(systemName: "square.and.pencil").font(.system(size: 15))
-                }
-                .buttonStyle(.borderless)
-                .iconHelp("New conversation", tooltip: "New conversation (⌘N)")
-                .disabled(!model.historyReady)
-            }
-            .padding(.horizontal, 12)
-            .padding(.top, 6)
-            .padding(.bottom, 8)
-            AppUpdateBanner()
-            if q.isEmpty && !model.showArchived && !folders.folders.isEmpty { ChatFolderTabs(items: all) }
+                .padding(.horizontal, 12)
+                .padding(.top, 6)
+                .padding(.bottom, 8)
+                AppUpdateBanner()
+                if q.isEmpty && !model.showArchived && !folders.folders.isEmpty { ChatFolderTabs(items: all) }
 
-            // The selection is drawn by the rows (not the list), so switching chats never flashes the
-            // focused-list accent colour; a chat opens on mouse down.
-            ScrollViewReader { proxy in
-                List {
-                    if model.showArchived {
-                        SidebarRow(selected: false, action: { model.showArchived = false }) {
-                            Label("Back to chats", systemImage: "chevron.left")
-                                .foregroundStyle(Theme.signalBlue)
-                                .padding(.vertical, 4)
-                        }
-                        Text("Archived chats")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                    } else if !archived.isEmpty && q.isEmpty && !folders.isFiltering {
-                        SidebarRow(selected: false, action: { model.showArchived = true }) {
-                            HStack(spacing: 10) {
-                                Image(systemName: "archivebox")
-                                    .font(.system(size: 15))
-                                    .frame(width: 40, height: 40)
-                                    .background(Circle().fill(Theme.field))
-                                Text("Archived chats").fontWeight(archivedUnread > 0 ? .semibold : .regular)
-                                Spacer()
-                                Text("\(archived.count)").foregroundStyle(.secondary)
-                                if archivedUnread > 0 { Circle().fill(Theme.signalBlue).frame(width: 8, height: 8) }
+                // The selection is drawn by the rows (not the list), so switching chats never flashes the
+                // focused-list accent colour; a chat opens on mouse down.
+                ScrollViewReader { proxy in
+                    List {
+                        if model.showArchived {
+                            SidebarRow(selected: false, action: { model.showArchived = false }) {
+                                Label("Back to chats", systemImage: "chevron.left")
+                                    .foregroundStyle(Theme.signalBlue)
+                                    .padding(.vertical, 4)
                             }
-                            .padding(.vertical, 2)
+                            Text("Archived chats")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.secondary)
+                        }
+                        if !q.isEmpty && !list.isEmpty && !messageHits.isEmpty { SidebarSectionHeader(title: "Chats") }
+                        ChatListRows(items: list)
+                        if !q.isEmpty && !messageHits.isEmpty {
+                            SidebarSectionHeader(title: "Messages")
+                            ForEach(messageHits) { h in
+                                SidebarRow(selected: false, action: { model.openMessageHit(h, query: q) }) { MessageHitRow(hit: h) }
+                            }
+                        }
+                        if list.isEmpty && messageHits.isEmpty && model.historyReady {
+                            Text(chatListEmptyText(query: q))
+                                .foregroundStyle(.secondary)
+                                .frame(maxWidth: .infinity)
+                                .padding(.top, 20)
                         }
                     }
-                    if !q.isEmpty && !list.isEmpty && !messageHits.isEmpty { SidebarSectionHeader(title: "Chats") }
-                    ChatListRows(items: list)
-                    if !q.isEmpty && !messageHits.isEmpty {
-                        SidebarSectionHeader(title: "Messages")
-                        ForEach(messageHits) { h in
-                            SidebarRow(selected: false, action: { model.openMessageHit(h, query: q) }) { MessageHitRow(hit: h) }
+                    .listStyle(.sidebar)
+                    // With the list focused (Tab), ↑ / ↓ open the chat above / below.
+                    .onMoveCommand { direction in
+                        switch direction {
+                        case .up: model.openAdjacentChat(-1)
+                        case .down: model.openAdjacentChat(1)
+                        default: break
                         }
                     }
-                    if list.isEmpty && messageHits.isEmpty && model.historyReady {
-                        Text(chatListEmptyText(query: q))
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .padding(.top, 20)
-                    }
+                    .background(KeepCurrentInView(proxy: proxy))
                 }
-                .listStyle(.sidebar)
-                // With the list focused (Tab), ↑ / ↓ open the chat above / below.
-                .onMoveCommand { direction in
-                    switch direction {
-                    case .up: model.openAdjacentChat(-1)
-                    case .down: model.openAdjacentChat(1)
-                    default: break
-                    }
-                }
-                .background(KeepCurrentInView(proxy: proxy))
             }
 
-            ConnectionFooter()
+            if !model.connected { ConnectionFooter() } // only when there is something to say
+            SidebarTabBar()
         }
         .background(KeepOpenChatListed())
         .modifier(ChatFolderSheets())
-        .onChange(of: KeyboardNavigation.shared.sidebarSearchFocus) { searchFocused = true }
+        .onChange(of: KeyboardNavigation.shared.sidebarSearchFocus) {
+            AppChrome.shared.sidebarTab = .chats // the search field belongs to the chats
+            DispatchQueue.main.async { searchFocused = true } // it exists again in the next pass
+        }
         .task(id: q) { await searchMessages(q) }
     }
 
@@ -692,7 +694,7 @@ private struct ConversationMenu: View {
     }
 }
 
-/// Connection state at the bottom of the chat list.
+/// Connection state at the bottom of the chat list, shown while Corvus is not connected.
 private struct ConnectionFooter: View {
     @Environment(AppModel.self) private var model
 
@@ -722,5 +724,11 @@ private extension View {
     @ViewBuilder
     func hidingWindowTitle() -> some View {
         if #available(macOS 15.0, *) { toolbar(removing: .title) } else { self }
+    }
+
+    /// No system writing assistance ("Write with Siri", Writing Tools) in the text fields of a messenger.
+    @ViewBuilder
+    func withoutWritingTools() -> some View {
+        if #available(macOS 15.0, *) { writingToolsBehavior(.disabled) } else { self }
     }
 }

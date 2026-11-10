@@ -268,6 +268,7 @@ struct MessageInput: NSViewRepresentable {
         tv.autoresizingMask = [.width]
         tv.textContainer?.widthTracksTextView = true
         tv.placeholder = "Write a message …"
+        if #available(macOS 15.0, *) { tv.writingToolsBehavior = .none } // no "Write with Siri" pill in the composer
         tv.coordinator = context.coordinator
         scroll.documentView = tv
 
