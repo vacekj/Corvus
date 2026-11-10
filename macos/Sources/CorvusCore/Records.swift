@@ -1,8 +1,9 @@
 import Foundation
 
-/// Conversion between the in-memory model and the JSON records of the encrypted history store
-/// (see history-store/src/store.rs `Record`). The keys must stay identical to the Qt app
-/// (src/Records.cpp) so both read the same history file.
+/// Conversion between the in-memory model and the JSON records of the history: the records of a
+/// `history.corvus` file (history-store/src/store.rs `Record`, shared with the Qt app's src/Records.cpp;
+/// read when such a file is moved into the database), of the launch snapshot and of the Signal Desktop
+/// import, and the "extras" of a message row in the database (`HistoryDB`). The keys must stay as they are.
 public enum Records {
     private static func attachmentToJson(_ a: Attachment) -> JSON {
         var o: JSON = [:]

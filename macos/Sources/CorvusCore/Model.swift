@@ -123,6 +123,31 @@ public struct Quote: Equatable, Hashable {
     public init() {}
 }
 
+/// The parts of a message that few messages have (quote, poll, preview card, formatting, pin, edit state …).
+/// They live in one separately allocated box, so the common message stays small: a long history is tens
+/// of thousands of messages, all held in memory.
+struct MessageExtras: Equatable {
+    var quote = Quote()
+    var poll = Poll()
+    var linkPreview = LinkPreview()
+    var sharedContacts: [SharedContact] = []
+    var payment: PaymentNote?
+    var notice = MessageNotice()
+    var textStyles: [TextStyleRange] = []
+    var mentions: [MentionRange] = []
+    var editTs: Int64 = 0
+    var editCount = 0
+    var pinnedAtMs: Int64 = 0
+    var pinExpiresMs: Int64 = 0
+
+    static let empty = MessageExtras()
+}
+
+final class MessageExtrasBox {
+    var v: MessageExtras
+    init(_ v: MessageExtras = MessageExtras()) { self.v = v }
+}
+
 public struct Message: Equatable, Identifiable {
     public var ts: Int64 = 0          // ms since epoch: Signal message identity and displayed time
     // Local timeline order is separate from Signal's sender timestamp (`ts`). A sender's
@@ -131,19 +156,21 @@ public struct Message: Equatable, Identifiable {
     public var orderTs: Int64 = 0
     public var sender = ""            // display name at the time of receiving
     public var text = ""
-    public var outgoing = false
     public var authorKey = ""         // number/UUID of the author (own number for outgoing)
-    public var quote = Quote()
     public var attachments: [Attachment] = []
     public var reactions: [String: String] = [:] // reactor key -> emoji
-
-    // Editing: `ts` stays the timestamp of the original message and remains its protocol
-    // identity. An edit arrives as a new timestamp, remembered in editTs; peers refer to
-    // the message by that latest timestamp.
-    public var editTs: Int64 = 0
-    public var editCount = 0
-    public var expiresInSeconds = 0
+    // Outgoing messages: the state per recipient (see `receiptStatus` for the best over all of them).
+    public var recipientReceipts: [String: RecipientReceipt] = [:]
+    // Outgoing group messages: the members the message was sent to, captured when the send started
+    // (self excluded, aliases resolved). Empty for other messages and for imported history that did
+    // not record it; the hover detail then shows only the recipients of known receipts.
+    public var sentToKeys: [String] = []
     public var expirationStartMs: Int64 = 0
+    /// Rare content (`MessageExtras`); nil while the message has none. Copied on write.
+    private var extras: MessageExtrasBox?
+    private var expiresStorage: Int32 = 0
+    private var receiptStorage: Int8 = 0
+    public var outgoing = false
     public var deleted = false        // deleted for everyone: only a placeholder is left
 
     // Signal View Once media (same rules as the Qt app): the attachment reference is kept only
@@ -151,33 +178,116 @@ public struct Message: Equatable, Identifiable {
     public var viewOnce = false
     public var viewOnceViewed = false
     public var viewOnceExpired = false
-
-    public var poll = Poll()          // valid for poll messages
-    public var linkPreview = LinkPreview() // sender-provided preview card (never fetched by us when received)
-
-    // Message content without a text body (MessageContent.swift); `text` then holds a fallback line.
-    public var sharedContacts: [SharedContact] = []
-    public var payment: PaymentNote?
-    /// A chat event shown as a centred note instead of a bubble (e.g. "… set the disappearing message timer …").
-    public var notice = MessageNotice()
-
-    // Signal text formatting (see Formatting.swift); offsets are UTF-16 units of `text`.
-    public var textStyles: [TextStyleRange] = []
-    public var mentions: [MentionRange] = []
-
-    // Outgoing messages: best status over all recipients (0 sent, 1 delivered, 2 read) and the state per recipient.
-    public var receiptStatus = 0
-    public var recipientReceipts: [String: RecipientReceipt] = [:]
-    // Outgoing group messages: the members the message was sent to, captured when the send started
-    // (self excluded, aliases resolved). Empty for other messages and for imported history that did
-    // not record it; the hover detail then shows only the recipients of known receipts.
-    public var sentToKeys: [String] = []
     // Own message signal-cli could not send: it stays in the chat, marked failed, until it is sent again
     // or deleted (like Signal Desktop). Local only.
     public var sendFailed = false
+
+    public var expiresInSeconds: Int {
+        get { Int(expiresStorage) }
+        set { expiresStorage = Int32(clamping: newValue) }
+    }
+
+    // Outgoing messages: best status over all recipients (0 sent, 1 delivered, 2 read).
+    public var receiptStatus: Int {
+        get { Int(receiptStorage) }
+        set { receiptStorage = Int8(clamping: newValue) }
+    }
+
+    private func extra<T>(_ path: KeyPath<MessageExtras, T>) -> T {
+        (extras?.v ?? MessageExtras.empty)[keyPath: path]
+    }
+
+    private mutating func setExtra<T: Equatable>(_ path: WritableKeyPath<MessageExtras, T>, _ value: T) {
+        if extras == nil {
+            if value == MessageExtras.empty[keyPath: path] { return } // still nothing to keep
+            extras = MessageExtrasBox()
+        } else if !isKnownUniquelyReferenced(&extras) {
+            extras = MessageExtrasBox(extras!.v)
+        }
+        extras!.v[keyPath: path] = value
+    }
+
+    public var quote: Quote {
+        get { extra(\.quote) }
+        set { setExtra(\.quote, newValue) }
+    }
+
+    // Editing: `ts` stays the timestamp of the original message and remains its protocol
+    // identity. An edit arrives as a new timestamp, remembered in editTs; peers refer to
+    // the message by that latest timestamp.
+    public var editTs: Int64 {
+        get { extras == nil ? 0 : extra(\.editTs) }
+        set { setExtra(\.editTs, newValue) }
+    }
+
+    public var editCount: Int {
+        get { extras == nil ? 0 : extra(\.editCount) }
+        set { setExtra(\.editCount, newValue) }
+    }
+
+    public var poll: Poll {           // valid for poll messages
+        get { extra(\.poll) }
+        set { setExtra(\.poll, newValue) }
+    }
+
+    public var linkPreview: LinkPreview { // sender-provided preview card (never fetched by us when received)
+        get { extra(\.linkPreview) }
+        set { setExtra(\.linkPreview, newValue) }
+    }
+
+    // Message content without a text body (MessageContent.swift); `text` then holds a fallback line.
+    public var sharedContacts: [SharedContact] {
+        get { extras == nil ? [] : extra(\.sharedContacts) }
+        set { setExtra(\.sharedContacts, newValue) }
+    }
+
+    public var payment: PaymentNote? {
+        get { extras == nil ? nil : extra(\.payment) }
+        set { setExtra(\.payment, newValue) }
+    }
+
+    /// A chat event shown as a centred note instead of a bubble (e.g. "… set the disappearing message timer …").
+    public var notice: MessageNotice {
+        get { extra(\.notice) }
+        set { setExtra(\.notice, newValue) }
+    }
+
+    // Signal text formatting (see Formatting.swift); offsets are UTF-16 units of `text`.
+    public var textStyles: [TextStyleRange] {
+        get { extras == nil ? [] : extra(\.textStyles) }
+        set { setExtra(\.textStyles, newValue) }
+    }
+
+    public var mentions: [MentionRange] {
+        get { extras == nil ? [] : extra(\.mentions) }
+        set { setExtra(\.mentions, newValue) }
+    }
+
     // Signal pinned message: when it was pinned (0 = not pinned) and when the pin ends (0 = never).
-    public var pinnedAtMs: Int64 = 0
-    public var pinExpiresMs: Int64 = 0
+    public var pinnedAtMs: Int64 {
+        get { extras == nil ? 0 : extra(\.pinnedAtMs) }
+        set { setExtra(\.pinnedAtMs, newValue) }
+    }
+
+    public var pinExpiresMs: Int64 {
+        get { extras == nil ? 0 : extra(\.pinExpiresMs) }
+        set { setExtra(\.pinExpiresMs, newValue) }
+    }
+
+    /// Whether the message has any of the rare content at all (cheap: no box, nothing to look at).
+    var hasExtras: Bool { extras != nil }
+
+    public static func == (a: Message, b: Message) -> Bool {
+        guard a.ts == b.ts, a.orderTs == b.orderTs, a.outgoing == b.outgoing, a.deleted == b.deleted,
+              a.expiresStorage == b.expiresStorage, a.receiptStorage == b.receiptStorage,
+              a.expirationStartMs == b.expirationStartMs, a.viewOnce == b.viewOnce,
+              a.viewOnceViewed == b.viewOnceViewed, a.viewOnceExpired == b.viewOnceExpired,
+              a.sendFailed == b.sendFailed, a.text == b.text, a.sender == b.sender, a.authorKey == b.authorKey,
+              a.attachments == b.attachments, a.reactions == b.reactions,
+              a.recipientReceipts == b.recipientReceipts, a.sentToKeys == b.sentToKeys else { return false }
+        if a.extras === b.extras { return true }
+        return (a.extras?.v ?? MessageExtras.empty) == (b.extras?.v ?? MessageExtras.empty)
+    }
 
     public init() {}
 

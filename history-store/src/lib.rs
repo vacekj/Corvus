@@ -176,6 +176,48 @@ pub unsafe extern "C" fn sc_store_close(s: *mut ScStore) {
     }
 }
 
+/// Length in bytes of a key wrapped by `sc_key_wrap`.
+pub const SC_WRAPPED_KEY_LEN: usize = store::WRAPPED_KEY_LEN;
+
+/// Wraps the 32 byte `key` under `pass` into `out` (`SC_WRAPPED_KEY_LEN` bytes). Returns 0 or an error code.
+#[no_mangle]
+pub unsafe extern "C" fn sc_key_wrap(pass: *const c_char, key: *const u8, out: *mut u8) -> c_int {
+    guard(SC_ERR_PANIC, || {
+        let Some(pass) = cstr(pass) else { return SC_ERR_ARG };
+        if key.is_null() || out.is_null() {
+            return SC_ERR_ARG;
+        }
+        let mut k = secret::Zeroizing::new([0u8; 32]);
+        k.copy_from_slice(std::slice::from_raw_parts(key, 32));
+        match store::wrap_key(pass, &k, KdfParams::default()) {
+            Ok(w) => {
+                std::ptr::copy_nonoverlapping(w.as_ptr(), out, w.len());
+                SC_OK
+            }
+            Err(e) => code(&e),
+        }
+    })
+}
+
+/// Unwraps a key wrapped by `sc_key_wrap` into `key_out` (32 bytes). Returns 0 or an error code
+/// (`SC_ERR_WRONG_PASSPHRASE` if `pass` does not open it).
+#[no_mangle]
+pub unsafe extern "C" fn sc_key_unwrap(pass: *const c_char, wrapped: *const u8, len: usize, key_out: *mut u8) -> c_int {
+    guard(SC_ERR_PANIC, || {
+        let Some(pass) = cstr(pass) else { return SC_ERR_ARG };
+        if wrapped.is_null() || key_out.is_null() {
+            return SC_ERR_ARG;
+        }
+        match store::unwrap_key(pass, std::slice::from_raw_parts(wrapped, len)) {
+            Ok(k) => {
+                std::ptr::copy_nonoverlapping(k.as_ptr(), key_out, 32);
+                SC_OK
+            }
+            Err(e) => code(&e),
+        }
+    })
+}
+
 #[no_mangle]
 pub unsafe extern "C" fn sc_string_free(s: *mut c_char) {
     if !s.is_null() {

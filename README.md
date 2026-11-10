@@ -142,7 +142,7 @@ You can also download `corvus-macos-arm64.zip` (Swift) or `corvus-qt-macos-arm64
 
 The release apps are ad-hoc signed rather than notarised. Depending on your macOS security settings, the first launch may require opening the app from Finder using **right-click → Open**. Only bypass a warning if you trust the source of the app.
 
-The Swift and Qt versions use the same local history. Do not run both versions at the same time.
+The Swift version keeps its history in its own database. On its first start it takes over an existing history of the Qt version; from then on the two histories are separate.
 
 ## First launch
 
@@ -158,7 +158,7 @@ The Windows builds and the Flatpak include `corvus-cli`. On Linux, get it from t
 
 ## Local data and encryption
 
-Corvus stores its chat history in an encrypted `history.corvus` file. By default, the history key is stored in your operating system's keychain; you can switch to passphrase protection in **Settings → History protection**.
+Corvus stores its chat history in an encrypted `history.corvus` file (the macOS SwiftUI app: an encrypted `history.db` database). By default, the history key is stored in your operating system's keychain; you can switch to passphrase protection in **Settings → History protection**.
 
 - Linux: `~/.local/share/corvus/corvus/`
 - macOS: `~/Library/Application Support/corvus/corvus/`

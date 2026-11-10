@@ -128,13 +128,39 @@ enum Media {
     }
 
     /// Round avatar, cut from the centre of the picture.
+    /// The picture cropped to a circle of `size` points. It is kept as a small JPEG (drawn once, at 2x) and
+    /// decoded and clipped when the avatar is drawn: there are hundreds of avatars and a screenful is visible,
+    /// so only those cost a decoded picture.
     static func roundAvatar(_ image: NSImage, size: CGFloat = 64) -> NSImage {
-        NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
-            NSBezierPath(ovalIn: rect).addClip()
-            let s = image.size
-            let scale = max(size / max(s.width, 1), size / max(s.height, 1))
-            let w = s.width * scale, h = s.height * scale
-            image.draw(in: NSRect(x: (size - w) / 2, y: (size - h) / 2, width: w, height: h))
+        let px = Int(size * 2)
+        guard let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return image }
+        let side = CGFloat(px)
+        ctx.setFillColor(CGColor(gray: 1, alpha: 1)) // behind a picture with transparent parts
+        ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        ctx.interpolationQuality = .high
+        let s = image.size
+        let scale = max(side / max(s.width, 1), side / max(s.height, 1))
+        let w = s.width * scale, h = s.height * scale
+        let rect = CGRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h)
+        var proposed = rect
+        guard let source = image.cgImage(forProposedRect: &proposed, context: nil, hints: nil) else { return image }
+        ctx.draw(source, in: rect)
+        let out = NSMutableData()
+        guard let square = ctx.makeImage(),
+              let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else { return image }
+        CGImageDestinationAddImage(dest, square, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+        guard CGImageDestinationFinalize(dest) else { return image }
+        let jpeg = Data(out) // exactly the bytes (the buffer written to has room to spare)
+        return NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+            guard let packed = CGImageSourceCreateWithData(jpeg as CFData, nil),
+                  let picture = CGImageSourceCreateImageAtIndex(packed, 0, nil),
+                  let target = NSGraphicsContext.current?.cgContext else { return false }
+            target.addEllipse(in: rect)
+            target.clip()
+            target.interpolationQuality = .high
+            target.draw(picture, in: rect)
             return true
         }
     }

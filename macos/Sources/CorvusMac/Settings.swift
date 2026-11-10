@@ -1,4 +1,5 @@
 import AppKit
+import CorvusCore
 import SwiftUI
 
 /// Settings → Notifications & sound. Every switch is independent of the others.
@@ -149,7 +150,8 @@ enum AppPaths {
         return dir
     }
 
-    static var historyPath: String { dataDir.appendingPathComponent("history.corvus").path }
+    static var historyFiles: HistoryFiles { HistoryFiles(directory: dataDir) }
+    static var historyPath: String { historyFiles.db }
     static var lockPath: String { dataDir.appendingPathComponent("history.lock").path }
 
     /// Attachments that are opened, pasted screenshots, downloaded GIFs, … removed when the app quits.

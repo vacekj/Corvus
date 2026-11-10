@@ -357,6 +357,20 @@ impl Header {
     }
 }
 
+/// Length of a wrapped key as produced by `wrap_key`.
+pub const WRAPPED_KEY_LEN: usize = HEADER_LEN;
+
+/// Wraps a 32 byte key under `pass` (Argon2id + XChaCha20-Poly1305): the header of a history file
+/// on its own. The macOS app keeps the key of its history database this way.
+pub fn wrap_key(pass: &str, key: &[u8; KEY_LEN], params: KdfParams) -> Result<Vec<u8>, StoreError> {
+    Ok(Header::wrap_new(pass, key, params)?.to_bytes())
+}
+
+/// Reverse of `wrap_key`; `WrongPassphrase` if `pass` does not open it.
+pub fn unwrap_key(pass: &str, wrapped: &[u8]) -> Result<Zeroizing<[u8; KEY_LEN]>, StoreError> {
+    Header::parse(wrapped)?.unwrap_dek(pass)
+}
+
 /// Checked slice -> cipher key/nonce reference (replaces the deprecated `from_slice`).
 fn key_ref(b: &[u8]) -> Result<&Key, StoreError> {
     <&Key>::try_from(b).map_err(|_| StoreError::Crypto("bad key length".into()))
@@ -603,6 +617,19 @@ mod tests {
             au: "+491".into(),
             d: Value::Null,
         }
+    }
+
+    #[test]
+    fn wrapped_key_roundtrip() {
+        let key = [7u8; KEY_LEN];
+        let small = KdfParams { m_kib: 64, t: 1, p: 1 };
+        let w = wrap_key("pw", &key, small).unwrap();
+        assert_eq!(w.len(), WRAPPED_KEY_LEN);
+        assert_eq!(&unwrap_key("pw", &w).unwrap()[..], &key[..]);
+        assert!(matches!(unwrap_key("other", &w), Err(StoreError::WrongPassphrase)));
+        let mut bad = w.clone();
+        bad[20] ^= 1; // salt is authenticated
+        assert!(unwrap_key("pw", &bad).is_err());
     }
 
     #[test]

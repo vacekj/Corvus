@@ -745,30 +745,71 @@ private struct Bubble: View {
         return t.allSatisfy { $0.unicodeScalars.first?.properties.isEmojiPresentation == true || ($0.unicodeScalars.count > 1 && $0.unicodeScalars.first?.properties.isEmoji == true) }
     }
 
-    /// Created once: building a detector is expensive and `linkified` runs on every redraw of a bubble.
-    private static let linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+    /// Building a detector is expensive, so one is kept while bubbles are being built, but not for good: its
+    /// scanners hold on to tens of MB of working memory. It is released once no text needed it for a while.
+    private static var linkDetector: NSDataDetector?
+    private static var linkDetectorUse = 0
 
-    private static let linkCache: NSCache<NSString, LinkifiedBox> = { let c = NSCache<NSString, LinkifiedBox>(); c.countLimit = 4000; return c }()
-
-    /// Link detection is slow; rows are rebuilt on every scroll into view, so results are kept.
-    static func linkified(_ text: String, emojiOnly: Bool = false) -> AttributedString {
-        let zoom = DisplaySettings.shared.textZoom // Settings → Appearance → Text size
-        let key = ((emojiOnly ? "1" : "0") + "\(zoom)|" + text) as NSString
-        if let hit = linkCache.object(forKey: key) { return hit.value }
-        let s = makeLinkified(text, emojiOnly: emojiOnly)
-        linkCache.setObject(LinkifiedBox(s), forKey: key)
-        return s
+    private static func detector() -> NSDataDetector? {
+        if linkDetector == nil { linkDetector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue) }
+        linkDetectorUse &+= 1
+        let use = linkDetectorUse
+        DispatchQueue.main.asyncAfter(deadline: .now() + 20) {
+            if linkDetectorUse == use { linkDetector = nil }
+        }
+        return linkDetector
     }
 
-    private static func makeLinkified(_ text: String, emojiOnly: Bool) -> AttributedString {
+    /// Whether `text` has anything a link could be made of: "://", an "@" or a dot inside a word followed by
+    /// two letters ("example.org"; a sentence's full stop is followed by a space). Most messages do not, and
+    /// are never shown to the detector.
+    static func mayContainLink(_ text: String) -> Bool {
+        var text = text
+        return text.withUTF8 { utf8 in
+            let n = utf8.count
+            func wordByte(_ b: UInt8) -> Bool {
+                b >= 0x80 || (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122)
+            }
+            func letter(_ b: UInt8) -> Bool { b >= 0x80 || (b >= 65 && b <= 90) || (b >= 97 && b <= 122) }
+            var i = 0
+            while i < n {
+                let b = utf8[i]
+                if b == UInt8(ascii: "@") { return true }
+                if b == UInt8(ascii: ":"), i + 2 < n, utf8[i + 1] == UInt8(ascii: "/"), utf8[i + 2] == UInt8(ascii: "/") { return true }
+                if b == UInt8(ascii: "."), i > 0, wordByte(utf8[i - 1]), i + 2 < n, letter(utf8[i + 1]), letter(utf8[i + 2]) { return true }
+                i += 1
+            }
+            return false
+        }
+    }
+
+    /// The links found in a text (none for most): link detection is slow and rows are rebuilt on every
+    /// scroll into view, so its result is kept. Only the links are: the styled text is cheap to build
+    /// and large to keep. The key is the message text itself (no copy).
+    private static let linkCache: NSCache<NSString, LinkList> = { let c = NSCache<NSString, LinkList>(); c.countLimit = 4000; return c }()
+
+    private static func links(in text: String) -> [(NSRange, URL)] {
+        guard mayContainLink(text) else { return [] }
+        let key = text as NSString
+        if let hit = linkCache.object(forKey: key) { return hit.links }
+        var found: [(NSRange, URL)] = []
+        if let detector = detector() {
+            for match in detector.matches(in: text, range: NSRange(location: 0, length: key.length)) {
+                guard let url = match.url, ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") else { continue }
+                found.append((match.range, url))
+            }
+        }
+        linkCache.setObject(found.isEmpty ? LinkList.none : LinkList(found), forKey: key)
+        return found
+    }
+
+    static func linkified(_ text: String, emojiOnly: Bool = false) -> AttributedString {
         var s = AttributedString(text)
-        let d = DisplaySettings.shared
+        let d = DisplaySettings.shared // Settings → Appearance → Text size
         s.font = emojiOnly ? .system(size: d.size(40)) : .system(size: d.size(NSFont.systemFontSize + 1))
-        guard !emojiOnly, let detector = linkDetector else { return s }
-        let ns = text as NSString
-        for match in detector.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
-            guard let url = match.url, ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? ""),
-                  let r = Range(match.range, in: text), let ar = Range(r, in: s) else { continue }
+        guard !emojiOnly else { return s }
+        for (range, url) in links(in: text) {
+            guard let r = Range(range, in: text), let ar = Range(r, in: s) else { continue }
             s[ar].link = url
             s[ar].underlineStyle = .single
         }
@@ -776,9 +817,10 @@ private struct Bubble: View {
     }
 }
 
-final class LinkifiedBox {
-    let value: AttributedString
-    init(_ v: AttributedString) { value = v }
+final class LinkList {
+    static let none = LinkList([])
+    let links: [(NSRange, URL)]
+    init(_ links: [(NSRange, URL)]) { self.links = links }
 }
 
 extension Message {

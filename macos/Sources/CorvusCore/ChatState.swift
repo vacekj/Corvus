@@ -87,10 +87,16 @@ public struct ChatState {
     // MARK: - History
 
     public mutating func loadHistory(_ records: [JSON]) {
-        for o in records {
+        for o in records { applyRecord(o) }
+        rebuildPins()
+    }
+
+    /// One history record (see `Records`): a message, a change to one, or a setting of a chat.
+    mutating func applyRecord(_ o: JSON) {
+        do {
             let t = jsonString(o["t"])
             let key = jsonString(o["c"])
-            if key.isEmpty { continue }
+            if key.isEmpty { return }
             let group = key.hasPrefix("g:")
             switch t {
             case "m":
@@ -111,9 +117,9 @@ public struct ChatState {
             case "d":
                 convs.removeValue(forKey: key)
             case "u", "r":
-                guard let c = convs[key] else { continue }
+                guard let c = convs[key] else { return }
                 let au = jsonString(o["au"])
-                guard let i = findMessage(c, ts: jsonInt64(o["ts"]), authors: au.isEmpty ? [] : [au]) else { continue }
+                guard let i = findMessage(c, ts: jsonInt64(o["ts"]), authors: au.isEmpty ? [] : [au]) else { return }
                 if t == "u" {
                     Records.applyExtras(&convs[key]!.msgs[i], jsonObject(o["d"]))
                 } else {
@@ -148,7 +154,6 @@ public struct ChatState {
                 break
             }
         }
-        rebuildPins()
     }
 
     /// Everything that is needed to recreate the current state (for compaction).
@@ -162,19 +167,34 @@ public struct ChatState {
         return records(keys: recent.sorted(), keepMessages: { _ in messages })
     }
 
+    /// The records that restore the settings of a chat (everything persisted about it but its messages).
+    static func settingRecords(_ c: Conversation) -> [JSON] {
+        var out: [JSON] = []
+        if !c.storedName.isEmpty { out.append(Records.name(c.key, c.storedName)) }
+        if !c.localNickname.isEmpty { out.append(Records.nickname(c.key, c.localNickname)) }
+        if c.archived || c.sigArchived { out.append(Records.archive(c.key, archived: c.archived, sigArchived: c.sigArchived)) }
+        if c.muted { out.append(Records.mute(c.key, true, until: c.muteUntilMs)) }
+        if !c.folders.isEmpty { out.append(Records.folders(c.key, c.folders)) }
+        if !c.wallpaper.isEmpty { out.append(Records.wallpaper(c.key, c.wallpaper)) }
+        if c.pinned { out.append(Records.pin(c.key, true)) }
+        if c.markedUnread { out.append(Records.markedUnread(c.key, true)) }
+        out.append(Records.expiration(c.key, c.expirationSeconds))
+        return out
+    }
+
+    /// Whether two states of a chat persist the same settings (`settingRecords`).
+    static func sameSettings(_ a: Conversation, _ b: Conversation) -> Bool {
+        a.storedName == b.storedName && a.localNickname == b.localNickname && a.archived == b.archived
+            && a.sigArchived == b.sigArchived && a.muted == b.muted && a.muteUntilMs == b.muteUntilMs
+            && a.folders == b.folders && a.wallpaper == b.wallpaper && a.pinned == b.pinned
+            && a.markedUnread == b.markedUnread && a.expirationSeconds == b.expirationSeconds
+    }
+
     private func records(keys: [String]? = nil, keepMessages: (String) -> Int) -> [JSON] {
         var out: [JSON] = []
         for k in keys ?? convs.keys.sorted() {
             let c = convs[k]!
-            if !c.storedName.isEmpty { out.append(Records.name(c.key, c.storedName)) }
-            if !c.localNickname.isEmpty { out.append(Records.nickname(c.key, c.localNickname)) }
-            if c.archived || c.sigArchived { out.append(Records.archive(c.key, archived: c.archived, sigArchived: c.sigArchived)) }
-            if c.muted { out.append(Records.mute(c.key, true, until: c.muteUntilMs)) }
-            if !c.folders.isEmpty { out.append(Records.folders(c.key, c.folders)) }
-            if !c.wallpaper.isEmpty { out.append(Records.wallpaper(c.key, c.wallpaper)) }
-            if c.pinned { out.append(Records.pin(c.key, true)) }
-            if c.markedUnread { out.append(Records.markedUnread(c.key, true)) }
-            out.append(Records.expiration(c.key, c.expirationSeconds))
+            out.append(contentsOf: ChatState.settingRecords(c))
             let keep = keepMessages(k)
             for m in (keep >= c.msgs.count ? c.msgs[...] : c.msgs.suffix(keep)) where !isPendingPreview(c.key, ts: m.ts) {
                 out.append(Records.message(c.key, m))
@@ -287,19 +307,32 @@ public struct ChatState {
         m.expiresInSeconds > 0 && m.expirationStartMs > 0 && now - m.expirationStartMs >= Int64(m.expiresInSeconds) * 1000
     }
 
-    /// Read-only check for the 1 s timer: calling the mutating `expireMessages` on an observed model
-    /// counts as a change even when nothing is removed, and every chat view is rebuilt.
+    /// Whether any message is due (read-only: calling the mutating `expireMessages` on an observed model
+    /// counts as a change even when nothing is removed, and every chat view is rebuilt).
     public func hasExpiredMessages(now: Int64) -> Bool {
         convs.values.contains { c in c.msgs.contains { ChatState.isExpired($0, now: now) } }
+    }
+
+    /// When the next disappearing message is due (ms since 1970), nil if no timer is running.
+    public func nextExpiryMs() -> Int64? {
+        var due: Int64?
+        for c in convs.values {
+            for m in c.msgs where m.expiresInSeconds > 0 && m.expirationStartMs > 0 {
+                let at = m.expirationStartMs + Int64(m.expiresInSeconds) * 1000
+                if due == nil || at < due! { due = at }
+            }
+        }
+        return due
     }
 
     /// Removes expired messages; true if anything was removed (the history must be compacted then).
     public mutating func expireMessages(now: Int64) -> Bool {
         var changed = false
-        for key in convs.keys {
-            let before = convs[key]!.msgs.count
+        // Only the chats with something due are touched: a chat's messages are shared with the views and
+        // the history writer, and changing the list copies it.
+        for (key, c) in convs where c.msgs.contains(where: { ChatState.isExpired($0, now: now) }) {
             convs[key]!.msgs.removeAll { ChatState.isExpired($0, now: now) }
-            if convs[key]!.msgs.count != before { changed = true }
+            changed = true
         }
         return changed
     }

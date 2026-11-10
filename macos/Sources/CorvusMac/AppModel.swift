@@ -37,7 +37,19 @@ final class AppModel {
     static let lastChatKey = "lastOpenChat"
     /// Chats whose message list stays built while hidden, most recently opened first (see `ChatPane`).
     var warmChats: [String] = []
+    // A kept list costs memory in proportion to its chat (some 10 MB for a long one), so those not opened
+    // for a while are let go (`trimWarmChats`).
     static let warmLimit = 12
+    static let warmIdleSeconds = 600.0
+    @ObservationIgnored private var warmUsed: [String: Date] = [:]
+
+    /// Lets go of the kept lists of chats that were not opened (or prepared) for `warmIdleSeconds`.
+    private func trimWarmChats() {
+        let now = Date()
+        let keep = warmChats.filter { $0 == current || now.timeIntervalSince(warmUsed[$0] ?? .distantPast) < Self.warmIdleSeconds }
+        if keep.count != warmChats.count { warmChats = keep }
+        warmUsed = warmUsed.filter { warmChats.contains($0.key) }
+    }
 
     /// The chat that was open when the app was last used opens again.
     private func reopenLastChat() {
@@ -59,6 +71,7 @@ final class AppModel {
     /// chats at the top of the list after launch), so opening it only has to show it.
     func prewarm(_ key: String) {
         guard chats.convs[key] != nil, !warmChats.contains(key) else { return }
+        warmUsed[key] = Date()
         warmChats.insert(key, at: min(1, warmChats.count))
         if warmChats.count > Self.warmLimit { warmChats.removeLast(warmChats.count - Self.warmLimit) }
     }
@@ -74,7 +87,8 @@ final class AppModel {
     /// `chats` holds the whole history (not the launch snapshot, not the empty state before unlocking).
     private var historyLoaded = false
     /// Keychain protection: the history is already being decrypted while the window opens.
-    private var earlyOpen: Task<Result<[JSON], HistoryStoreError>, Never>?
+    private var earlyOpen: Task<Result<[String: Conversation], HistoryStoreError>, Never>?
+    @ObservationIgnored private var earlySecret: String?
 
     var appearance = Appearance.load() { didSet { chatListCache.removeAll() } }
     var notify = NotificationSettings.load()
@@ -118,7 +132,6 @@ final class AppModel {
     @ObservationIgnored private var gifPending: Set<String> = []
     var animatedGifs: [String: Data] = [:]      // attachment token -> GIF data
     var videoURLs: [String: URL] = [:]          // attachment token -> local file for playback
-    @ObservationIgnored private var expiryScanRunning = false
     @ObservationIgnored var videoFiles: [String: URL] = [:] // attachment token -> fetched video file (poster, playback)
     var videoLoading: Set<String> = []
 
@@ -176,7 +189,9 @@ final class AppModel {
 
     @ObservationIgnored let cli = SignalBackend()
     @ObservationIgnored let writer = HistoryWriter()   // every history write, off the main thread and in order
-    var store: HistoryStore { writer.store }
+    var db: HistoryDB { writer.db }
+    @ObservationIgnored private var saveScheduled = false
+    @ObservationIgnored private var expiryTimer: Timer?
     @ObservationIgnored var autoReconnects = 0
     @ObservationIgnored var lastAutoReconnect: Date?
     @ObservationIgnored let notifier = Notifier()
@@ -220,8 +235,8 @@ final class AppModel {
         started = true
         Perf.mark("start")
         notifier.setUp()
-        timers.append(Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.expireMessages() }
+        timers.append(Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.trimWarmChats() }
         })
         // Contacts change their picture at any time and signal-cli does not announce it: look again regularly.
         timers.append(Timer.scheduledTimer(withTimeInterval: 15 * 60, repeats: true) { [weak self] _ in
@@ -232,10 +247,13 @@ final class AppModel {
         })
         startCliEarly()
         migrateSignalCliFiles()
-        if let snapshot = startKeychainUnlock() {
-            // The empty window goes on screen first (building the chat list and the open chat takes a
-            // few hundred ms of layout), the chats a frame later.
-            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16)) {
+        if startKeychainUnlock() {
+            // The history is usually read by now or within a moment (`beginEarlyUnlock`), and is then shown
+            // directly. The snapshot is for a slow start (cold disk, the first run after an update): if the
+            // history is not there shortly, the chat list of the last run goes on screen meanwhile.
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(100)) {
+                guard !self.historyReady,
+                      let snapshot = LaunchSnapshot.load(account: UserDefaults.standard.string(forKey: "account") ?? "") else { return }
                 self.showLaunchSnapshot(snapshot)
                 DispatchQueue.main.async { Perf.mark("launch snapshot rendered") }
             }
@@ -292,19 +310,37 @@ final class AppModel {
         }
     }
 
+    /// With keychain protection and a history database, reading it starts the moment the process does,
+    /// long before the window is up: it is usually complete by the time there is something to show it in.
+    /// Reading only (an older history file is moved into the database later, once this is the only instance).
+    func beginEarlyUnlock() {
+        let files = AppPaths.historyFiles
+        guard earlyOpen == nil, UserDefaults.standard.string(forKey: "historyProtectionMode") == "keychain",
+              HistoryDB.exists(files.db), let secret = try? HistoryKeychain.load() else { return }
+        earlySecret = secret
+        let db = self.db
+        earlyOpen = Task.detached(priority: .userInitiated) {
+            Self.openStore(db, files: files, secret: secret, keychain: true, create: false)
+        }
+    }
+
     /// The chat list from the last run, at once (`LaunchSnapshot`), while the history is unlocked.
     /// Read-only until then: nothing is written and nothing is marked read.
-    /// With keychain protection the history starts decrypting right away (off the main thread), and the
-    /// launch snapshot's records are returned if there is one.
-    private func startKeychainUnlock() -> [JSON]? {
-        let path = AppPaths.historyPath
-        guard UserDefaults.standard.string(forKey: "historyProtectionMode") == "keychain", HistoryStore.exists(path),
-              let secret = try? HistoryKeychain.load() else { return nil }
-        let store = self.store
-        earlyOpen = Task.detached(priority: .userInitiated) { Self.openStore(store, path: path, secret: secret, create: false) }
+    /// With keychain protection the history is being read by now (off the main thread, `beginEarlyUnlock`),
+    /// or starts to be; true if so.
+    private func startKeychainUnlock() -> Bool {
+        let files = AppPaths.historyFiles
+        guard UserDefaults.standard.string(forKey: "historyProtectionMode") == "keychain", files.exists,
+              let secret = earlySecret ?? (try? HistoryKeychain.load()) else { return false }
+        earlySecret = nil
+        if earlyOpen == nil {
+            let db = self.db
+            earlyOpen = Task.detached(priority: .userInitiated) {
+                Self.openStore(db, files: files, secret: secret, keychain: true, create: false)
+            }
+        }
         RosterCache.setKey(RosterCache.deriveKey(from: secret))
-        let acc = UserDefaults.standard.string(forKey: "account") ?? ""
-        return LaunchSnapshot.load(account: acc)
+        return true
     }
 
     private func showLaunchSnapshot(_ records: [JSON]) {
@@ -337,8 +373,9 @@ final class AppModel {
     func shutdown() {
         saveLaunchSnapshot(wait: true)
         cli.stop()
+        saveNow()
         writer.drain()
-        store.close()
+        db.close()
         try? FileManager.default.removeItem(at: AppPaths.tempDir)
     }
 
@@ -633,24 +670,22 @@ final class AppModel {
 
     // MARK: - Encrypted history
 
-    private func openStore(_ secret: String, create: Bool) async -> Result<[JSON], HistoryStoreError> {
-        let store = self.store, path = AppPaths.historyPath
+    private func openStore(_ secret: String, keychain: Bool, create: Bool) async -> Result<[String: Conversation], HistoryStoreError> {
+        let db = self.db, files = AppPaths.historyFiles
         statusText = create ? "Creating chat history …" : "Unlocking chat history …"
         defer { statusText = "Not connected" }
         Perf.mark("open store")
-        let result = await Task.detached { Self.openStore(store, path: path, secret: secret, create: create) }.value
+        let result = await Task.detached { Self.openStore(db, files: files, secret: secret, keychain: keychain, create: create) }.value
         if case .success = result { RosterCache.setKey(RosterCache.deriveKey(from: secret)) }
         return result
     }
 
-    nonisolated private static func openStore(_ store: HistoryStore, path: String, secret: String,
-                                              create: Bool) -> Result<[JSON], HistoryStoreError> {
+    /// Opens the history database and reads every chat (moving the history file of an earlier version
+    /// into the database first, once).
+    nonisolated private static func openStore(_ db: HistoryDB, files: HistoryFiles, secret: String, keychain: Bool,
+                                              create: Bool) -> Result<[String: Conversation], HistoryStoreError> {
         do {
-            if create {
-                try store.create(path: path, passphrase: secret)
-                return .success([])
-            }
-            return .success(try store.open(path: path, passphrase: secret))
+            return .success(try HistoryOpener.open(db, files: files, secret: secret, keychain: keychain, create: create))
         } catch let e as HistoryStoreError {
             return .failure(e)
         } catch {
@@ -666,17 +701,17 @@ final class AppModel {
 
     /// Opens (or creates) the history; keychain or passphrase protection like the Qt app.
     func unlockHistory() async -> Bool {
-        let path = AppPaths.historyPath
+        let path = AppPaths.historyFiles.db
         #if DEBUG
         // Debug builds only: unattended start for manual testing against tests/mock-signal-cli.py.
         if let pw = ProcessInfo.processInfo.environment["SIGNAL_CLI_MAC_TEST_PASSPHRASE"] {
-            guard case .success(let records) = await openStore(pw, create: !HistoryStore.exists(path)) else { return false }
+            guard case .success(let convs) = await openStore(pw, keychain: false, create: !AppPaths.historyFiles.exists) else { return false }
             historyProtectionMode = "passphrase"
-            await loadHistory(records)
+            adoptHistory(convs)
             return true
         }
         #endif
-        let exists = HistoryStore.exists(path)
+        let exists = AppPaths.historyFiles.exists
         let saved = UserDefaults.standard.string(forKey: "historyProtectionMode") ?? ""
         historyProtectionMode = saved
         if exists && saved.isEmpty { historyProtectionMode = "passphrase" }
@@ -692,9 +727,9 @@ final class AppModel {
 
         // An existing history without a saved mode: try the keychain once.
         if exists && saved.isEmpty, let secret = try? HistoryKeychain.load() {
-            if case .success(let records) = await openStore(secret, create: false) {
+            if case .success(let convs) = await openStore(secret, keychain: true, create: false) {
                 saveProtectionMode("keychain")
-                await loadHistory(records)
+                adoptHistory(convs)
                 return true
             }
             historyProtectionMode = "passphrase"
@@ -713,18 +748,18 @@ final class AppModel {
                     await Dialogs.error("Chat history", "Could not read the history key from the keychain:\n\(error.localizedDescription)")
                     return false
                 }
-                let opened: Result<[JSON], HistoryStoreError>
+                let opened: Result<[String: Conversation], HistoryStoreError>
                 if let early = earlyOpen {
                     earlyOpen = nil
                     statusText = "Unlocking chat history …"
                     opened = await early.value
                     statusText = "Not connected"
                 } else {
-                    opened = await openStore(secret, create: false)
+                    opened = await openStore(secret, keychain: true, create: false)
                 }
                 switch opened {
-                case .success(let records):
-                    await loadHistory(records)
+                case .success(let convs):
+                    adoptHistory(convs)
                     return true
                 case .failure(let e) where e == .wrongPassphrase:
                     error = "The keychain key did not unlock this history. Try its previous passphrase if protection was just changed."
@@ -739,22 +774,23 @@ final class AppModel {
                     await Dialogs.error("Chat history", "Could not save the history key in the keychain:\n\(error.localizedDescription)")
                     return false
                 }
-                if case .failure(let e) = await openStore(secret, create: true) {
+                if case .failure(let e) = await openStore(secret, keychain: true, create: true) {
                     try? HistoryKeychain.clear()
                     await Dialogs.error("Chat history", e.localizedDescription)
                     return false
                 }
                 saveProtectionMode("keychain")
+                adoptHistory([:])
                 return true
             }
         }
 
         while true {
             guard let pw = await Dialogs.passphrase(exists ? .unlock : .create, error: error) else { return false }
-            switch await openStore(pw.new, create: !exists) {
-            case .success(let records):
+            switch await openStore(pw.new, keychain: false, create: !exists) {
+            case .success(let convs):
                 saveProtectionMode("passphrase")
-                await loadHistory(records)
+                adoptHistory(convs)
                 return true
             case .failure(let e) where e == .wrongPassphrase:
                 error = e.localizedDescription
@@ -765,45 +801,57 @@ final class AppModel {
         }
     }
 
-    /// Builds the state off the main thread (on the state from before the launch snapshot), so the window
-    /// stays responsive meanwhile.
-    private func loadHistory(_ records: [JSON]) async {
-        Perf.mark("history decrypted+parsed (\(records.count) records; unlock+decrypt \(store.lastOpenTimings.decrypt) ms, parse \(store.lastOpenTimings.parse) ms)")
-        let input = UncheckedBox((snapshotBase ?? chats, records))
-        chats = await Task.detached(priority: .userInitiated) {
-            var state = input.value.0
-            state.loadHistory(input.value.1)
-            return UncheckedBox(state)
-        }.value.value
+    /// The chats read from the database replace the launch snapshot (they were built off the main thread).
+    private func adoptHistory(_ convs: [String: Conversation]) {
+        Perf.mark("history read (\(convs.count) chats, \(convs.values.reduce(0) { $0 + $1.msgs.count }) messages, \(db.lastLoadMs) ms)")
+        var state = snapshotBase ?? chats
+        for (key, c) in convs { state.convs[key] = c }
+        chats = state
         snapshotBase = nil
         historyLoaded = true
         Perf.mark("history applied")
-        // Older versions kept small preview copies of pictures in the history. Media is now shown from the
-        // original files, so they are dropped once (stickers keep theirs: for imported ones it is the sticker).
-        if chats.stripAttachmentThumbnails() > 0 { rewriteHistory("remove the stored picture previews") }
         listChanged()
+        scheduleExpiry()
     }
 
-    func persist(_ record: JSON) {
-        guard historyReady else { return } // launch snapshot only: the full history applies it again
-        writer.append(record) { [weak self] error in
-            if let error { self?.showFlash("Could not save message: \(error.localizedDescription)") }
+    /// The history changed: the file follows. The state is written once per pass of the run loop (a
+    /// change often touches it several times), off the main thread, and only what differs (`HistoryDB.sync`).
+    func persist(_ record: JSON) { historyChanged() }
+    func persist(_ records: [JSON]) { if !records.isEmpty { historyChanged() } }
+
+    func historyChanged() {
+        // The launch snapshot is a part of the history only: it must never be written over the file.
+        guard historyReady, historyLoaded, snapshotBase == nil, !saveScheduled else { return }
+        saveScheduled = true
+        DispatchQueue.main.async { [weak self] in MainActor.assumeIsolated { self?.saveNow() } }
+    }
+
+    private func saveNow() {
+        guard saveScheduled else { return }
+        saveScheduled = false
+        guard historyLoaded, snapshotBase == nil else { return }
+        writer.sync(chats) { [weak self] error in
+            guard let error else { return }
+            Perf.failure("history not saved: \(error.localizedDescription)")
+            self?.showFlash("Could not save message: \(error.localizedDescription)")
         }
+        scheduleExpiry()
     }
 
-    func persist(_ records: [JSON]) { records.forEach(persist) }
-
-    /// Every compaction goes through here: it writes the in-memory state over the file, so it must never
-    /// run on the launch snapshot or before the history is loaded.
+    /// Writes a state that lost chats or messages on purpose (deleted, expired, imported over): unlike a
+    /// routine save it may remove any number of them from the file. Never runs on the launch snapshot or
+    /// before the history is loaded.
     func rewriteAll(_ done: (@MainActor (Error?) -> Void)? = nil) {
         guard historyLoaded, snapshotBase == nil else {
             done?(RpcError("The chat history is still loading."))
             return
         }
-        writer.rewrite(chats, done: done)
+        saveScheduled = false
+        writer.sync(chats, force: true, done: done)
+        scheduleExpiry()
     }
 
-    /// Compacts the file so the ciphertext of removed data is gone. Runs in the background after the writes
+    /// Removes what is gone from the state from the file as well. Runs in the background after the writes
     /// queued before it, on a snapshot of the current state; `done` gets the outcome on the main thread.
     func rewriteHistory(_ what: String, done: ((Bool) -> Void)? = nil) {
         rewriteAll { [weak self] error in
@@ -812,11 +860,14 @@ final class AppModel {
         }
     }
 
-    private func changePassphrase(old: String, new: String) async -> HistoryStoreError? {
+    /// Runs a change of the history protection after the queued writes; the caches keyed by the secret
+    /// (names, launch snapshot) move to the new one.
+    private func changeProtection(newSecret: String, _ change: @escaping @Sendable (HistoryDB, HistoryFiles) throws -> Void) async -> HistoryStoreError? {
+        let files = AppPaths.historyFiles
         do {
-            let k = try await writer.perform { store in
-                try store.changePassphrase(old: old, new: new)
-                return RosterCache.deriveKey(from: new)
+            let k = try await writer.perform { db in
+                try change(db, files)
+                return RosterCache.deriveKey(from: newSecret)
             }
             RosterCache.forget(); RosterCache.setKey(k) // rewritten when signal-cli answers
             return nil
@@ -829,21 +880,24 @@ final class AppModel {
 
     /// Passphrase → system keychain: the history is re-encrypted with a new random key kept in the keychain.
     func protectHistoryWithKeychain(currentPassphrase old: String) async -> String? {
-        guard store.isOpen, historyProtectionMode != "keychain" else { return nil }
+        guard db.isOpen, historyProtectionMode != "keychain" else { return nil }
         guard !old.isEmpty else { return "Enter the current passphrase." }
         let newSecret = HistoryKeychain.generateSecret()
         do { try HistoryKeychain.save(newSecret) } catch { return error.localizedDescription }
-        if let e = await changePassphrase(old: old, new: newSecret) {
+        let failure = await changeProtection(newSecret: newSecret) { db, files in
+            try HistoryOpener.protectWithKeychain(db, files: files, passphrase: old, newSecret: newSecret)
+        }
+        if let failure {
             try? HistoryKeychain.clear()
-            return e.localizedDescription
+            return failure.localizedDescription
         }
         saveProtectionMode("keychain")
         return nil
     }
 
-    /// System keychain → passphrase: re-encrypts with the passphrase, then removes the keychain key.
+    /// System keychain → passphrase: the key is kept under the passphrase, then the keychain key is removed.
     func protectHistoryWithPassphrase(_ new: String, repeated: String) async -> String? {
-        guard store.isOpen, historyProtectionMode == "keychain" else { return nil }
+        guard db.isOpen, historyProtectionMode == "keychain" else { return nil }
         if let p = PassphrasePolicy.problem(new: new, repeated: repeated) { return p.isEmpty ? "Enter the passphrase twice." : p }
         let oldSecret: String
         do {
@@ -852,7 +906,10 @@ final class AppModel {
         } catch {
             return error.localizedDescription
         }
-        if let e = await changePassphrase(old: oldSecret, new: new) { return e.localizedDescription }
+        let failure = await changeProtection(newSecret: new) { _, files in
+            try HistoryOpener.protectWithPassphrase(files: files, keychainSecret: oldSecret, passphrase: new)
+        }
+        if let failure { return failure.localizedDescription }
         saveProtectionMode("passphrase")
         do { try HistoryKeychain.clear() } catch {
             return "The history is now protected by your passphrase, but the old key could not be removed from the keychain: "
@@ -862,10 +919,12 @@ final class AppModel {
     }
 
     func changeHistoryPassphrase(old: String, new: String, repeated: String) async -> String? {
-        guard store.isOpen, historyProtectionMode != "keychain" else { return nil }
+        guard db.isOpen, historyProtectionMode != "keychain" else { return nil }
         guard !old.isEmpty else { return "Enter the current passphrase." }
         if let p = PassphrasePolicy.problem(new: new, repeated: repeated) { return p.isEmpty ? "Enter the new passphrase twice." : p }
-        return await changePassphrase(old: old, new: new)?.localizedDescription
+        return await changeProtection(newSecret: new) { _, files in
+            try HistoryOpener.changePassphrase(files: files, old: old, new: new)
+        }?.localizedDescription
     }
 
     // MARK: - Conversations
@@ -1041,6 +1100,7 @@ final class AppModel {
     /// Selecting a chat: stashes the old chat's draft, restores this chat's draft, marks it read.
     func openConversation(_ key: String) {
         guard chats.convs[key] != nil else { return }
+        warmUsed[key] = Date()
         if warmChats.first != key {
             warmChats.removeAll { $0 == key }
             warmChats.insert(key, at: 0)
@@ -1115,16 +1175,18 @@ final class AppModel {
         return nowMs() - lastInputMs < 30_000
     }
 
-    /// The scan over every message runs off the main thread (on a copy), so the 1 s timer can't cause a
-    /// dropped frame while scrolling.
-    private func expireMessages() {
-        guard historyReady, !expiryScanRunning else { return }
-        expiryScanRunning = true
-        let snapshot = chats, now = nowMs()
-        Task {
-            let found = await Task.detached(priority: .utility) { snapshot.hasExpiredMessages(now: now) }.value
-            expiryScanRunning = false
-            if found { removeExpiredMessages() }
+    /// One timer for the moment the next disappearing message is due (no periodic scan of the history).
+    /// Set again whenever the history changes: a new message or a started timer may be due sooner.
+    private func scheduleExpiry() {
+        expiryTimer?.invalidate()
+        expiryTimer = nil
+        guard historyLoaded, let due = chats.nextExpiryMs() else { return }
+        let wait = max(0.05, Double(due - nowMs()) / 1000)
+        expiryTimer = Timer.scheduledTimer(withTimeInterval: wait, repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated {
+                self?.removeExpiredMessages()
+                self?.scheduleExpiry()
+            }
         }
     }
 

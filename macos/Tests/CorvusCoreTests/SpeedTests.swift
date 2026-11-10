@@ -72,39 +72,42 @@ final class HistoryWriterTests: XCTestCase {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: dir) }
-        let path = dir.appendingPathComponent("history.corvus").path
+        let path = dir.appendingPathComponent("history.db").path
+        let key = HistoryKey.random()
 
         let writer = HistoryWriter()
-        try writer.store.create(path: path, passphrase: "pw")
+        try writer.db.create(path: path, key: key)
         var s = ChatState()
         for ts in Int64(1)...3 {
-            let (_, recs) = s.addMessage("conv", msg(ts, "m\(ts)"))!
-            recs.forEach { writer.append($0) }
+            _ = s.addMessage("conv", msg(ts, "m\(ts)"))!
+            writer.sync(s)
         }
-        // Delete the second message: the rewrite works on a snapshot, later appends land after it.
+        // Delete the second message: the write works on a snapshot, later changes land after it.
         s.convs["conv"]!.msgs.remove(at: 1)
-        let rewritten = expectation(description: "rewrite")
-        writer.rewrite(s) { error in
+        let removed = expectation(description: "removed")
+        writer.sync(s, force: true) { error in
             XCTAssertNil(error)
             XCTAssertTrue(Thread.isMainThread)
-            rewritten.fulfill()
+            removed.fulfill()
         }
-        let (_, recs) = s.addMessage("conv", msg(4, "m4"))!
-        let appended = expectation(description: "append")
-        recs.forEach { writer.append($0) { error in XCTAssertNil(error); appended.fulfill() } }
-        wait(for: [rewritten, appended], timeout: 10, enforceOrder: true)
+        _ = s.addMessage("conv", msg(4, "m4"))!
+        let added = expectation(description: "added")
+        writer.sync(s) { error in XCTAssertNil(error); added.fulfill() }
+        wait(for: [removed, added], timeout: 10)
         writer.drain()
-        writer.store.close()
+        writer.db.close()
 
-        var loaded = ChatState()
-        loaded.loadHistory(try HistoryStore().open(path: path, passphrase: "pw"))
-        XCTAssertEqual(loaded.convs["conv"]?.msgs.map(\.text), ["m1", "m3", "m4"])
+        let db = HistoryDB()
+        try db.open(path: path, key: key)
+        XCTAssertEqual(try db.load()["conv"]?.msgs.map(\.text), ["m1", "m3", "m4"])
     }
 
     func testFailureIsReported() {
         let writer = HistoryWriter() // never opened
         let failed = expectation(description: "error")
-        writer.rewrite(ChatState()) { error in
+        var s = ChatState()
+        _ = s.addMessage("conv", msg(1, "m"))
+        writer.sync(s) { error in
             XCTAssertNotNil(error)
             failed.fulfill()
         }

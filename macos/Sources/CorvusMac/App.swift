@@ -60,6 +60,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Perf.mark("delegate")
         LegacyMigration.migrateDefaults() // before anything reads the preferences
         let m = AppModel()
+        m.beginEarlyUnlock()
         Perf.mark("model created")
         return m
     }()

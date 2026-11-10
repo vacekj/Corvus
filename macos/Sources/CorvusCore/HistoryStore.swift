@@ -11,7 +11,9 @@ public struct HistoryStoreError: Error, Equatable, LocalizedError {
     public var errorDescription: String? { HistoryStore.errorText(code) }
 }
 
-/// Thin Swift wrapper around the Rust encrypted history store (history-store/).
+/// Thin Swift wrapper around the Rust encrypted history store (history-store/): the history file of the
+/// Qt app and of earlier versions of this app. The app now keeps its history in `HistoryDB` and reads
+/// this format once, to move an existing history over.
 /// The handle must be used from one thread at a time; callers serialise access
 /// (the app model runs slow calls such as `open` off the main thread while nothing else uses it).
 public final class HistoryStore: @unchecked Sendable {
@@ -31,6 +33,7 @@ public final class HistoryStore: @unchecked Sendable {
         case Int(SC_ERR_CORRUPT): return "The history file is damaged or has been modified."
         case Int(SC_ERR_EXISTS): return "A history file already exists."
         case Int(SC_ERR_IO): return "The history file could not be read or written."
+        case Int(HistoryStoreError.refusedCode): return "The change would have removed a large part of the history and was not saved."
         default: return "Encryption error (code \(code))."
         }
     }

@@ -39,6 +39,12 @@ int sc_store_change_passphrase(ScStore *s, const char *old_pass, const char *new
 void sc_store_close(ScStore *s);
 void sc_string_free(char *s);
 
+/* A 32 byte key wrapped under a passphrase (Argon2id + XChaCha20-Poly1305), SC_WRAPPED_KEY_LEN bytes.
+   The macOS app keeps the key of its history database this way. Both return 0 or an error code. */
+#define SC_WRAPPED_KEY_LEN 105
+int sc_key_wrap(const char *passphrase, const unsigned char *key32, unsigned char *out);
+int sc_key_unwrap(const char *passphrase, const unsigned char *wrapped, unsigned long len, unsigned char *key32_out);
+
 #ifdef __cplusplus
 }
 #endif

@@ -13,6 +13,9 @@ enum Perf {
         return Date(timeIntervalSince1970: Double(tv.tv_sec) + Double(tv.tv_usec) / 1e6)
     }()
     private static let log = Logger(subsystem: "io.github.corvus.mac", category: "perf")
+    /// Something that must not go unnoticed (kept in the system log, unlike the marks).
+    static func failure(_ what: String) { log.error("\(what, privacy: .public)") }
+
     static func mark(_ what: String) {
         let ms = Int(Date().timeIntervalSince(t0) * 1000)
         log.info("\(ms, privacy: .public) ms: \(what, privacy: .public)")

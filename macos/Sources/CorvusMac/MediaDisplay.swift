@@ -13,7 +13,9 @@ final class MediaImageCache {
     private let cache = NSCache<NSString, NSImage>()
     private var pending: [String: Task<NSImage?, Never>] = [:]
 
-    init() { cache.totalCostLimit = 300 * 1024 * 1024 } // decoded bytes
+    // Decoded bytes. Pictures are decoded at the size they are shown, so this is some eighty of them; the
+    // rest is decoded again when scrolled back to (the system also empties the cache when memory is short).
+    init() { cache.totalCostLimit = 96 * 1024 * 1024 }
 
     /// Latest decoded size per attachment, so the media viewer can show it while the original loads.
     private var latest: [String: String] = [:]

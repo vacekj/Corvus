@@ -150,7 +150,7 @@ public struct MessageNotice: Equatable, Hashable {
 }
 
 public extension Message {
-    var isNotice: Bool { notice.kind != .none }
+    var isNotice: Bool { hasExtras && notice.kind != .none }
 
     /// The text is only a fallback line (for the chat list, notifications and the Qt app); the bubble shows
     /// the contact cards / the payment instead.

@@ -163,5 +163,12 @@ private final class PassphraseValidator: NSObject, NSTextFieldDelegate {
 @MainActor
 final class MainWindowTracker {
     static let shared = MainWindowTracker()
-    weak var window: NSWindow? { didSet { if oldValue == nil, window != nil { Perf.mark("main window") } } }
+    weak var window: NSWindow? {
+        didSet {
+            // No state restoration: macOS would keep a picture of the window for it (some 17 MB each time it
+            // is taken). The window's place is remembered by its frame autosave, the open chat by the app.
+            window?.isRestorable = false
+            if oldValue == nil, window != nil { Perf.mark("main window") }
+        }
+    }
 }

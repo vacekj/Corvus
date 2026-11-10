@@ -6,14 +6,22 @@
 
 This directory contains a native macOS version of Corvus, written in Swift / SwiftUI (macOS 14 or newer). It has the
 same features and talks the same JSON-RPC protocol, but to its own bundled Signal backend, `corvus-signal`
-(`../signal-backend`, built on presage), instead of signal-cli. It links the same Rust history store (`../history-store`), so the
-`history.corvus` format, encryption and keychain entries are identical to the Qt app.
+(`../signal-backend`, built on presage), instead of signal-cli.
+
+The chat history is an encrypted SQLite database (SQLCipher), `history.db`: one row per message
+(`Sources/CorvusCore/HistoryDB.swift`). It is read in one pass at startup; afterwards only what changes is
+written, and a deleted or expired message is one deleted row. With keychain protection the database key is
+derived from the keychain entry (the same entry as before); with a passphrase it is a random key wrapped under
+the passphrase (Argon2id) in `history.key`. A `history.corvus` file of an earlier version or of the Qt app is
+moved into the database on the first start and kept as `history.corvus.bak` for 14 days. The Qt app does not
+read the database: the two no longer share a history.
 
 | Part | Job |
 |------|-----|
 | `Sources/CorvusCore` | UI-free logic: backend process / JSON-RPC, envelope parsing, history records, chat model, keychain |
 | `Sources/CorvusMac` | SwiftUI app: window, chat view, composer, settings, notifications, menu bar icon |
-| `Sources/CHistoryStore` | module map for `history-store/include/history_store.h` |
+| `Sources/CHistoryStore` | module map for `history-store/include/history_store.h` (reading a `history.corvus` file, wrapping the database key) |
+| `Sources/CSQLCipher` | the SQLCipher amalgamation (SQLite 3.50.4, SQLCipher 4.10.0, on CommonCrypto) |
 
 Requirements: Xcode (its toolchain provides the SwiftUI macros; the Command Line Tools alone are not
 enough) and Rust with cargo.
@@ -54,12 +62,14 @@ Differences from the Qt app:
   Every file Corvus writes from an attachment is marked as downloaded (quarantine), so Gatekeeper checks it before it runs.
   The app quarantines all files it creates (`LSFileQuarantineEnabled`); the backend inherits that for the attachments
   it writes.
-- The history is stored in `~/Library/Application Support/corvus/corvus/`, the same
-  location a Qt build on macOS uses.
+- The history is stored in `~/Library/Application Support/corvus/corvus/` (`history.db`).
 
 The release workflow (`.github/workflows/release.yml`) builds and tests the app and attaches
 `corvus-macos-arm64.zip` (Apple silicon) to every release. It is signed ad hoc only, so on
 first launch open it with right-click → *Open*.
+
+`CORVUS_BENCH=1 swift test -c release -Xswiftc -enable-testing --filter 'PerfBench|testBenchLoadAndSync'` measures
+loading and saving a synthetic history of 90,000 messages (database and former history file).
 
 Debug builds (`swift build`) accept `SIGNAL_CLI_MAC_TEST_PASSPHRASE` and `SIGNAL_CLI_MAC_DEBUG_COMMANDS`
 for unattended runs against `tests/mock-signal-cli.py` (see `Sources/CorvusMac/DebugHooks.swift`).
