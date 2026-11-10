@@ -132,10 +132,15 @@ enum Media {
     /// decoded and clipped when the avatar is drawn: there are hundreds of avatars and a screenful is visible,
     /// so only those cost a decoded picture.
     static func roundAvatar(_ image: NSImage, size: CGFloat = 64) -> NSImage {
+        avatarJPEG(image, size: size).map { roundAvatar(jpeg: $0, size: size) } ?? image
+    }
+
+    /// The square picture of an avatar of `size` points (at 2x), as JPEG.
+    static func avatarJPEG(_ image: NSImage, size: CGFloat = 64) -> Data? {
         let px = Int(size * 2)
         guard let ctx = CGContext(data: nil, width: px, height: px, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB(),
-                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return image }
+                                  bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
         let side = CGFloat(px)
         ctx.setFillColor(CGColor(gray: 1, alpha: 1)) // behind a picture with transparent parts
         ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
@@ -145,15 +150,19 @@ enum Media {
         let w = s.width * scale, h = s.height * scale
         let rect = CGRect(x: (side - w) / 2, y: (side - h) / 2, width: w, height: h)
         var proposed = rect
-        guard let source = image.cgImage(forProposedRect: &proposed, context: nil, hints: nil) else { return image }
+        guard let source = image.cgImage(forProposedRect: &proposed, context: nil, hints: nil) else { return nil }
         ctx.draw(source, in: rect)
         let out = NSMutableData()
         guard let square = ctx.makeImage(),
-              let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else { return image }
+              let dest = CGImageDestinationCreateWithData(out, "public.jpeg" as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(dest, square, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
-        guard CGImageDestinationFinalize(dest) else { return image }
-        let jpeg = Data(out) // exactly the bytes (the buffer written to has room to spare)
-        return NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
+        guard CGImageDestinationFinalize(dest) else { return nil }
+        return Data(out) // exactly the bytes (the buffer written to has room to spare)
+    }
+
+    /// The round avatar of `size` points drawn from its JPEG (`avatarJPEG`) whenever it is shown.
+    static func roundAvatar(jpeg: Data, size: CGFloat = 64) -> NSImage {
+        NSImage(size: NSSize(width: size, height: size), flipped: false) { rect in
             guard let packed = CGImageSourceCreateWithData(jpeg as CFData, nil),
                   let picture = CGImageSourceCreateImageAtIndex(packed, 0, nil),
                   let target = NSGraphicsContext.current?.cgContext else { return false }
@@ -168,5 +177,35 @@ enum Media {
     static func pngData(_ image: NSImage) -> Data? {
         guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return nil }
         return rep.representation(using: .png, properties: [:])
+    }
+}
+
+/// The small pictures of the avatars, kept between runs: making one means reading and decoding the
+/// original and encoding the small one, for hundreds of avatars at every start. A kept picture belongs
+/// to one state of its file (modification time and size) and is replaced when the file changes.
+enum AvatarThumbs {
+    static var directory: URL { AppPaths.dataDir.appendingPathComponent("avatar-thumbs", isDirectory: true) }
+
+    /// The round avatar for an avatar file and the state of that file, or nil if there is no such file
+    /// or it is not a picture.
+    static func avatar(file: URL, in directory: URL = AvatarThumbs.directory) -> (image: NSImage, stamp: Int)? {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: file.path), let size = attrs[.size] as? Int, size > 0 else { return nil }
+        let modified = Int(((attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0) * 1000)
+        var hasher = Hasher()
+        hasher.combine(modified)
+        hasher.combine(size)
+        let stamp = hasher.finalize()
+        let prefix = file.lastPathComponent + "."
+        let kept = directory.appendingPathComponent("\(prefix)\(modified).\(size).jpg")
+        if let jpeg = try? Data(contentsOf: kept), !jpeg.isEmpty { return (Media.roundAvatar(jpeg: jpeg), stamp) }
+        guard let data = try? Data(contentsOf: file), let picture = MediaDecode.image(data, maxPixel: 128),
+              let jpeg = Media.avatarJPEG(picture) else { return nil }
+        try? fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        for old in (try? fm.contentsOfDirectory(atPath: directory.path)) ?? [] where old.hasPrefix(prefix) {
+            try? fm.removeItem(at: directory.appendingPathComponent(old))
+        }
+        fm.createFile(atPath: kept.path, contents: jpeg, attributes: [.posixPermissions: 0o600])
+        return (Media.roundAvatar(jpeg: jpeg), stamp)
     }
 }

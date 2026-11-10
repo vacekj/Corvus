@@ -19,6 +19,12 @@ public final class HistoryDB: @unchecked Sendable {
     private var convIds: [String: Int64] = [:]
     private var stringIds: [String: Int64] = [:]
     private var statements: [String: OpaquePointer] = [:]
+    /// For the extra connections `load` reads with.
+    private var path = ""
+    private var keyHex = ""
+
+    /// From this many messages on, `load` reads on several threads (each with a connection of its own).
+    static var parallelLoadThreshold = 8000
 
     /// A sync that is not `force`d refuses to delete more than this many messages (or any chat): a
     /// routine save never does, so a state that lost its messages by mistake cannot empty the file.
@@ -81,9 +87,11 @@ public final class HistoryDB: @unchecked Sendable {
             throw HistoryStoreError(code: 4)
         }
         db = handle
+        self.path = path
+        keyHex = HistoryKey.hex(key)
         do {
             // A raw key: no key derivation on every start (the key is random, or unwrapped by Argon2).
-            try exec("PRAGMA key = \"x'\(HistoryKey.hex(key))'\"")
+            try exec("PRAGMA key = \"x'\(keyHex)'\"")
             do { try exec("SELECT count(*) FROM sqlite_master") } catch {
                 throw HistoryStoreError.wrongPassphrase // SQLITE_NOTADB: the pages do not decrypt
             }
@@ -104,6 +112,7 @@ public final class HistoryDB: @unchecked Sendable {
     public func rekey(_ key: Data) throws {
         guard key.count == 32 else { throw HistoryStoreError(code: 6) }
         try exec("PRAGMA rekey = \"x'\(HistoryKey.hex(key))'\"")
+        keyHex = HistoryKey.hex(key)
         try exec("PRAGMA wal_checkpoint(TRUNCATE)")
     }
 
@@ -115,12 +124,17 @@ public final class HistoryDB: @unchecked Sendable {
         statements = [:]
         if let db { sqlite3_close(db) }
         db = nil
+        path = ""
+        keyHex = ""
         baseline = [:]
         convIds = [:]
         stringIds = [:]
     }
 
     // MARK: - Reading
+
+    /// The last `load` read on several threads, missed or doubled rows and read again in one pass.
+    public private(set) var lastLoadWasRepeated = false
 
     /// Milliseconds the last `load` took.
     public private(set) var lastLoadMs = 0
@@ -156,33 +170,64 @@ public final class HistoryDB: @unchecked Sendable {
         }
         if broken { throw HistoryStoreError(code: 2) }
 
+        // The messages: most of the work of a start, and independent row by row. A long history is read
+        // in parts, each on a thread and a connection of its own (ranges of row ids, so the order of the
+        // rows of a chat is the same as in one pass).
+        var last: Int64 = 0, count = 0
+        try query("SELECT coalesce(max(id), 0), count(*) FROM msg") {
+            last = sqlite3_column_int64($0, 0)
+            count = Int(sqlite3_column_int64($0, 1))
+        }
+        let threads = count >= HistoryDB.parallelLoadThreshold ? min(4, max(1, ProcessInfo.processInfo.activeProcessorCount - 1)) : 1
         var lists: [Int64: [Message]] = [:]
-        var interned: [String: String] = [:]
-        try query("SELECT conv, ts, au, o, ot, sn, rs, ex, es, x, rr, d FROM msg") { row in
-            var m = Message()
-            m.ts = sqlite3_column_int64(row, 1)
-            let au = Int(sqlite3_column_int64(row, 2)), sn = Int(sqlite3_column_int64(row, 5))
-            if au < strings.count { m.authorKey = strings[au] }
-            m.outgoing = sqlite3_column_int(row, 3) != 0
-            m.orderTs = sqlite3_column_int64(row, 4)
-            if sn < strings.count { m.sender = strings[sn] }
-            m.text = Self.text(row, 9)
-            if m.outgoing {
-                m.receiptStatus = min(max(Int(sqlite3_column_int(row, 6)), 0), 2)
-                if sqlite3_column_type(row, 10) != SQLITE_NULL {
-                    m.recipientReceipts = Self.receipts(Self.text(row, 10), &interned)
+        if threads <= 1 {
+            var interned: [String: String] = [:]
+            try query(Self.messageColumns) { row in
+                lists[sqlite3_column_int64(row, 0), default: []].append(Self.message(row, strings, &interned))
+            }
+        } else {
+            final class Parts: @unchecked Sendable {
+                let lock = NSLock()
+                var lists: [[Int64: [Message]]]
+                var failure: Error?
+                init(_ n: Int) { lists = Array(repeating: [:], count: n) }
+            }
+            let parts = Parts(threads)
+            let path = self.path, keyHex = self.keyHex, shared = strings
+            let step = last / Int64(threads) + 1
+            DispatchQueue.concurrentPerform(iterations: threads) { i in
+                let result = Result { try Self.read(path: path, keyHex: keyHex, after: Int64(i) * step, through: Int64(i + 1) * step, strings: shared) }
+                parts.lock.lock()
+                switch result {
+                case .success(let part): parts.lists[i] = part
+                case .failure(let error): parts.failure = error
                 }
+                parts.lock.unlock()
             }
-            let ex = Int(sqlite3_column_int64(row, 7))
-            if ex > 0 {
-                m.expiresInSeconds = ex
-                m.expirationStartMs = sqlite3_column_int64(row, 8)
+            if let failure = parts.failure { throw failure }
+            // One list per chat again, of exactly its size; each part is let go as soon as it is taken over.
+            var sizes: [Int64: Int] = [:]
+            for part in parts.lists { for (conv, msgs) in part { sizes[conv, default: 0] += msgs.count } }
+            for i in parts.lists.indices {
+                for (conv, msgs) in parts.lists[i] {
+                    if lists[conv] == nil {
+                        if msgs.count == sizes[conv] { lists[conv] = msgs; continue } // all of the chat is in this part
+                        lists[conv] = []
+                        lists[conv]!.reserveCapacity(sizes[conv] ?? msgs.count)
+                    }
+                    lists[conv]!.append(contentsOf: msgs)
+                }
+                parts.lists[i] = [:]
             }
-            if sqlite3_column_type(row, 11) != SQLITE_NULL, let d = Self.json(row, 11) as? JSON {
-                if let re = d["re"] as? [String: String] { m.reactions = re }
-                Records.applyExtras(&m, d)
+            // Every row must have been read exactly once; if not, read them again in one pass.
+            if lists.values.reduce(0, { $0 + $1.count }) != count {
+                lists = [:]
+                var interned: [String: String] = [:]
+                try query(Self.messageColumns) { row in
+                    lists[sqlite3_column_int64(row, 0), default: []].append(Self.message(row, strings, &interned))
+                }
+                lastLoadWasRepeated = true
             }
-            lists[sqlite3_column_int64(row, 0), default: []].append(m)
         }
         for (id, var msgs) in lists {
             guard let key = keys[id], state.convs[key] != nil else { continue }
@@ -203,6 +248,67 @@ public final class HistoryDB: @unchecked Sendable {
         baseline = state.convs
         lastLoadMs = Int((DispatchTime.now().uptimeNanoseconds - t0) / 1_000_000)
         return state.convs
+    }
+
+    private static let messageColumns = "SELECT conv, ts, au, o, ot, sn, rs, ex, es, x, rr, d FROM msg"
+
+    /// The message of a row of `messageColumns`.
+    private static func message(_ row: OpaquePointer, _ strings: [String], _ interned: inout [String: String]) -> Message {
+        var m = Message()
+        m.ts = sqlite3_column_int64(row, 1)
+        let au = Int(sqlite3_column_int64(row, 2)), sn = Int(sqlite3_column_int64(row, 5))
+        if au < strings.count { m.authorKey = strings[au] }
+        m.outgoing = sqlite3_column_int(row, 3) != 0
+        m.orderTs = sqlite3_column_int64(row, 4)
+        if sn < strings.count { m.sender = strings[sn] }
+        m.text = text(row, 9)
+        if m.outgoing {
+            m.receiptStatus = min(max(Int(sqlite3_column_int(row, 6)), 0), 2)
+            if sqlite3_column_type(row, 10) != SQLITE_NULL {
+                m.recipientReceipts = receipts(text(row, 10), &interned)
+            }
+        }
+        let ex = Int(sqlite3_column_int64(row, 7))
+        if ex > 0 {
+            m.expiresInSeconds = ex
+            m.expirationStartMs = sqlite3_column_int64(row, 8)
+        }
+        if sqlite3_column_type(row, 11) != SQLITE_NULL, let d = json(row, 11) as? JSON {
+            if let re = d["re"] as? [String: String] { m.reactions = re }
+            Records.applyExtras(&m, d)
+        }
+        return m
+    }
+
+    /// The messages with a row id after `after` up to `through`, by chat, read on a connection of its own.
+    private static func read(path: String, keyHex: String, after: Int64, through: Int64, strings: [String]) throws -> [Int64: [Message]] {
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, nil) == SQLITE_OK, let handle else {
+            sqlite3_close(handle)
+            throw HistoryStoreError(code: 4)
+        }
+        defer { sqlite3_close(handle) }
+        guard sqlite3_exec(handle, "PRAGMA key = \"x'\(keyHex)'\"; PRAGMA cache_size = -1000;", nil, nil, nil) == SQLITE_OK else {
+            throw HistoryStoreError(code: 5)
+        }
+        var statement: OpaquePointer?
+        guard sqlite3_prepare_v2(handle, messageColumns + " WHERE id > ?1 AND id <= ?2", -1, &statement, nil) == SQLITE_OK,
+              let statement else { throw HistoryStoreError(code: 2) }
+        defer { sqlite3_finalize(statement) }
+        sqlite3_bind_int64(statement, 1, after)
+        sqlite3_bind_int64(statement, 2, through)
+        var lists: [Int64: [Message]] = [:]
+        var interned: [String: String] = [:]
+        while true {
+            let rc = sqlite3_step(statement)
+            if rc == SQLITE_ROW {
+                lists[sqlite3_column_int64(statement, 0), default: []].append(message(statement, strings, &interned))
+            } else if rc == SQLITE_DONE {
+                return lists
+            } else {
+                throw HistoryStoreError(code: rc == SQLITE_NOTADB || rc == SQLITE_CORRUPT ? 2 : 4)
+            }
+        }
     }
 
     public func messageCount() throws -> Int {

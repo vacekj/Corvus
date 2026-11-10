@@ -32,15 +32,24 @@ final class AppModel {
         didSet {
             SidebarSelection.shared.select(current)
             if let current, current != oldValue { UserDefaults.standard.set(current, forKey: Self.lastChatKey) }
+            // An open chat without messages is listed while it is open (see `isListed`).
+            let empty = current.flatMap { chats.convs[$0] }.map { $0.msgs.isEmpty } == true ? current : nil
+            if openEmptyChat != empty {
+                openEmptyChat = empty
+                chatListCache.removeAll()
+            }
         }
     }
+    /// The open chat, while it has no messages (apart from `current`: opening any other chat must not
+    /// make the chat list update).
+    private var openEmptyChat: String?
     static let lastChatKey = "lastOpenChat"
     /// Chats whose message list stays built while hidden, most recently opened first (see `ChatPane`).
     var warmChats: [String] = []
     // A kept list costs memory in proportion to its chat (some 10 MB for a long one), so those not opened
     // for a while are let go (`trimWarmChats`).
     static let warmLimit = 12
-    static let warmIdleSeconds = 600.0
+    static let warmIdleSeconds = 300.0
     @ObservationIgnored private var warmUsed: [String: Date] = [:]
 
     /// Lets go of the kept lists of chats that were not opened (or prepared) for `warmIdleSeconds`.
@@ -63,7 +72,7 @@ final class AppModel {
     private func prewarmTopChats() {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(800))
-            for item in chatListItems(archived: false).prefix(6).reversed() { prewarm(item.key) }
+            for item in chatListItems(archived: false).prefix(3).reversed() { prewarm(item.key) }
         }
     }
 
@@ -164,7 +173,7 @@ final class AppModel {
     // groups, blocking and message requests (Groups.swift, MessageRequests.swift)
     var roster = Roster() { didSet { chatListCache.removeAll() } }
     /// Chat list rows (per folder), rebuilt only after a change to what they show.
-    @ObservationIgnored private var chatListCache: [Bool: (day: Int, items: [ChatListItem])] = [:]
+    @ObservationIgnored private var chatListCache: [Int: (day: Int, items: [ChatListItem])] = [:]
     var infoPanelShown = false                 // info panel (inspector) of the open chat
     var nicknameFocusPending = false           // the info panel focuses its nickname field
     var successorPick: SuccessorPick?          // "choose a new admin" sheet while leaving a group
@@ -366,6 +375,8 @@ final class AppModel {
         roster.load(account: acc)
         if let c = cache.contacts { applyContacts(c) }
         if let g = cache.groups { applyGroups(g) }
+        appliedContacts = cache.contacts as? NSArray
+        appliedGroups = cache.groups as? NSArray
         listChanged()
         Perf.mark("cached names applied")
     }
@@ -573,6 +584,11 @@ final class AppModel {
         }
     }
 
+    /// The contact and group lists as last applied: the backend sends the same lists again right after
+    /// connecting (its sync with the phone), and the cached ones of the last run are usually the same too.
+    @ObservationIgnored private var appliedContacts: NSArray?
+    @ObservationIgnored private var appliedGroups: NSArray?
+
     private func loadContactsAndGroups() {
         roster.load(account: account)
         avatarTried.removeAll() // ask the backend again, avatars may have changed
@@ -581,9 +597,14 @@ final class AppModel {
         Task {
             do {
                 let res = try await cli.call("listContacts")
-                Perf.mark("contacts received")
-                applyContacts(res)
-                RosterCache.save(contacts: res, account: account)
+                if let list = res as? NSArray, list.isEqual(appliedContacts) {
+                    Perf.mark("contacts received (unchanged)")
+                } else {
+                    Perf.mark("contacts received")
+                    applyContacts(res)
+                    appliedContacts = res as? NSArray
+                    RosterCache.save(contacts: res, account: account)
+                }
                 listChanged()
             } catch {
                 showFlash("Could not load contacts: \(error.localizedDescription)", seconds: 8)
@@ -591,9 +612,14 @@ final class AppModel {
         }
         Task {
             guard let res = try? await cli.call("listGroups") else { return }
-            Perf.mark("groups received")
-            applyGroups(res)
-            RosterCache.save(groups: res, account: account)
+            if let list = res as? NSArray, list.isEqual(appliedGroups) {
+                Perf.mark("groups received (unchanged)")
+            } else {
+                Perf.mark("groups received")
+                applyGroups(res)
+                appliedGroups = res as? NSArray
+                RosterCache.save(groups: res, account: account)
+            }
             listChanged()
         }
     }
@@ -804,6 +830,7 @@ final class AppModel {
     /// The chats read from the database replace the launch snapshot (they were built off the main thread).
     private func adoptHistory(_ convs: [String: Conversation]) {
         Perf.mark("history read (\(convs.count) chats, \(convs.values.reduce(0) { $0 + $1.msgs.count }) messages, \(db.lastLoadMs) ms)")
+        if db.lastLoadWasRepeated { Perf.failure("history read in parts did not add up; read again in one pass") }
         var state = snapshotBase ?? chats
         for (key, c) in convs { state.convs[key] = c }
         chats = state
@@ -938,13 +965,24 @@ final class AppModel {
     /// Chat title as shown: the own number's chat is "Note to Self", like in the official clients.
     func title(_ c: Conversation) -> String { !account.isEmpty && c.key == account ? "Note to Self" : c.title }
 
+    /// A contact is a chat in the list once there is something in it: messages, a draft, a pin, a mark,
+    /// or it is the open chat. Every contact of the account is a conversation here (names, avatars and
+    /// settings hang on it), and most were never written to. Groups are always listed.
+    private func isListed(_ c: Conversation) -> Bool {
+        !c.msgs.isEmpty || c.isGroup || c.pinned || c.markedUnread || c.key == openEmptyChat || drafts[c.key] != nil
+    }
+
     /// Rows of the chat list, newest first. Reading it registers the same dependencies as building it.
-    func chatListItems(archived: Bool) -> [ChatListItem] {
-        _ = chats.convs.count; _ = avatars.count; _ = appearance.showAvatars; _ = roster; _ = drafts
+    /// `all` includes the contacts without a chat: for the search, which finds them by name.
+    func chatListItems(archived: Bool, all: Bool = false) -> [ChatListItem] {
+        _ = chats.convs.count; _ = avatars.count; _ = appearance.showAvatars; _ = roster; _ = drafts; _ = openEmptyChat
         let day = Calendar.current.ordinality(of: .day, in: .era, for: Date()) ?? 0 // "Yesterday" changes at midnight
-        if let c = chatListCache[archived], c.day == day { return c.items }
-        let items = chats.sortedConversations(archived: archived).map { ChatListItem($0, self) }
-        chatListCache[archived] = (day, items)
+        let slot = (archived ? 1 : 0) + (all ? 2 : 0)
+        if let c = chatListCache[slot], c.day == day { return c.items }
+        var list = chats.sortedConversations(archived: archived)
+        if !all { list = list.filter(isListed) }
+        let items = list.map { ChatListItem($0, self) }
+        chatListCache[slot] = (day, items)
         return items
     }
 
@@ -2039,9 +2077,8 @@ final class AppModel {
                 let dir = AppModel.avatarDir
                 return jobs.map { key, isGroup in
                     for name in AppModel.avatarFileNames(key: key, isGroup: isGroup) where !name.contains("..") {
-                        if let d = try? Data(contentsOf: dir.appendingPathComponent(name)), !d.isEmpty,
-                           let img = MediaDecode.image(d, maxPixel: 128) {
-                            return (key, d.hashValue, Media.roundAvatar(img))
+                        if let found = AvatarThumbs.avatar(file: dir.appendingPathComponent(name)) {
+                            return (key, found.stamp, found.image)
                         }
                     }
                     return (key, 0, nil)

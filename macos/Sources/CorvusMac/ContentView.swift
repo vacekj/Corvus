@@ -252,9 +252,11 @@ private struct Sidebar: View {
         let q = filter.trimmingCharacters(in: .whitespaces)
         let all = model.chatListItems(archived: model.showArchived)
         let folders = ChatFolderStore.shared // folder tabs and the unread filter (ChatFolderViews.swift)
-        let list = q.isEmpty ? folders.visible(all, archived: model.showArchived) : all.filter {
-            $0.title.localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q)
-        }
+        // The search also finds the contacts there is no chat with yet.
+        let list = q.isEmpty ? folders.visible(all, archived: model.showArchived)
+            : model.chatListItems(archived: model.showArchived, all: true).filter {
+                $0.title.localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q)
+            }
 
         VStack(spacing: 0) {
             if AppChrome.shared.sidebarTab == .calls {

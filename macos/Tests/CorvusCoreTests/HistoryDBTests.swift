@@ -134,6 +134,27 @@ final class HistoryDBTests: XCTestCase {
         XCTAssertEqual(try again.messageCount(), 13)
     }
 
+    func testReadingOnSeveralThreadsGivesTheSameHistory() throws {
+        var s = richState()
+        for ts in Int64(1000)...1600 {
+            var m = message(ts, "bulk \(ts)", author: ts % 3 == 0 ? "+490" : "+493", outgoing: ts % 3 == 0)
+            if ts % 7 == 0 { m.reactions["+491"] = "👍" }
+            if ts % 3 == 0 { m.recipientReceipts = ["+493": RecipientReceipt(status: 1, deliveredAtMs: ts + 1, readAtMs: 0)] }
+            s.convs[ts % 2 == 0 ? "+491" : "g:abc"]!.msgs.append(m)
+        }
+        let db = HistoryDB()
+        try db.create(path: path, key: key)
+        try db.sync(s)
+        let onePass = try db.load()
+        let threshold = HistoryDB.parallelLoadThreshold
+        HistoryDB.parallelLoadThreshold = 1
+        defer { HistoryDB.parallelLoadThreshold = threshold }
+        let parallel = try db.load()
+        XCTAssertEqual(Set(parallel.keys), Set(onePass.keys))
+        for (k, c) in onePass { XCTAssertEqual(parallel[k]?.msgs, c.msgs, "messages of \(k)") }
+        assertSame(parallel, throughRecords(s))
+    }
+
     func testNoPlaintextOnDiskAndWrongKeyIsRefused() throws {
         let db = HistoryDB()
         try db.create(path: path, key: key)
