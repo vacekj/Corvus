@@ -219,6 +219,9 @@ private struct WindowAccessor: NSViewRepresentable {
             if !Self.restoredFrame {
                 Self.restoredFrame = true
                 window.setFrameUsingName("main")
+                // The zoom-in animation of a new window first sets up a display link, which lists every
+                // display mode (about 300 ms on the main thread with a ProMotion screen): show it at once.
+                window.animationBehavior = .none
             }
             if let observer { NotificationCenter.default.removeObserver(observer) }
             observer = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: window,

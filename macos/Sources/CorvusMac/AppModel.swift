@@ -69,6 +69,12 @@ final class AppModel {
     var version = ""                // of corvus-signal, e.g. "0.1.0"
     var historyProtectionMode = ""  // "keychain" | "passphrase"
     var historyReady = false
+    /// The state before the launch snapshot was shown: the full history is loaded onto it.
+    private var snapshotBase: ChatState?
+    /// `chats` holds the whole history (not the launch snapshot, not the empty state before unlocking).
+    private var historyLoaded = false
+    /// Keychain protection: the history is already being decrypted while the window opens.
+    private var earlyOpen: Task<Result<[JSON], HistoryStoreError>, Never>?
 
     var appearance = Appearance.load() { didSet { chatListCache.removeAll() } }
     var notify = NotificationSettings.load()
@@ -226,6 +232,14 @@ final class AppModel {
         })
         startCliEarly()
         migrateSignalCliFiles()
+        if let snapshot = startKeychainUnlock() {
+            // The empty window goes on screen first (building the chat list and the open chat takes a
+            // few hundred ms of layout), the chats a frame later.
+            DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(16)) {
+                self.showLaunchSnapshot(snapshot)
+                DispatchQueue.main.async { Perf.mark("launch snapshot rendered") }
+            }
+        }
         Task {
             guard await unlockHistory() else {
                 cli.stop()
@@ -236,8 +250,10 @@ final class AppModel {
             Perf.mark("history ready")
             applyCachedRoster()
             refreshMuteExpiry()
-            reopenLastChat()
+            // A chat opened from the launch snapshot is marked read now; otherwise the last one opens.
+            if let key = current { openConversation(key) } else { reopenLastChat() }
             prewarmTopChats()
+            saveLaunchSnapshot()
             let early = earlyEnvelopes
             earlyEnvelopes = []
             early.forEach(onEnvelope)
@@ -276,6 +292,36 @@ final class AppModel {
         }
     }
 
+    /// The chat list from the last run, at once (`LaunchSnapshot`), while the history is unlocked.
+    /// Read-only until then: nothing is written and nothing is marked read.
+    /// With keychain protection the history starts decrypting right away (off the main thread), and the
+    /// launch snapshot's records are returned if there is one.
+    private func startKeychainUnlock() -> [JSON]? {
+        let path = AppPaths.historyPath
+        guard UserDefaults.standard.string(forKey: "historyProtectionMode") == "keychain", HistoryStore.exists(path),
+              let secret = try? HistoryKeychain.load() else { return nil }
+        let store = self.store
+        earlyOpen = Task.detached(priority: .userInitiated) { Self.openStore(store, path: path, secret: secret, create: false) }
+        RosterCache.setKey(RosterCache.deriveKey(from: secret))
+        let acc = UserDefaults.standard.string(forKey: "account") ?? ""
+        return LaunchSnapshot.load(account: acc)
+    }
+
+    private func showLaunchSnapshot(_ records: [JSON]) {
+        guard !historyReady else { return }
+        snapshotBase = chats
+        chats.loadHistory(records)
+        applyCachedRoster()
+        reopenLastChat()
+        listChanged()
+        Perf.mark("launch snapshot shown (\(records.count) records)")
+    }
+
+    private func saveLaunchSnapshot(wait: Bool = false) {
+        guard historyReady, historyProtectionMode == "keychain" else { return }
+        LaunchSnapshot.save(chats, account: chats.account, wait: wait)
+    }
+
     /// Names and groups from the previous run, until the backend answers.
     private func applyCachedRoster() {
         let acc = UserDefaults.standard.string(forKey: "account") ?? ""
@@ -289,6 +335,7 @@ final class AppModel {
     }
 
     func shutdown() {
+        saveLaunchSnapshot(wait: true)
         cli.stop()
         writer.drain()
         store.close()
@@ -591,29 +638,30 @@ final class AppModel {
         statusText = create ? "Creating chat history …" : "Unlocking chat history …"
         defer { statusText = "Not connected" }
         Perf.mark("open store")
-        return await Task.detached {
-            do {
-                if create {
-                    try store.create(path: path, passphrase: secret)
-                    let k = RosterCache.deriveKey(from: secret)
-                    await MainActor.run { RosterCache.setKey(k) }
-                    return .success([])
-                }
-                let records = try store.open(path: path, passphrase: secret)
-                let k = RosterCache.deriveKey(from: secret)
-                await MainActor.run { RosterCache.setKey(k) }
-                return .success(records)
-            } catch let e as HistoryStoreError {
-                return .failure(e)
-            } catch {
-                return .failure(HistoryStoreError(code: 4))
+        let result = await Task.detached { Self.openStore(store, path: path, secret: secret, create: create) }.value
+        if case .success = result { RosterCache.setKey(RosterCache.deriveKey(from: secret)) }
+        return result
+    }
+
+    nonisolated private static func openStore(_ store: HistoryStore, path: String, secret: String,
+                                              create: Bool) -> Result<[JSON], HistoryStoreError> {
+        do {
+            if create {
+                try store.create(path: path, passphrase: secret)
+                return .success([])
             }
-        }.value
+            return .success(try store.open(path: path, passphrase: secret))
+        } catch let e as HistoryStoreError {
+            return .failure(e)
+        } catch {
+            return .failure(HistoryStoreError(code: 4))
+        }
     }
 
     private func saveProtectionMode(_ mode: String) {
         historyProtectionMode = mode
         UserDefaults.standard.set(mode, forKey: "historyProtectionMode")
+        if mode != "keychain" { LaunchSnapshot.forget() } // only shown without asking for anything
     }
 
     /// Opens (or creates) the history; keychain or passphrase protection like the Qt app.
@@ -624,7 +672,7 @@ final class AppModel {
         if let pw = ProcessInfo.processInfo.environment["SIGNAL_CLI_MAC_TEST_PASSPHRASE"] {
             guard case .success(let records) = await openStore(pw, create: !HistoryStore.exists(path)) else { return false }
             historyProtectionMode = "passphrase"
-            loadHistory(records)
+            await loadHistory(records)
             return true
         }
         #endif
@@ -646,7 +694,7 @@ final class AppModel {
         if exists && saved.isEmpty, let secret = try? HistoryKeychain.load() {
             if case .success(let records) = await openStore(secret, create: false) {
                 saveProtectionMode("keychain")
-                loadHistory(records)
+                await loadHistory(records)
                 return true
             }
             historyProtectionMode = "passphrase"
@@ -665,9 +713,18 @@ final class AppModel {
                     await Dialogs.error("Chat history", "Could not read the history key from the keychain:\n\(error.localizedDescription)")
                     return false
                 }
-                switch await openStore(secret, create: false) {
+                let opened: Result<[JSON], HistoryStoreError>
+                if let early = earlyOpen {
+                    earlyOpen = nil
+                    statusText = "Unlocking chat history …"
+                    opened = await early.value
+                    statusText = "Not connected"
+                } else {
+                    opened = await openStore(secret, create: false)
+                }
+                switch opened {
                 case .success(let records):
-                    loadHistory(records)
+                    await loadHistory(records)
                     return true
                 case .failure(let e) where e == .wrongPassphrase:
                     error = "The keychain key did not unlock this history. Try its previous passphrase if protection was just changed."
@@ -697,7 +754,7 @@ final class AppModel {
             switch await openStore(pw.new, create: !exists) {
             case .success(let records):
                 saveProtectionMode("passphrase")
-                loadHistory(records)
+                await loadHistory(records)
                 return true
             case .failure(let e) where e == .wrongPassphrase:
                 error = e.localizedDescription
@@ -708,9 +765,18 @@ final class AppModel {
         }
     }
 
-    private func loadHistory(_ records: [JSON]) {
-        Perf.mark("history decrypted+parsed (\(records.count) records)")
-        chats.loadHistory(records)
+    /// Builds the state off the main thread (on the state from before the launch snapshot), so the window
+    /// stays responsive meanwhile.
+    private func loadHistory(_ records: [JSON]) async {
+        Perf.mark("history decrypted+parsed (\(records.count) records; unlock+decrypt \(store.lastOpenTimings.decrypt) ms, parse \(store.lastOpenTimings.parse) ms)")
+        let input = UncheckedBox((snapshotBase ?? chats, records))
+        chats = await Task.detached(priority: .userInitiated) {
+            var state = input.value.0
+            state.loadHistory(input.value.1)
+            return UncheckedBox(state)
+        }.value.value
+        snapshotBase = nil
+        historyLoaded = true
         Perf.mark("history applied")
         // Older versions kept small preview copies of pictures in the history. Media is now shown from the
         // original files, so they are dropped once (stickers keep theirs: for imported ones it is the sticker).
@@ -719,6 +785,7 @@ final class AppModel {
     }
 
     func persist(_ record: JSON) {
+        guard historyReady else { return } // launch snapshot only: the full history applies it again
         writer.append(record) { [weak self] error in
             if let error { self?.showFlash("Could not save message: \(error.localizedDescription)") }
         }
@@ -726,10 +793,20 @@ final class AppModel {
 
     func persist(_ records: [JSON]) { records.forEach(persist) }
 
+    /// Every compaction goes through here: it writes the in-memory state over the file, so it must never
+    /// run on the launch snapshot or before the history is loaded.
+    func rewriteAll(_ done: (@MainActor (Error?) -> Void)? = nil) {
+        guard historyLoaded, snapshotBase == nil else {
+            done?(RpcError("The chat history is still loading."))
+            return
+        }
+        writer.rewrite(chats, done: done)
+    }
+
     /// Compacts the file so the ciphertext of removed data is gone. Runs in the background after the writes
     /// queued before it, on a snapshot of the current state; `done` gets the outcome on the main thread.
     func rewriteHistory(_ what: String, done: ((Bool) -> Void)? = nil) {
-        writer.rewrite(chats) { [weak self] error in
+        rewriteAll { [weak self] error in
             if let error { self?.showFlash("Could not \(what): \(error.localizedDescription)") }
             done?(error == nil)
         }
@@ -978,12 +1055,13 @@ final class AppModel {
             closeSearch()
         }
         // Only real changes: any write to `chats` makes every view showing chats update.
-        if chats.convs[key]!.unread != 0 {
+        // From the launch snapshot nothing is marked read yet: that happens once the history is loaded.
+        if historyReady && chats.convs[key]!.unread != 0 {
             sendReadReceipts(key, newest: chats.convs[key]!.unread)
             chats.convs[key]!.unread = 0
         }
-        if chats.convs[key]!.markedUnread { setMarkedUnread(key, false) }
-        if chats.hasIncomingExpirationToStart(key) { persist(chats.startIncomingExpirationTimers(key, now: nowMs())) }
+        if historyReady && chats.convs[key]!.markedUnread { setMarkedUnread(key, false) }
+        if historyReady && chats.hasIncomingExpirationToStart(key) { persist(chats.startIncomingExpirationTimers(key, now: nowMs())) }
         notifier.close(key) // the notification for this chat is obsolete now
         composerFocusRequest += 1
         listChanged()
@@ -1009,7 +1087,7 @@ final class AppModel {
     /// Window became key: messages that arrived in the open chat while it was covered are read now.
     func windowActivated() {
         lastInputMs = nowMs()
-        if let key = current, chats.convs[key] != nil {
+        if historyReady, let key = current, chats.convs[key] != nil {
             persist(chats.startIncomingExpirationTimers(key, now: nowMs()))
             if chats.convs[key]!.unread > 0 {
                 sendReadReceipts(key, newest: chats.convs[key]!.unread)
@@ -1609,7 +1687,7 @@ final class AppModel {
         guard let c = chats.convs[key], let i = chats.findMessage(c, ts: ts, authors: []) else { return false }
         let removed = chats.convs[key]!.msgs.remove(at: i)
         if editKey == key && editTs == removed.ts { cancelEdit() }
-        writer.rewrite(chats) { [weak self] error in
+        rewriteAll { [weak self] error in
             guard let error, let self else { return }
             // The file still holds the message: show it again.
             if chats.convs[key] != nil, chats.findMessage(chats.convs[key]!, ts: ts, authors: []) == nil {
@@ -1629,7 +1707,7 @@ final class AppModel {
         if editKey == key && editTs == c.msgs[i].ts && !c.msgs[i].deleted { cancelEdit() }
         guard let rec = chats.applyDelete(key, targetTs: ts, authors: authors) else { return false }
         // Rewrite instead of append: the old ciphertext of the message must not stay in the file.
-        writer.rewrite(chats) { [weak self] error in
+        rewriteAll { [weak self] error in
             guard let error, let self else { return }
             showFlash("Could not remove message from history: \(error.localizedDescription)")
             persist(rec) // at least keep the placeholder after a restart

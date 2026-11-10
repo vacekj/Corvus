@@ -115,7 +115,7 @@ extension AppModel {
     }
 
     private func rewriteHistoryAfterRetry() {
-        writer.rewrite(chats) { [weak self] error in
+        rewriteAll { [weak self] error in
             guard let error, let self else { return }
             showFlash("Could not update the history: \(error.localizedDescription)")
         }
@@ -186,7 +186,7 @@ extension AppModel {
         if editKey == key && removed.contains(where: { $0.ts == editTs }) { cancelEdit() }
         chats.convs[key]!.msgs.removeAll { ids.contains($0.id) }
         if removed.contains(where: { $0.pinnedAtMs > 0 }) { chats.rebuildPins() }
-        writer.rewrite(chats) { [weak self] error in
+        rewriteAll { [weak self] error in
             guard let error, let self else { return }
             // The file still holds the messages: show them again.
             if chats.convs[key] != nil {

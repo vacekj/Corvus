@@ -56,18 +56,25 @@ public final class HistoryStore: @unchecked Sendable {
         if handle == nil { throw HistoryStoreError(code: err) }
     }
 
+    /// Milliseconds of the last `open`: unlock+decrypt, JSON parse.
+    public private(set) var lastOpenTimings: (decrypt: Int, parse: Int) = (0, 0)
+
     /// Opens the file and returns all records in order.
     public func open(path: String, passphrase: String) throws -> [JSON] {
         close()
         var err: Int32 = 0
         var json: UnsafeMutablePointer<CChar>?
+        let t0 = Date()
         handle = HistoryStore.withSecret(passphrase) { sc_store_open(path, $0, &json, &err) }
         guard handle != nil else { throw HistoryStoreError(code: err) }
         defer { sc_string_free(json) }
         guard let json else { return [] }
-        let data = Data(bytes: json, count: strlen(json))
+        let t1 = Date()
+        let data = Data(bytesNoCopy: json, count: strlen(json), deallocator: .none)
         let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [Any] ?? []
-        return parsed.compactMap { $0 as? JSON }
+        let out = parsed.compactMap { $0 as? JSON }
+        lastOpenTimings = (Int(t1.timeIntervalSince(t0) * 1000), Int(Date().timeIntervalSince(t1) * 1000))
+        return out
     }
 
     public func append(_ record: JSON) throws {

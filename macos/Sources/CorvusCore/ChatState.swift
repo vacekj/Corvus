@@ -152,9 +152,19 @@ public struct ChatState {
     }
 
     /// Everything that is needed to recreate the current state (for compaction).
-    public func allRecords() -> [JSON] {
+    public func allRecords() -> [JSON] { records(keepMessages: { _ in Int.max }) }
+
+    /// A small copy of the state for showing the chat list at once while the full history is unlocked:
+    /// the `recentChats` chats at the top of the list with their newest `messages` messages (a list row
+    /// costs more to show than its messages: the others come with the full history).
+    public func snapshotRecords(recentChats: Int, messages: Int) -> [JSON] {
+        let recent = sortedConversations(archived: false).prefix(recentChats).map(\.key)
+        return records(keys: recent.sorted(), keepMessages: { _ in messages })
+    }
+
+    private func records(keys: [String]? = nil, keepMessages: (String) -> Int) -> [JSON] {
         var out: [JSON] = []
-        for k in convs.keys.sorted() {
+        for k in keys ?? convs.keys.sorted() {
             let c = convs[k]!
             if !c.storedName.isEmpty { out.append(Records.name(c.key, c.storedName)) }
             if !c.localNickname.isEmpty { out.append(Records.nickname(c.key, c.localNickname)) }
@@ -165,7 +175,8 @@ public struct ChatState {
             if c.pinned { out.append(Records.pin(c.key, true)) }
             if c.markedUnread { out.append(Records.markedUnread(c.key, true)) }
             out.append(Records.expiration(c.key, c.expirationSeconds))
-            for m in c.msgs where !isPendingPreview(c.key, ts: m.ts) {
+            let keep = keepMessages(k)
+            for m in (keep >= c.msgs.count ? c.msgs[...] : c.msgs.suffix(keep)) where !isPendingPreview(c.key, ts: m.ts) {
                 out.append(Records.message(c.key, m))
                 for (by, e) in m.reactions.sorted(by: { $0.key < $1.key }) {
                     out.append(Records.reaction(c.key, ts: m.ts, author: effectiveAuthor(c, m), by: by, emoji: e))

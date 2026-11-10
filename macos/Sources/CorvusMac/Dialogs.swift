@@ -163,5 +163,5 @@ private final class PassphraseValidator: NSObject, NSTextFieldDelegate {
 @MainActor
 final class MainWindowTracker {
     static let shared = MainWindowTracker()
-    weak var window: NSWindow?
+    weak var window: NSWindow? { didSet { if oldValue == nil, window != nil { Perf.mark("main window") } } }
 }

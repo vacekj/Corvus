@@ -57,12 +57,16 @@ enum SingleInstance {
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model: AppModel = {
+        Perf.mark("delegate")
         LegacyMigration.migrateDefaults() // before anything reads the preferences
-        return AppModel()
+        let m = AppModel()
+        Perf.mark("model created")
+        return m
     }()
     private var inputMonitor: Any?
 
     func applicationWillFinishLaunching(_ notification: Notification) {
+        Perf.mark("will finish launching")
         guard SingleInstance.acquire() else {
             if !SingleInstance.activateOther() {
                 let alert = NSAlert()
@@ -86,8 +90,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 MainWindowTracker.shared.window?.close()
             }
         }
+        Perf.mark("did finish launching")
         DisplaySettings.applyAtLaunch()
         model.installAppChrome()
+        Perf.mark("app chrome")
         model.start()
         ScrollBench.shared.arm(model)
         #if DEBUG

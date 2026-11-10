@@ -83,4 +83,21 @@ final class PinnedChatTests: XCTestCase {
         XCTAssertFalse(loaded.convs["a"]!.pinned)
         XCTAssertFalse(loaded.convs["b"]!.markedUnread)
     }
+
+    func testLaunchSnapshotKeepsTheTopChatsAndTheirNewestMessages() {
+        var s = ChatState()
+        s.loadHistory([Records.name("+1", "One")])
+        for (key, base) in [("+1", 1_000), ("+2", 2_000), ("+3", 3_000)] as [(String, Int64)] {
+            for i in 0..<5 { _ = s.addMessage(key, message(base + Int64(i))) }
+        }
+        s.convs["+1"]!.pinned = true
+
+        var loaded = ChatState()
+        loaded.loadHistory(s.snapshotRecords(recentChats: 2, messages: 2))
+        // Pinned first, then the most recent: +1 and +3; +2 comes with the full history.
+        XCTAssertEqual(Set(loaded.convs.keys), ["+1", "+3"])
+        XCTAssertEqual(loaded.convs["+3"]!.msgs.map(\.ts), [3_003, 3_004])
+        XCTAssertEqual(loaded.convs["+1"]!.title, "One")
+        XCTAssertTrue(loaded.convs["+1"]!.pinned)
+    }
 }
