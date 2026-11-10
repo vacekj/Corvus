@@ -25,7 +25,7 @@ extension AppModel {
             return .failure(StickerUploadError(text: "Could not upload the pack: \(error.localizedDescription)"))
         }
         guard let link = StickerUploadResult.link(result) else {
-            return .failure(StickerUploadError(text: "signal-cli did not report the link of the uploaded pack."))
+            return .failure(StickerUploadError(text: "The Signal backend did not report the link of the uploaded pack."))
         }
         return .success(link)
     }

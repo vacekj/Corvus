@@ -27,8 +27,8 @@
     <string>@COMMIT@</string>
     <key>LSApplicationCategoryType</key>
     <string>public.app-category.social-networking</string>
-    <!-- Quarantine files created by the app by default.
-         signal-cli runs through Contents/Helpers/corvus-signal-cli.app so it does not inherit this. -->
+    <!-- Quarantine files created by the app by default. The backend (Contents/MacOS/corvus-signal, a
+         statically linked child process) inherits this for the attachments it writes, which is intended. -->
     <key>LSFileQuarantineEnabled</key>
     <true/>
     <key>LSMinimumSystemVersion</key>
@@ -38,6 +38,6 @@
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSHumanReadableCopyright</key>
-    <string>AGPL-3.0 licensed. signal-cli is a separate program.</string>
+    <string>AGPL-3.0 licensed.</string>
 </dict>
 </plist>

@@ -52,7 +52,7 @@ final class AppChrome {
 
 extension AppModel {
     /// Everything this part of the app needs before `start()`: notification actions, the proxy option for
-    /// signal-cli, the call history and Corvus's own update checks.
+    /// the Signal backend, the call history and Corvus's own update checks.
     func installAppChrome() {
         _ = AppChrome.shared // a timed notification mute ends on time
         notifier.onReply = { [weak self] key, text in self?.replyFromNotification(key, text) }

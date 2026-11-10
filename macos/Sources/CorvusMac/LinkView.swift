@@ -3,13 +3,13 @@ import CoreImage.CIFilterBuiltins
 import CorvusCore
 import SwiftUI
 
-/// Links this Mac as a secondary device: runs `signal-cli link -n <name>` and shows the
+/// Links this Mac as a secondary device: runs `corvus-signal link -n <name>` and shows the
 /// returned URI as a QR code (rendered with Core Image, no qrencode needed).
 struct LinkView: View {
-    let executable: String
+    let cli: SignalBackend
     let onFinish: (Bool) -> Void
 
-    @State private var name = "corvus (\(Host.current().localizedName ?? "Mac"))"
+    @State private var name = "Corvus"
     @State private var uri = ""
     @State private var qrImage: NSImage?        // rendered once per URI
     @State private var status = ""
@@ -74,16 +74,22 @@ struct LinkView: View {
             old.terminate()
         }
         uri = ""
-        status = "Waiting for signal-cli …"
+        status = "Waiting for the Signal backend …"
+        let key: String
+        do {
+            key = try cli.storeKey()
+        } catch {
+            status = "The store key could not be read from the keychain: \(error.localizedDescription)"
+            return
+        }
         running = true
-        let p = Process()
-        SignalCli.configure(p, executable: executable,
-                            arguments: SignalProxy.arguments(ProxySetting.value) + ["link", "-n", name.trimmingCharacters(in: .whitespaces)])
-        p.environment = SignalCli.childEnvironment()
+        let p = cli.makeProcess(["link", "-n", name.trimmingCharacters(in: .whitespaces)])
         let out = Pipe(), err = Pipe()
+        // The store key is the first stdin line; stdin stays open until linking has finished.
+        let input = SignalBackend.inputPipe()
         p.standardOutput = out
         p.standardError = err
-        p.standardInput = FileHandle.nullDevice
+        p.standardInput = input
         var buffer = ""
         out.fileHandleForReading.readabilityHandler = { h in
             let d = h.availableData
@@ -104,6 +110,7 @@ struct LinkView: View {
             }
         }
         p.terminationHandler = { proc in
+            try? input.fileHandleForWriting.close()
             let code = proc.terminationStatus
             let e = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -121,9 +128,11 @@ struct LinkView: View {
         do {
             try p.run()
             process = p
+            try? SignalBackend.sendStoreKey(key, to: input)
         } catch {
+            try? input.fileHandleForWriting.close()
             running = false
-            status = "signal-cli could not be started: \(error.localizedDescription)"
+            status = "The Signal backend could not be started: \(error.localizedDescription)"
         }
     }
 

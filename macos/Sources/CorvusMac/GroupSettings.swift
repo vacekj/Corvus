@@ -64,7 +64,7 @@ extension AppModel {
     func setGroupAvatar(_ key: String, file: URL) async -> String? {
         let previous = avatars[key]
         if let img = NSImage(contentsOf: file) { avatars[key] = Media.roundAvatar(img) }
-        let staged = Media.stageForSignalCli([file.path])
+        let staged = Media.stageForBackend([file.path])
         defer { try? FileManager.default.removeItem(at: staged.dir) }
         if let err = await updateGroup(String(key.dropFirst(2)), GroupParams.avatar(staged.paths[0])) {
             avatars[key] = previous

@@ -15,11 +15,6 @@ struct Draft: Equatable {
     var preview: String? { DraftPreview.text(text, attachments: files.count) }
 }
 
-struct UpdateHint: Equatable {
-    var version: String
-    var url: URL
-}
-
 /// Everything the main window shows, plus the logic of src/MainWindow.cpp that is not pure model
 /// (that part lives in CorvusCore.ChatState).
 @MainActor
@@ -71,10 +66,7 @@ final class AppModel {
     var connected = false
     var statusText = "Not connected"
     var flash: String?              // transient status bar message
-    var updateHint: UpdateHint?
-    var version = ""                // e.g. "0.13.12"
-    @ObservationIgnored var updatingCli = false
-    @ObservationIgnored var updateChecksStarted = false
+    var version = ""                // of corvus-signal, e.g. "0.1.0"
     var historyProtectionMode = ""  // "keychain" | "passphrase"
     var historyReady = false
 
@@ -176,7 +168,7 @@ final class AppModel {
 
     // MARK: Services
 
-    @ObservationIgnored let cli = SignalCli()
+    @ObservationIgnored let cli = SignalBackend()
     @ObservationIgnored let writer = HistoryWriter()   // every history write, off the main thread and in order
     var store: HistoryStore { writer.store }
     @ObservationIgnored var autoReconnects = 0
@@ -199,12 +191,13 @@ final class AppModel {
     init() {
         cli.onEnvelope = { [weak self] env in
             guard let self else { return }
-            // signal-cli may start while the history is still being unlocked: keep messages until it is loaded.
+            // The backend may start while the history is still being unlocked: keep messages until it is loaded.
             if self.historyReady { self.onEnvelope(env) } else { self.earlyEnvelopes.append(env) }
         }
         cli.onCallEvent = { [weak self] ev in self?.onCallEvent(ev) }
+        cli.onRosterChanged = { [weak self] in self?.rosterChanged() }
         cli.onStopped = { [weak self] reason in
-            // A quick start that did not hold: check signal-cli and the account properly next time.
+            // A quick start that did not hold: check the backend and the account properly next time.
             if let t = self?.fastStartAt, Date().timeIntervalSince(t) < 30 { self?.fullCheckNext = true }
             if self?.earlyStarted == true { self?.earlyStarted = false; self?.fullCheckNext = true }
             self?.setConnected(false, info: reason)
@@ -232,6 +225,7 @@ final class AppModel {
             }
         })
         startCliEarly()
+        migrateSignalCliFiles()
         Task {
             guard await unlockHistory() else {
                 cli.stop()
@@ -247,26 +241,42 @@ final class AppModel {
             let early = earlyEnvelopes
             earlyEnvelopes = []
             early.forEach(onEnvelope)
-            guard await ensureExecutable() else { return }
+            guard await ensureBackend() else { return }
             await connectAccount()
         }
     }
 
-    /// With a known account and signal-cli, the (slow to start) JVM is started while the history is being
-    /// unlocked; `connectAccount` then only has to use it.
+    /// With a known account and an already checked backend, the backend is started while the history is
+    /// being unlocked; `connectAccount` then only has to use it.
     private func startCliEarly() {
-        let exe = UserDefaults.standard.string(forKey: "executable") ?? ""
+        let exe = cli.executable
         let acc = UserDefaults.standard.string(forKey: "account") ?? ""
-        guard !exe.isEmpty, !acc.isEmpty, FileManager.default.isExecutableFile(atPath: exe),
+        guard !acc.isEmpty, FileManager.default.isExecutableFile(atPath: exe),
               UserDefaults.standard.string(forKey: executableStamp(exe)) != nil else { return }
-        cli.executable = exe
         fastStartAt = Date()
         cli.start(account: acc)
         earlyStarted = cli.isRunning
-        if earlyStarted { Perf.mark("signal-cli started early") }
+        if earlyStarted { Perf.mark("backend started early") }
     }
 
-    /// Names and groups from the previous run, until signal-cli answers.
+    /// Once: signal-cli's attachments and avatars are copied into the backend's data directory, so the media
+    /// of the existing history keeps working (`SignalCliMigration`).
+    private func migrateSignalCliFiles() {
+        let key = "signalCliFilesCopied"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let legacy = SignalCliMigration.legacyDataDir(), dir = cli.dataDir
+        Task {
+            let copied = await Task.detached(priority: .utility) { SignalCliMigration.copyFiles(from: legacy, to: dir) }.value
+            UserDefaults.standard.set(true, forKey: key)
+            if copied > 0 {
+                SignalBackend.log("copied \(copied) attachment and avatar files from signal-cli")
+                avatarTried.removeAll()
+                fetchMissingAvatars()
+            }
+        }
+    }
+
+    /// Names and groups from the previous run, until the backend answers.
     private func applyCachedRoster() {
         let acc = UserDefaults.standard.string(forKey: "account") ?? ""
         guard !acc.isEmpty, let cache = RosterCache.load(account: acc) else { return }
@@ -299,52 +309,25 @@ final class AppModel {
         flash = nil
     }
 
-    // MARK: - signal-cli
+    // MARK: - Signal backend
 
-    func ensureExecutable() async -> Bool {
-        var exe = UserDefaults.standard.string(forKey: "executable") ?? ""
-        if exe.isEmpty || !FileManager.default.fileExists(atPath: exe) { exe = SignalCli.autodetect() }
-        while exe.isEmpty {
-            let r = await Dialogs.ask("signal-cli not found",
-                                      "signal-cli is not installed or not in PATH.\n\nThis app requires a separately installed signal-cli "
-                                          + "(for example: brew install signal-cli).",
-                                      buttons: ["Choose path …", "Open download page", "Close"], style: .warning)
-            switch r {
-            case 0: exe = pickExecutable() ?? ""
-            case 1: NSWorkspace.shared.open(URL(string: "https://github.com/AsamK/signal-cli/releases")!)
-            default: return false
-            }
-        }
-        UserDefaults.standard.set(exe, forKey: "executable")
-        cli.executable = exe
-        return true
+    /// The backend ships inside the app bundle (`Contents/MacOS/corvus-signal`).
+    func ensureBackend() async -> Bool {
+        if FileManager.default.isExecutableFile(atPath: cli.executable) { return true }
+        setConnected(false, info: "Signal backend missing")
+        await Dialogs.warn("Signal backend missing",
+                           "Corvus could not find its Signal backend at\n\(cli.executable)\n\nInstall Corvus again.")
+        return false
     }
 
-    private func pickExecutable() -> String? {
-        let panel = NSOpenPanel()
-        panel.title = "Select signal-cli"
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.treatsFilePackagesAsDirectories = true
-        if !cli.executable.isEmpty { panel.directoryURL = URL(fileURLWithPath: cli.executable).deletingLastPathComponent() }
-        return panel.runModal() == .OK ? panel.url?.path : nil
-    }
-
-    func chooseExecutable() {
-        guard let exe = pickExecutable() else { return }
-        UserDefaults.standard.set(exe, forKey: "executable")
-        cli.executable = exe
-        Task { await connectAccount() }
-    }
-
-    /// signal-cli died on its own (crash, killed): start it again after 3, 10, 30, 60 s. The counter resets
+    /// The backend died on its own (crash, killed): start it again after 3, 10, 30, 60 s. The counter resets
     /// once a connection stayed up for two minutes, so a crash loop does not spin forever.
     @ObservationIgnored var fastStartAt: Date?
     @ObservationIgnored var earlyEnvelopes: [JSON] = []
     @ObservationIgnored var earlyStarted = false
     @ObservationIgnored var fullCheckNext = false
 
-    /// Identifies the installed signal-cli (path + modification date): its version is cached for it.
+    /// Identifies the installed backend (path + modification date): its version is cached for it.
     private func executableStamp(_ exe: String) -> String {
         let mtime = ((try? FileManager.default.attributesOfItem(atPath: exe))?[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0
         return "cliVersion.\(exe).\(Int(mtime))"
@@ -367,14 +350,10 @@ final class AppModel {
     }
 
     func reconnect() {
-        Task {
-            if cli.executable.isEmpty { guard await ensureExecutable() else { return } }
-            await connectAccount()
-        }
+        Task { await connectAccount() }
     }
 
-    /// Everything here is asynchronous so the window never freezes while the JVM behind signal-cli starts.
-    /// The version is read on every (re)connect, so an update of signal-cli is noticed without restarting.
+    /// Everything here is asynchronous so the window never freezes while the backend starts.
     func connectAccount() async {
         guard historyReady else { return }
         connectGen += 1
@@ -384,9 +363,8 @@ final class AppModel {
         setConnected(false)
         statusText = "Connecting …"
 
-        // Quick start: with a known account and an unchanged signal-cli, start the JSON-RPC process right
-        // away. `--version` and `listAccounts` each start a separate JVM (several seconds); they only run when
-        // something changed or the quick start failed.
+        // Quick start: with a known account and an unchanged backend, start the JSON-RPC process right
+        // away. `--version` and `listAccounts` only run when something changed or the quick start failed.
         let stamp = executableStamp(cli.executable)
         let savedAccount = UserDefaults.standard.string(forKey: "account") ?? ""
         if !fullCheckNext, !savedAccount.isEmpty, let cached = UserDefaults.standard.string(forKey: stamp) {
@@ -409,7 +387,7 @@ final class AppModel {
         let (vr, versionLine) = await cli.queryVersion()
         guard gen == connectGen else { return }
         if !vr.ok {
-            await showCliProblem("signal-cli could not be run.", vr)
+            await showCliProblem("The Signal backend could not be run.", vr)
             return
         }
         version = versionLine.split(separator: " ").last.map(String.init) ?? versionLine
@@ -424,7 +402,7 @@ final class AppModel {
         }
         if accounts.isEmpty {
             setConnected(false, info: "no account linked")
-            if await Dialogs.confirm("No account", "signal-cli reports that no account is set up yet.\nLink this device with your phone now?",
+            if await Dialogs.confirm("No account", "No Signal account is linked yet.\nLink this device with your phone now?",
                                      ok: "Link device …"), gen == connectGen {
                 await linkDevice()
             }
@@ -458,33 +436,26 @@ final class AppModel {
         loadContactsAndGroups()
         subscribeCallEvents()
         loadStickerPacks()
-        startUpdateChecks() // installs signal-cli updates (Settings → General), otherwise a hint in the status bar
     }
 
     private func showCliProblem(_ title: String, _ r: CliResult) async {
         setConnected(false, info: title)
-        let info = r.describe() + "\n\nCommand: " + SignalCli.maskNumbers(r.command)
-            + "\n\nThis does not mean that no account is linked. Check that the command works in a terminal "
-            + "(the non-native signal-cli build needs Java)."
-        switch await Dialogs.ask(title, info, buttons: ["Retry", "Choose signal-cli …", "Close"], style: .warning) {
-        case 0: await connectAccount()
-        case 1: chooseExecutable()
-        default: break
-        }
+        let info = r.describe() + "\n\nCommand: " + SignalBackend.maskNumbers(r.command)
+            + "\n\nThis does not mean that no account is linked."
+        if await Dialogs.ask(title, info, buttons: ["Retry", "Close"], style: .warning) == 0 { await connectAccount() }
     }
 
     func setConnected(_ on: Bool, info: String = "") {
         connected = on
         if !on { callConnectionLost() }
         if on {
-            statusText = "Connected · signal-cli \(version)"
+            statusText = "Connected"
         } else {
             statusText = info.isEmpty ? "Not connected" : "Disconnected: \(info)"
         }
     }
 
     func linkDevice() async {
-        if cli.executable.isEmpty { guard await ensureExecutable() else { return } }
         connectGen += 1
         cli.stop()
         setConnected(false)
@@ -507,9 +478,20 @@ final class AppModel {
 
     // MARK: - Contacts / groups
 
+    /// Coalesces bursts of `rosterChanged` (a sync touches many records) into one reload.
+    private var rosterReload: Task<Void, Never>?
+    private func rosterChanged() {
+        rosterReload?.cancel()
+        rosterReload = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled else { return }
+            self?.loadContactsAndGroups()
+        }
+    }
+
     private func loadContactsAndGroups() {
         roster.load(account: account)
-        avatarTried.removeAll() // ask signal-cli again, avatars may have changed
+        avatarTried.removeAll() // ask the backend again, avatars may have changed
         avatarBusy.removeAll()
         avatarInFlight = 0
         Task {
@@ -587,6 +569,13 @@ final class AppModel {
             let key = "g:" + id
             chats.ensure(key, title: title, group: true)
             chats.convs[key]!.title = title
+            // Archive state from the phone, as for contacts: follow it only when it changed there.
+            let sig = jsonBool(g["isArchived"])
+            if sig != chats.convs[key]!.sigArchived {
+                chats.convs[key]!.sigArchived = sig
+                chats.convs[key]!.archived = sig
+                persist(Records.archive(key, archived: sig, sigArchived: sig))
+            }
             let expiration = jsonInt(g["messageExpirationTime"])
             if chats.convs[key]!.expirationSeconds != expiration {
                 chats.convs[key]!.expirationSeconds = expiration
@@ -1348,7 +1337,7 @@ final class AppModel {
         let text = sticker == nil ? composerText.trimmingCharacters(in: .whitespacesAndNewlines) : ""
         guard let key = current, let c = chats.convs[key], !(text.isEmpty && pendingFiles.isEmpty && sticker == nil) else { return }
         guard connected else {
-            showFlash("Not connected to signal-cli.", seconds: 5)
+            showFlash("Not connected to Signal.", seconds: 5)
             return
         }
         guard !isSendLocked(key) else { return } // message request, blocked chat or left group
@@ -1385,7 +1374,7 @@ final class AppModel {
             }
             atts.append(a)
         }
-        let staged = Media.stageForSignalCli(files)
+        let staged = Media.stageForBackend(files)
         if !files.isEmpty { p["attachments"] = staged.paths }
         if voiceNote { p["voiceNote"] = true }
         if viewOnce { p["viewOnce"] = true }
@@ -1715,7 +1704,7 @@ final class AppModel {
     func fetchAttachmentData(_ key: String, _ att: Attachment) async throws -> Data {
         if !att.path.isEmpty, let d = FileManager.default.contents(atPath: att.path) { return d }
         if !att.encPath.isEmpty { return try await Task.detached { try DesktopImport.data(att) }.value }
-        if let url = Self.signalCliAttachmentURL(att),
+        if let url = Self.backendAttachmentURL(att),
            let d = try? await Task.detached(operation: { try Data(contentsOf: url, options: .mappedIfSafe) }).value, !d.isEmpty { return d }
         guard !att.id.isEmpty, let c = chats.convs[key] else { throw RpcError("The attachment is no longer available.") }
         var p: JSON = ["id": att.id]
@@ -1869,9 +1858,9 @@ final class AppModel {
 
     func fetchMissingAvatars() {
         guard avatarsWanted else { return }
-        // signal-cli keeps the pictures as files: read them directly (all at once, also before signal-cli
-        // has started) instead of asking for each one over JSON-RPC.
-        if FileManager.default.fileExists(atPath: Self.signalCliAvatarDir.path) {
+        // The backend keeps the pictures as files: read them directly (all at once, also before it has
+        // started) instead of asking for each one over JSON-RPC.
+        if FileManager.default.fileExists(atPath: Self.avatarDir.path) {
             loadLocalAvatars()
             return
         }
@@ -1884,11 +1873,9 @@ final class AppModel {
         }
     }
 
-    nonisolated static var signalCliAvatarDir: URL {
-        FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/share/signal-cli/avatars", isDirectory: true)
-    }
+    nonisolated static var avatarDir: URL { SignalDataDir.avatars() }
 
-    /// signal-cli's file names: "contact-<number|uuid>" (address book), "profile-<number|uuid>" (own picture)
+    /// The backend's file names (as signal-cli's): "contact-<number|uuid>" (address book), "profile-<number|uuid>" (own picture)
     /// and "group-<group id, URL-safe base64>".
     nonisolated static func avatarFileNames(key: String, isGroup: Bool) -> [String] {
         if isGroup {
@@ -1909,7 +1896,7 @@ final class AppModel {
         }
         Task {
             let found: [(String, Int, NSImage?)] = await Task.detached(priority: .userInitiated) {
-                let dir = AppModel.signalCliAvatarDir
+                let dir = AppModel.avatarDir
                 return jobs.map { key, isGroup in
                     for name in AppModel.avatarFileNames(key: key, isGroup: isGroup) where !name.contains("..") {
                         if let d = try? Data(contentsOf: dir.appendingPathComponent(name)), !d.isEmpty,
@@ -1938,7 +1925,7 @@ final class AppModel {
     private func refreshAvatar(_ key: String) {
         guard avatarsWanted, !avatarBusy.contains(key) else { return }
         if nowMs() - (avatarFetchedMs[key] ?? 0) < 60_000 { return } // a burst of messages is one request
-        if FileManager.default.fileExists(atPath: Self.signalCliAvatarDir.path) {
+        if FileManager.default.fileExists(atPath: Self.avatarDir.path) {
             avatarTried.remove(key)
             loadLocalAvatars(only: [key])
             return
@@ -2001,10 +1988,10 @@ final class AppModel {
 
     // MARK: - Profile
 
-    /// The own profile picture: signal-cli's avatar file, else asked over JSON-RPC.
+    /// The own profile picture: the backend's avatar file, else asked over JSON-RPC.
     func ownAvatar() async -> NSImage? {
         guard !account.isEmpty, !account.contains("/") else { return nil }
-        let file = Self.signalCliAvatarDir.appendingPathComponent("profile-" + account)
+        let file = Self.avatarDir.appendingPathComponent("profile-" + account)
         var data = (try? Data(contentsOf: file)) ?? Data()
         if data.isEmpty, cli.isRunning, let res = try? await cli.call("getAvatar", ["profile": account]) {
             data = Data(base64Encoded: jsonString(jsonObject(res)["data"])) ?? Data()
@@ -2065,22 +2052,13 @@ final class AppModel {
         URLSession.shared.dataTask(with: req).resume()
     }
 
-    // MARK: - Update check, about
-
-    static func compareVersions(_ a: String, _ b: String) -> ComparisonResult {
-        let pa = a.split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
-        let pb = b.split(separator: ".").map { Int($0.prefix { $0.isNumber }) ?? 0 }
-        for i in 0..<max(pa.count, pb.count) {
-            let x = i < pa.count ? pa[i] : 0, y = i < pb.count ? pb[i] : 0
-            if x != y { return x < y ? .orderedAscending : .orderedDescending }
-        }
-        return .orderedSame
-    }
+    // MARK: - About
 
     func showAbout() {
         let credits = NSMutableAttributedString(
-            string: "Graphical front end for signal-cli.\nsignal-cli is used as a standalone program and is not part of this app.\n\n"
-                + "Path: \(cli.executable)\nVersion: \(version)\n\nChat history (encrypted): \(AppPaths.historyPath)",
+            string: "Signal client for macOS.\n\n"
+                + "Signal backend: \(SignalBackend.binaryName) \(version)\nData: \(cli.dataDir.path)\n\n"
+                + "Chat history (encrypted): \(AppPaths.historyPath)",
             attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.labelColor])
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits, .applicationName: "Corvus"])
         NSApp.activate(ignoringOtherApps: true)

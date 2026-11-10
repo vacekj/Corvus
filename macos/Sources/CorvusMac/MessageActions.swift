@@ -68,7 +68,7 @@ extension AppModel {
     func retrySend(_ id: String) {
         guard let c = currentConversation, let (_, m) = message(withId: id), m.sendFailed else { return }
         guard connected else {
-            showFlash("Not connected to signal-cli.", seconds: 5)
+            showFlash("Not connected to Signal.", seconds: 5)
             return
         }
         guard !isSendLocked(c.key) else { return }
@@ -78,7 +78,7 @@ extension AppModel {
             return
         }
         var p = RetrySend.params(m)
-        let staged = Media.stageForSignalCli(files)
+        let staged = Media.stageForBackend(files)
         if !files.isEmpty { p["attachments"] = staged.paths }
         if m.linkPreview.isValid && !m.viewOnce {
             let image = m.linkPreview.imageThumb.isEmpty ? nil : (try? Media.writeTemp(m.linkPreview.imageThumb, name: "preview.jpg"))?.path

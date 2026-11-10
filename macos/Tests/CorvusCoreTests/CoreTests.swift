@@ -89,25 +89,68 @@ final class EnvelopeTests: XCTestCase {
     }
 }
 
-final class SignalCliHelperTests: XCTestCase {
+final class SignalBackendHelperTests: XCTestCase {
     func testParseAccounts() {
-        XCTAssertEqual(SignalCli.parseAccounts(#"[{"number":"+491234567"},"+15550001"]"#), ["+491234567", "+15550001"])
-        XCTAssertEqual(SignalCli.parseAccounts("WARN something\nNumber: +4917000000\nNumber: +4917000000"), ["+4917000000"])
-        XCTAssertEqual(SignalCli.parseAccounts("[]"), [])
+        XCTAssertEqual(SignalBackend.parseAccounts(#"[{"number":"+491234567"},"+15550001"]"#), ["+491234567", "+15550001"])
+        XCTAssertEqual(SignalBackend.parseAccounts("WARN something\nNumber: +4917000000\nNumber: +4917000000"), ["+4917000000"])
+        XCTAssertEqual(SignalBackend.parseAccounts("[]"), [])
     }
 
     func testMaskNumbers() {
-        XCTAssertEqual(SignalCli.maskNumbers("call +4915112345678 now"), "call +49…78 now")
+        XCTAssertEqual(SignalBackend.maskNumbers("call +4915112345678 now"), "call +49…78 now")
     }
 
     func testDescribe() {
         var r = CliResult()
         r.exitCode = 3
         r.err = "boom"
-        XCTAssertEqual(r.describe(), "signal-cli exited with code 3.\n\nboom")
+        XCTAssertEqual(r.describe(), "The Signal backend exited with code 3.\n\nboom")
         r.timedOut = true
-        XCTAssertEqual(r.describe(), "signal-cli did not answer in time.")
+        XCTAssertEqual(r.describe(), "The Signal backend did not answer in time.")
     }
+
+    func testArguments() {
+        let dir = URL(fileURLWithPath: "/data/signal", isDirectory: true)
+        XCTAssertEqual(SignalBackend.arguments(["--version"], dataDir: dir, globalOptions: ["--tls-proxy", "p.example"]), ["--version"])
+        XCTAssertEqual(SignalBackend.arguments(["-a", "+1", "jsonRpc"], dataDir: dir, globalOptions: ["--tls-proxy", "p.example"]),
+                       ["--config", "/data/signal", "--store-key-stdin", "--tls-proxy", "p.example", "-a", "+1", "jsonRpc"])
+        XCTAssertEqual(SignalBackend.arguments(["link", "-n", "Corvus"], dataDir: dir, globalOptions: []),
+                       ["--config", "/data/signal", "--store-key-stdin", "link", "-n", "Corvus"])
+    }
+
+    func testBundledExecutable() {
+        let main = URL(fileURLWithPath: "/Applications/Corvus.app/Contents/MacOS/corvus")
+        XCTAssertEqual(SignalBackend.bundledExecutable(environment: [:], mainExecutable: main),
+                       "/Applications/Corvus.app/Contents/MacOS/corvus-signal")
+        XCTAssertEqual(SignalBackend.bundledExecutable(environment: ["CORVUS_SIGNAL_BIN": "/dev/corvus-signal"], mainExecutable: main),
+                       "/dev/corvus-signal")
+    }
+
+    func testStoreKeyFormat() {
+        XCTAssertTrue(SignalStoreKey.isValid(String(repeating: "a0", count: 32)))
+        XCTAssertFalse(SignalStoreKey.isValid(String(repeating: "a0", count: 31)))
+        XCTAssertFalse(SignalStoreKey.isValid(String(repeating: "g0", count: 32)))
+        XCTAssertTrue(SignalStoreKey.isValid(HistoryKeychain.generateSecret()))
+    }
+}
+
+/// tests/mock-signal-cli.py as `corvus-signal` in a temporary directory, with a data directory and a fixed
+/// store key (no keychain). The repository copy is not executable (CMake copies it with the right mode), so
+/// the test does the same.
+@MainActor
+func makeMockBackend() throws -> (backend: SignalBackend, cleanup: () -> Void) {
+    let source = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().appendingPathComponent("../../../tests/mock-signal-cli.py").standardized
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("corvus-mock-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let exe = root.appendingPathComponent("corvus-signal")
+    try FileManager.default.copyItem(at: source, to: exe)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
+    let backend = SignalBackend()
+    backend.executable = exe.path
+    backend.dataDir = root.appendingPathComponent("data", isDirectory: true)
+    backend.storeKey = { String(repeating: "5a", count: 32) }
+    return (backend, { try? FileManager.default.removeItem(at: root) })
 }
 
 final class ModelTests: XCTestCase {
@@ -398,29 +441,22 @@ final class HistoryStoreTests: XCTestCase {
 }
 
 @MainActor
-final class SignalCliProcessTests: XCTestCase {
-    /// Runs the Python mock of the Qt test-suite as signal-cli. The repository copy is not
-    /// executable (CMake copies it with the right mode), so the test does the same.
-    func mockPath() throws -> String {
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().appendingPathComponent("../../../tests/mock-signal-cli.py").standardized
-        let target = FileManager.default.temporaryDirectory.appendingPathComponent("mock-signal-cli-\(UUID().uuidString).py")
-        try FileManager.default.copyItem(at: source, to: target)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
-        return target.path
-    }
-
+final class SignalBackendProcessTests: XCTestCase {
     func testOneShotAndJsonRpcAgainstMock() async throws {
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: "/usr/bin/python3"), "python3 missing")
-        let cli = SignalCli()
-        cli.executable = try mockPath()
-        defer { try? FileManager.default.removeItem(atPath: cli.executable) }
+        let (cli, cleanup) = try makeMockBackend()
+        defer { cleanup() }
+        cli.globalOptions = SignalProxy.arguments("proxy.example.com")
         let (vr, version) = await cli.queryVersion()
         XCTAssertTrue(vr.ok, vr.describe())
-        XCTAssertEqual(version, "signal-cli 0.14.9")
+        XCTAssertEqual(version, "corvus-signal 0.14.9")
+        // The mock insists on an existing --config directory and a valid key as the first stdin line.
         let (ar, accounts) = await cli.queryAccounts()
-        XCTAssertTrue(ar.ok)
+        XCTAssertTrue(ar.ok, ar.describe())
         XCTAssertEqual(accounts, ["+491234567"])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cli.dataDir.path))
+        let del = await cli.run(["-a", "+491234567", "deleteLocalAccountData", "--ignore-registered"], timeout: 30)
+        XCTAssertTrue(del.ok, del.describe())
 
         cli.start(account: "+491234567")
         let contacts = try await cli.call("listContacts")
@@ -432,6 +468,44 @@ final class SignalCliProcessTests: XCTestCase {
         }
         cli.stop()
         XCTAssertFalse(cli.isRunning)
+    }
+
+    func testStoreKeyGoesThroughStdin() async throws {
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: "/usr/bin/python3"), "python3 missing")
+        let (cli, cleanup) = try makeMockBackend()
+        defer { cleanup() }
+        cli.storeKey = { "not a key" }
+        let (ar, _) = await cli.queryAccounts()
+        XCTAssertFalse(ar.ok)
+        XCTAssertTrue(ar.err.contains("invalid store key"), ar.err)
+
+        struct Locked: Error {}
+        cli.storeKey = { throw Locked() }
+        let r = await cli.run(["-o", "json", "listAccounts"], timeout: 30)
+        XCTAssertFalse(r.ok)
+        XCTAssertTrue(r.startError.contains("keychain"), r.startError)
+        var stopped: String?
+        cli.onStopped = { stopped = $0 }
+        cli.start(account: "+491234567")
+        XCTAssertFalse(cli.isRunning)
+        XCTAssertNotNil(stopped)
+    }
+
+    func testLinkPrintsUri() throws {
+        try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: "/usr/bin/python3"), "python3 missing")
+        let (cli, cleanup) = try makeMockBackend()
+        defer { cleanup() }
+        let p = cli.makeProcess(["link", "-n", "Corvus"])
+        let out = Pipe(), input = SignalBackend.inputPipe()
+        p.standardOutput = out
+        p.standardInput = input
+        try p.run()
+        try SignalBackend.sendStoreKey(try cli.storeKey(), to: input)
+        let text = String(decoding: out.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        p.waitUntilExit()
+        try? input.fileHandleForWriting.close()
+        XCTAssertEqual(p.terminationStatus, 0)
+        XCTAssertTrue(text.hasPrefix("sgnl://linkdevice?"), text)
     }
 }
 
@@ -1341,20 +1415,10 @@ final class RosterTests: XCTestCase {
 /// The group / block / request methods against tests/mock-signal-cli.py (same shapes as signal-cli 0.14).
 @MainActor
 final class GroupRpcTests: XCTestCase {
-    private func mock() throws -> String {
-        let source = URL(fileURLWithPath: #filePath)
-            .deletingLastPathComponent().appendingPathComponent("../../../tests/mock-signal-cli.py").standardized
-        let target = FileManager.default.temporaryDirectory.appendingPathComponent("mock-signal-cli-\(UUID().uuidString).py")
-        try FileManager.default.copyItem(at: source, to: target)
-        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: target.path)
-        return target.path
-    }
-
     func testGroupLifecycleBlockAndRequestResponse() async throws {
         try XCTSkipUnless(FileManager.default.isExecutableFile(atPath: "/usr/bin/python3"), "python3 missing")
-        let cli = SignalCli()
-        cli.executable = try mock()
-        defer { try? FileManager.default.removeItem(atPath: cli.executable) }
+        let (cli, cleanup) = try makeMockBackend()
+        defer { cleanup() }
         cli.start(account: "+491234567")
         defer { cli.stop() }
 

@@ -1,0 +1,23 @@
+--- a/Cargo.toml	2026-11-09 19:55:26
++++ b/Cargo.toml	2026-11-09 19:55:26
+@@ -4,7 +4,7 @@
+ edition = "2024"
+ 
+ [dependencies]
+-ringrtc = { path = "../third-party/ringrtc/src/rust", features = ["prebuilt_webrtc", "virtual_audio"] }
++ringrtc = { path = "third-party/ringrtc/src/rust", features = ["prebuilt_webrtc", "virtual_audio"] }
+ serde = { version = "1", features = ["derive"] }
+ serde_json = "1"
+ log = "0.4"
+@@ -15,3 +15,11 @@
+ [patch.crates-io]
+ # Use Signal's fork of curve25519-dalek for zkgroup compatibility (matches ringrtc workspace).
+ curve25519-dalek = { git = 'https://github.com/signalapp/curve25519-dalek', tag = 'signal-curve25519-4.1.3' }
++
++# Corvus: standalone workspace, kept apart from the signal-backend workspace and from ringrtc's own.
++[workspace]
++exclude = ["third-party"]
++
++# Corvus: macOS 27's loader rejects some proc-macro dylibs built at opt-level 3 (see signal-backend/Cargo.toml).
++[profile.release.build-override]
++opt-level = 1

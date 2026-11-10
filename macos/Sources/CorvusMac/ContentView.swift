@@ -71,7 +71,7 @@ struct ContentView: View {
         .animation(.easeOut(duration: 0.12), value: ImageViewerWindow.shared.item?.id)
         .background(WindowAccessor())
         .sheet(isPresented: $model.linkSheetShown) {
-            LinkView(executable: model.cli.executable) { model.finishLinking($0) }
+            LinkView(cli: model.cli) { model.finishLinking($0) }
         }
         .sheet(isPresented: Binding(get: { model.safetyNumberKey != nil }, set: { if !$0 { model.safetyNumberKey = nil } })) {
             if let key = model.safetyNumberKey { SafetyNumberSheet(key: key) }
@@ -689,7 +689,7 @@ private struct ConversationMenu: View {
     }
 }
 
-/// Connection state and the signal-cli update hint at the bottom of the chat list.
+/// Connection state at the bottom of the chat list.
 private struct ConnectionFooter: View {
     @Environment(AppModel.self) private var model
 
@@ -707,12 +707,6 @@ private struct ConnectionFooter: View {
                 }
             }
             .padding(.horizontal, 12)
-            if let hint = model.updateHint {
-                Link(destination: hint.url) {
-                    Label("signal-cli \(hint.version) available", systemImage: "arrow.down.circle")
-                }
-                .padding(.horizontal, 12)
-            }
         }
         .font(.caption)
         .foregroundStyle(.secondary)

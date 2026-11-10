@@ -240,12 +240,12 @@ private struct ContactCard: View {
         contact.phones.first?.value ?? contact.emails.first?.value ?? (contact.organization.isEmpty ? nil : contact.organization)
     }
 
-    /// The picture sent with the card, if signal-cli has the file (it downloads attachments when receiving).
+    /// The picture sent with the card, if the backend has the file (it downloads attachments when receiving).
     private func loadAvatar() async {
         guard !contact.avatarId.isEmpty else { return }
         var att = Attachment()
         att.id = contact.avatarId
-        guard let url = AppModel.signalCliAttachmentURL(att) else { return }
+        guard let url = AppModel.backendAttachmentURL(att) else { return }
         avatar = await MediaImageCache.shared.image("contact-avatar:" + contact.avatarId) {
             await Task.detached(priority: .utility) {
                 (try? Data(contentsOf: url)).flatMap { MediaDecode.image($0, maxPixel: 120) }

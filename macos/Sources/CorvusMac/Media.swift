@@ -50,12 +50,12 @@ enum Media {
         return CGImageDestinationFinalize(dest) ? out as Data : Data()
     }
 
-    /// signal-cli runs as another app (src/SignalCliHelper.cpp) and may not read protected folders (Desktop,
-    /// Documents, …): copies the files into a new folder in the temporary directory and returns the copies.
-    static func stageForSignalCli(_ paths: [String]) -> (paths: [String], dir: URL) {
+    /// Copies the files to send into a new folder in the temporary directory and returns the copies, so the
+    /// backend reads a file that cannot change or move before it is sent.
+    static func stageForBackend(_ paths: [String]) -> (paths: [String], dir: URL) {
         let dir = AppPaths.tempDir.appendingPathComponent("send-" + UUID().uuidString, isDirectory: true)
         let staged = paths.enumerated().map { i, path -> String in
-            // One folder per file: signal-cli sends the file name along.
+            // One folder per file: the backend sends the file name along.
             let target = dir.appendingPathComponent("\(i)", isDirectory: true)
                 .appendingPathComponent((path as NSString).lastPathComponent)
             do {

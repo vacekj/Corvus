@@ -1,8 +1,9 @@
 #!/bin/sh
 # Builds "Corvus.app" into macos/build/.
 #   1. the Rust history store (static library, shared with the Qt app)
-#   2. the Swift package (release)
-#   3. the app bundle: executable, resources, Info.plist, icon, signal-cli helper, ad-hoc signature
+#   2. the Signal backend corvus-signal (../signal-backend)
+#   3. the Swift package (release)
+#   4. the app bundle: executable, backend, resources, Info.plist, icon, ad-hoc signature
 set -eu
 
 cd "$(dirname "$0")/.."
@@ -24,8 +25,28 @@ COMMIT=$(git -C "$REPO_DIR" rev-parse HEAD 2>/dev/null || true)
 # (e.g. from `security find-identity -v -p codesigning`) to keep "Always Allow" across rebuilds.
 SIGN_ID=${CORVUS_SIGN_IDENTITY:--}
 
+BACKEND_MANIFEST="$REPO_DIR/signal-backend/Cargo.toml"
+if [ ! -f "$BACKEND_MANIFEST" ]; then
+    echo "error: $BACKEND_MANIFEST not found." >&2
+    echo "       Corvus needs its Signal backend (corvus-signal) from signal-backend/ to build the app." >&2
+    exit 1
+fi
+
 echo "==> Building Rust history store"
 cargo build --release --locked --manifest-path "$REPO_DIR/history-store/Cargo.toml"
+
+echo "==> Building Signal backend (corvus-signal)"
+cargo build --release --locked --manifest-path "$BACKEND_MANIFEST" -p corvus-signal
+BACKEND_BIN="${CARGO_TARGET_DIR:-$REPO_DIR/signal-backend/target}/release/corvus-signal"
+if [ ! -x "$BACKEND_BIN" ]; then
+    echo "error: $BACKEND_BIN was not built." >&2
+    exit 1
+fi
+
+echo "==> Building signal-call-tunnel (voice calls)"
+# Its own workspace (RingRTC + Signal's prebuilt, checksum-pinned WebRTC); see call-tunnel/scripts/build.sh.
+TUNNEL_TARGET="${CARGO_TARGET_DIR:-$REPO_DIR/signal-backend/target}/call-tunnel"
+TUNNEL_BIN=$(CARGO_TARGET_DIR="$TUNNEL_TARGET" "$REPO_DIR/signal-backend/call-tunnel/scripts/build.sh" | tail -1)
 
 echo "==> Building Swift package"
 swift build -c release --package-path "$MACOS_DIR"
@@ -34,8 +55,12 @@ BIN=$(swift build -c release --package-path "$MACOS_DIR" --show-bin-path)
 APP="$MACOS_DIR/build/Corvus.app"
 echo "==> Assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN/corvus" "$APP/Contents/MacOS/"
+# The app starts the backend as Contents/MacOS/corvus-signal (SignalBackend.swift).
+cp "$BACKEND_BIN" "$APP/Contents/MacOS/corvus-signal"
+# corvus-signal starts one tunnel per call from its own directory.
+cp "$TUNNEL_BIN" "$APP/Contents/MacOS/signal-call-tunnel"
 # SwiftPM resource bundle (sound) and the emoji data shared with the Qt app.
 cp -R "$BIN/CorvusMac_CorvusMac.bundle" "$APP/Contents/Resources/"
 cp "$REPO_DIR/resources/emoji-catalog.json" "$REPO_DIR/resources/emoji-names.json" "$APP/Contents/Resources/"
@@ -56,14 +81,6 @@ else
     echo "warning: icon could not be rendered, the app uses the generic icon"
 fi
 
-# signal-cli runs through this helper app (src/SignalCliHelper.cpp, shared with the Qt app).
-echo "==> Building signal-cli helper"
-HELPER="$APP/Contents/Helpers/corvus-signal-cli.app"
-mkdir -p "$HELPER/Contents/MacOS"
-xcrun clang++ -std=c++17 -O2 -mmacosx-version-min=14.0 "$REPO_DIR/src/SignalCliHelper.cpp" \
-    -o "$HELPER/Contents/MacOS/corvus-signal-cli"
-sed "s/@PROJECT_VERSION@/$VERSION/g" "$REPO_DIR/packaging/macos/SignalCliHelper.plist.in" > "$HELPER/Contents/Info.plist"
-
 # Signal Desktop history import (tools/signal-desktop-import).
 echo "==> Building Signal Desktop import helper"
 cargo build --release --locked --manifest-path "$REPO_DIR/tools/signal-desktop-import/Cargo.toml"
@@ -71,7 +88,8 @@ cp "$REPO_DIR/tools/signal-desktop-import/target/release/corvus-signal-import" "
 codesign --force --sign "$SIGN_ID" --timestamp=none "$APP/Contents/Helpers/corvus-signal-import"
 
 echo "==> Signing ($SIGN_ID)"
-codesign --force --sign "$SIGN_ID" --timestamp=none "$HELPER"
+codesign --force --options runtime --sign "$SIGN_ID" --timestamp=none "$APP/Contents/MacOS/corvus-signal"
+codesign --force --options runtime --sign "$SIGN_ID" --timestamp=none "$APP/Contents/MacOS/signal-call-tunnel"
 codesign --force --sign "$SIGN_ID" --timestamp=none "$APP"
 
 echo "Done: $APP"

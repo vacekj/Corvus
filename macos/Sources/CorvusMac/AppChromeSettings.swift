@@ -48,9 +48,9 @@ private struct LaunchAtLoginToggle: View {
 
 // MARK: - Advanced: proxy and this device
 
-/// The Signal TLS proxy signal-cli connects through (`--tls-proxy`), applied when signal-cli starts.
+/// The Signal TLS proxy the backend connects through (`--tls-proxy`), applied when it starts.
 enum ProxySetting {
-    static let key = "signalCli.tlsProxy"
+    static let key = "signalCli.tlsProxy" // name from the signal-cli days, kept so the setting stays
 
     static var value: String {
         get { UserDefaults.standard.string(forKey: key) ?? "" }
@@ -87,7 +87,7 @@ private struct ProxySection: View {
             if enabled && normalized == nil && !address.isEmpty {
                 Text("Enter a host name, host:port or a signal.tube link.").font(.caption).foregroundStyle(.red)
             } else {
-                Text("Signal TLS proxies only, the kind the Signal apps use. HTTP and SOCKS proxies are not supported by signal-cli.")
+                Text("Signal TLS proxies only, the kind the Signal apps use. HTTP and SOCKS proxies are not supported.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
@@ -135,9 +135,8 @@ extension AppModel {
         chats.account.isEmpty ? (UserDefaults.standard.string(forKey: "account") ?? "") : chats.account
     }
 
-    /// signal-cli cannot unlink a linked device: `removeDevice` is refused on anything but the primary device,
-    /// and `unregister` would only stop this device from fetching messages (on a primary device it would
-    /// unregister the number). Unlinking is done on the phone.
+    /// A linked device cannot unlink itself: removing devices is reserved to the primary device. Unlinking is
+    /// done on the phone.
     func explainUnlink() async {
         let choice = await Dialogs.ask(
             "Unlink this device",
@@ -147,16 +146,17 @@ extension AppModel {
         if choice == 0 { await deleteAllLocalData() }
     }
 
-    /// Deletes signal-cli's data of this linked account (`deleteLocalAccountData --ignore-registered`) and Corvus's
-    /// chat history, caches, history key and settings, then quits. Refused on a primary device: there it would
-    /// throw away the account's identity while the number stays registered.
+    /// Deletes the backend's data of this linked account (`deleteLocalAccountData --ignore-registered`), its data
+    /// directory and store key, and Corvus's chat history, caches, history key and settings, then quits. Refused
+    /// on a primary device: there it would throw away the account's identity while the number stays registered.
+    /// signal-cli's former data directory is left alone.
     func deleteAllLocalData() async {
         let account = signalAccount
         if !account.isEmpty {
-            let deviceId = SignalCliAccountData.deviceId(dataDir: SignalCliAccountData.defaultDataDir(), account: account)
-            if deviceId == SignalCliAccountData.primaryDeviceId {
+            let deviceId = SignalDataDir.deviceId(dataDir: cli.dataDir, account: account)
+            if deviceId == SignalDataDir.primaryDeviceId {
                 await Dialogs.warn("This computer is the primary device",
-                                   "signal-cli registered the number on this computer. Deleting its data would cut you off from "
+                                   "The number was registered on this computer. Deleting its data would cut you off from "
                                        + "your Signal account, so Corvus does not do it.")
                 return
             }
@@ -172,7 +172,7 @@ extension AppModel {
                 + "Your phone and other linked devices keep their messages.\n\nCorvus quits afterwards. This cannot be undone.",
             ok: "Delete all data", destructive: true)
         else { return }
-        guard let typed = await Dialogs.text("Type DELETE to confirm", "All data of Corvus and signal-cli on this computer will be deleted.",
+        guard let typed = await Dialogs.text("Type DELETE to confirm", "All data of Corvus on this computer will be deleted.",
                                              placeholder: "DELETE"),
               typed.trimmingCharacters(in: .whitespaces) == "DELETE"
         else { return }
@@ -183,18 +183,21 @@ extension AppModel {
             let r = await cli.run(["-a", account, "deleteLocalAccountData", "--ignore-registered"], timeout: 120)
             guard r.ok else {
                 let detail = [r.err, r.startError].first { !$0.isEmpty } ?? "exit code \(r.exitCode)"
-                await Dialogs.error("The data could not be deleted", "signal-cli: \(SignalCli.maskNumbers(detail))\n\nNothing of Corvus was deleted.")
+                await Dialogs.error("The data could not be deleted",
+                                    "Signal backend: \(SignalBackend.maskNumbers(detail))\n\nNothing of Corvus was deleted.")
                 reconnect()
                 return
             }
         }
 
-        shutdown() // closes the history and stops signal-cli
+        shutdown() // closes the history and stops the backend
         let fm = FileManager.default
         let dir = AppPaths.dataDir
         for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name != "history.lock" {
             try? fm.removeItem(at: dir.appendingPathComponent(name))
         }
+        try? fm.removeItem(at: cli.dataDir)
+        try? SignalStoreKey.clear()
         try? HistoryKeychain.clear()
         if let id = Bundle.main.bundleIdentifier { UserDefaults.standard.removePersistentDomain(forName: id) }
         UserDefaults.standard.synchronize()

@@ -77,7 +77,7 @@ extension AppModel {
             return error.localizedDescription
         }
         let id = jsonString(jsonObject(res)["groupId"])
-        if id.isEmpty { return "signal-cli did not report the id of the new group." }
+        if id.isEmpty { return "The Signal backend did not report the id of the new group." }
         let key = GroupInfo.key(forId: id)
         chats.ensure(key, title: name, group: true)
         chats.convs[key]!.title = name

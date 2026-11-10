@@ -1,0 +1,30 @@
+[package]
+name = "corvus-signal"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "Signal backend for Corvus (signal-cli compatible JSON-RPC over stdio), built on presage"
+publish = false
+
+[dependencies]
+corvus-calls = { path = "../corvus-calls" }
+presage = { path = "../vendor/presage" }
+presage-store-sqlite = { path = "../vendor/presage-store-sqlite" }
+
+base64 = "0.22"
+chrono = "0.4"
+futures = "0.3"
+hex = "0.4"
+mime_guess = "2.0"
+prost = "0.14"
+rand = "0.9"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.48", features = ["rt", "macros", "io-std", "io-util", "signal", "sync", "time", "fs"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry", "std"] }
+url = "2.5"
+uuid = "1"
+
+[dev-dependencies]
+tempfile = "3"

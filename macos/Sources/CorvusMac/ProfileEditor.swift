@@ -76,7 +76,7 @@ struct ProfileEditor: View {
     var body: some View {
         Form {
             if !model.connected {
-                Text("Connect to signal-cli before editing your profile.").foregroundStyle(.secondary)
+                Text("Connect to Signal before editing your profile.").foregroundStyle(.secondary)
             } else if let loadError {
                 InlineError(text: "Could not read your profile: \(loadError)")
             }
@@ -268,7 +268,7 @@ struct ProfileEditor: View {
         guard panel.runModal() == .OK, let url = panel.url else { return }
         let before = avatar
         if let img = NSImage(contentsOf: url) { avatar = Media.roundAvatar(img, size: 128) }
-        let staged = Media.stageForSignalCli([url.path])
+        let staged = Media.stageForBackend([url.path])
         busy = true
         status = nil
         Task {

@@ -4,9 +4,9 @@ import CoreAudio
 import CorvusCore
 import SwiftUI
 
-/// One voice call (signal-cli 0.14.2+ "experimental voice calling").
+/// One voice call (the backend's experimental voice calling, as in signal-cli 0.14.2+).
 ///
-/// signal-cli does the signaling and spawns `signal-call-tunnel` (RingRTC) per call. The tunnel exchanges
+/// The backend does the signaling and spawns `signal-call-tunnel` (RingRTC) per call. The tunnel exchanges
 /// audio through two virtual audio devices; on macOS these are BlackHole devices named `signal_input`
 /// (what the tunnel sends: we play the microphone into it) and `signal_output` (what the tunnel receives:
 /// we play it on the speakers). `CallAudioBridge` connects them while the call is up.
@@ -30,18 +30,18 @@ struct CallSession: Equatable {
 }
 
 enum CallSetup {
-    /// signal-cli finds the tunnel through $SIGNAL_CALL_TUNNEL_BIN, next to its own installation or on $PATH.
-    static func tunnelPath(signalCli: String) -> String? {
+    /// The tunnel is found through $SIGNAL_CALL_TUNNEL_BIN, next to the backend or on $PATH.
+    static func tunnelPath(backend: String) -> String? {
         let fm = FileManager.default
         if let env = ProcessInfo.processInfo.environment["SIGNAL_CALL_TUNNEL_BIN"], fm.isExecutableFile(atPath: env) { return env }
         var dirs: [String] = []
-        if !signalCli.isEmpty {
-            let real = (try? fm.destinationOfSymbolicLink(atPath: signalCli)).map {
-                URL(fileURLWithPath: $0, relativeTo: URL(fileURLWithPath: signalCli).deletingLastPathComponent()).path
-            } ?? signalCli
+        if !backend.isEmpty {
+            let real = (try? fm.destinationOfSymbolicLink(atPath: backend)).map {
+                URL(fileURLWithPath: $0, relativeTo: URL(fileURLWithPath: backend).deletingLastPathComponent()).path
+            } ?? backend
             dirs.append(URL(fileURLWithPath: real).deletingLastPathComponent().path)
         }
-        let env = SignalCli.childEnvironment()
+        let env = SignalBackend.childEnvironment()
         dirs += (env["PATH"] ?? "").split(separator: ":").map(String.init)
         for d in dirs {
             let p = (d as NSString).appendingPathComponent("signal-call-tunnel")
@@ -50,9 +50,9 @@ enum CallSetup {
         return nil
     }
 
-    static func missingRequirements(signalCli: String) -> [String] {
+    static func missingRequirements(backend: String) -> [String] {
         var missing: [String] = []
-        if tunnelPath(signalCli: signalCli) == nil { missing.append("signal-call-tunnel") }
+        if tunnelPath(backend: backend) == nil { missing.append("signal-call-tunnel") }
         if AudioDevices.find(named: "signal_input") == nil || AudioDevices.find(named: "signal_output") == nil {
             missing.append("the BlackHole devices “signal_input” and “signal_output”")
         }
@@ -60,17 +60,13 @@ enum CallSetup {
     }
 
     static let instructions = """
-        Voice calls use signal-cli's experimental calling support. It needs two things that Corvus cannot install for you:
+        Voice calls use experimental calling support. signal-call-tunnel ships with Corvus; the call audio goes \
+        through two virtual audio devices that Corvus cannot install for you (one-time, needs administrator rights):
 
-        1. signal-call-tunnel (RingRTC):
-           git clone --recurse-submodules https://github.com/visigoth/signal-call-tunnel.git
-           cargo install --path signal-call-tunnel/signal-call-tunnel
+           sudo signal-backend/call-tunnel/third-party/ringrtc/bin/virtual_audio.sh --setup \\
+               --input-source signal_input --output-sink signal_output
 
-        2. The virtual audio devices (one-time, needs administrator rights):
-           cd signal-call-tunnel/third-party/ringrtc
-           sudo bin/virtual_audio.sh --setup --input-source signal_input --output-sink signal_output
-
-        Then choose File → Reconnect. Video calls are not supported by signal-cli.
+        (the script is in the Corvus source tree). Then choose File → Reconnect. Video calls are not supported.
         """
 }
 
@@ -261,9 +257,9 @@ extension AppModel {
             do {
                 try await cli.call("subscribeCallEvents")
                 callSubscribed = true
-                callSetupMissing = CallSetup.missingRequirements(signalCli: cli.executable)
+                callSetupMissing = CallSetup.missingRequirements(backend: cli.executable)
             } catch {
-                // signal-cli before 0.14.2: no calls.
+                // A backend without voice calls.
                 callSubscribed = false
             }
         }
@@ -273,9 +269,9 @@ extension AppModel {
 
     /// Why a voice call cannot be started with this contact now (shown as the call button's tooltip), or nil.
     func callUnavailableReason(_ key: String) -> String? {
-        if !connected { return "Voice calls need a connection to signal-cli." }
+        if !connected { return "Voice calls need a connection to Signal." }
         if call?.isActive == true { return "A call is already in progress." }
-        if !callSubscribed { return "Voice calls need signal-cli 0.14.2 or newer." }
+        if !callSubscribed { return "Voice calls are not supported by the Signal backend." }
         if !callSetupMissing.isEmpty {
             return "Voice calls are not set up: \(callSetupMissing.joined(separator: " and ")) missing. See Help → Voice call setup."
         }
@@ -294,10 +290,10 @@ extension AppModel {
             return
         }
         guard callsAvailable else {
-            await Dialogs.warn("Voice calls", "Voice calls need signal-cli 0.14.2 or newer.")
+            await Dialogs.warn("Voice calls", "Voice calls are not supported by the Signal backend.")
             return
         }
-        let missing = CallSetup.missingRequirements(signalCli: cli.executable)
+        let missing = CallSetup.missingRequirements(backend: cli.executable)
         if !missing.isEmpty {
             await Dialogs.warn("Voice calls are not set up", "Missing: \(missing.joined(separator: " and ")).\n\n" + CallSetup.instructions)
             return
@@ -322,7 +318,7 @@ extension AppModel {
 
     func acceptCall() async {
         guard let s = call, s.state == .ringingIncoming else { return }
-        let missing = CallSetup.missingRequirements(signalCli: cli.executable)
+        let missing = CallSetup.missingRequirements(backend: cli.executable)
         if !missing.isEmpty {
             await Dialogs.warn("Voice calls are not set up", "Missing: \(missing.joined(separator: " and ")).\n\n" + CallSetup.instructions)
             return
@@ -424,7 +420,7 @@ extension AppModel {
     }
 
     func callConnectionLost() {
-        if call?.isActive == true { endCallLocally(reason: "signal-cli disconnected") }
+        if call?.isActive == true { endCallLocally(reason: "Signal backend disconnected") }
     }
 
     private func ensureMicrophone() async -> Bool {

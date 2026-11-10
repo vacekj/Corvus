@@ -25,26 +25,17 @@ private struct GeneralSettings: View {
     @AppStorage(MessageInput.spellCheckKey) private var spellCheck = false
     @State private var giphyKey: String?
 
-    @AppStorage(AppModel.autoUpdateKey) private var autoUpdate = true
     @AppStorage(SentMediaQuality.key) private var sentMediaQuality = SentMediaQuality.standard
 
     var body: some View {
         Form {
             AppGeneralSections()
-            Section("signal-cli") {
-                LabeledContent("Path") {
-                    Text(model.cli.executable.isEmpty ? "not found" : model.cli.executable)
-                        .textSelection(.enabled)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
+            Section("Signal backend") {
                 LabeledContent("Version", value: model.version.isEmpty ? "–" : model.version)
                 HStack {
-                    Button("Choose signal-cli …") { model.chooseExecutable() }
+                    Spacer()
                     Button("Reconnect") { model.reconnect() }
-                    Button("Check for update") { model.checkForUpdates(silent: false) }
                 }
-                Toggle("Update signal-cli automatically", isOn: $autoUpdate)
             }
             HistoryProtectionSection()
             Section("Message field") {

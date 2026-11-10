@@ -242,9 +242,7 @@ struct AppCommands: Commands {
                 .keyboardShortcut("/")
             Divider()
             Button("Check for Corvus updates …") { AppUpdater.shared.check(silent: false) }
-            Button("Check for signal-cli update") { model.checkForUpdates(silent: false) }
             Button("Voice call setup …") { Task { await model.showCallSetup() } }
-            Button("signal-cli on GitHub") { NSWorkspace.shared.open(URL(string: "https://github.com/AsamK/signal-cli")!) }
         }
     }
 }

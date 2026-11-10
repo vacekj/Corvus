@@ -2,7 +2,7 @@ import AppKit
 import CorvusCore
 import SwiftUI
 
-/// Corvus's own update check (the signal-cli updater is SignalCliUpdater.swift): once a day and from
+/// Corvus's own update check: once a day and from
 /// Help / Settings. A newer release shows a banner above the chat list with its notes and a link to the
 /// release page; nothing is downloaded or installed.
 @MainActor @Observable

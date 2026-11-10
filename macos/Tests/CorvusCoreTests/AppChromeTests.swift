@@ -185,33 +185,91 @@ final class NotificationMuteTests: XCTestCase {
     }
 }
 
-final class SignalCliAccountTests: XCTestCase {
-    private let accounts = Data(#"{"accounts":[{"path":"111","environment":"LIVE","number":"+10000000001","uuid":"u-1"},{"path":"222","number":"+10000000002","uuid":"u-2"}],"version":2}"#.utf8)
+final class SignalDataTests: XCTestCase {
+    private let accounts = Data(#"[{"number":"+10000000001","uuid":"u-1","deviceId":1},{"number":"+10000000002","uuid":"u-2","deviceId":3}]"#.utf8)
 
-    private func file(_ path: String) -> Data? {
-        switch path {
-        case "111": return Data(#"{"deviceId":1}"#.utf8)
-        case "222": return Data(#"{"deviceId":3}"#.utf8)
-        default: return nil
+    func testDeviceId() {
+        XCTAssertEqual(SignalDataDir.deviceId(accountsJSON: accounts, account: "+10000000001"), 1)
+        XCTAssertEqual(SignalDataDir.deviceId(accountsJSON: accounts, account: "+10000000002"), 3)
+        XCTAssertEqual(SignalDataDir.deviceId(accountsJSON: accounts, account: "u-2"), 3)
+        XCTAssertNil(SignalDataDir.deviceId(accountsJSON: accounts, account: "+19999999999"))
+        XCTAssertNil(SignalDataDir.deviceId(accountsJSON: accounts, account: ""))
+        XCTAssertNil(SignalDataDir.deviceId(accountsJSON: Data("{}".utf8), account: "+10000000001"))
+        XCTAssertNil(SignalDataDir.deviceId(accountsJSON: Data(#"[{"number":"+1","deviceId":"2"}]"#.utf8), account: "+1"))
+        XCTAssertEqual(SignalDataDir.deviceId(accountsJSON: Data(#"{"accounts":[{"number":"+1","deviceId":2}]}"#.utf8), account: "+1"), 2)
+    }
+
+    func testLayout() {
+        XCTAssertTrue(SignalDataDir.root.path.hasSuffix("/Library/Application Support/corvus/signal"), SignalDataDir.root.path)
+        let dir = URL(fileURLWithPath: "/d", isDirectory: true)
+        XCTAssertEqual(SignalDataDir.attachments(dir).path, "/d/attachments")
+        XCTAssertEqual(SignalDataDir.avatars(dir).path, "/d/avatars")
+        XCTAssertEqual(SignalDataDir.stickers(dir).path, "/d/stickers")
+        XCTAssertEqual(SignalDataDir.accountsFile(dir).path, "/d/accounts.json")
+    }
+
+    func testLegacyDataDir() {
+        let home = URL(fileURLWithPath: "/Users/someone")
+        XCTAssertEqual(SignalCliMigration.legacyDataDir(environment: [:], home: home).path, "/Users/someone/.local/share/signal-cli")
+        XCTAssertEqual(SignalCliMigration.legacyDataDir(environment: ["XDG_DATA_HOME": "/data"], home: home).path, "/data/signal-cli")
+    }
+
+    private func tempDir() throws -> URL {
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("corvus-data-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: dir) }
+        return dir
+    }
+
+    private func write(_ text: String, _ url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: url)
+    }
+
+    func testAttachmentURL() throws {
+        let root = try tempDir()
+        let dir = root.appendingPathComponent("new"), legacy = root.appendingPathComponent("old")
+        try write("new", SignalDataDir.attachments(dir).appendingPathComponent("a.jpg"))
+        try write("old", SignalDataDir.attachments(legacy).appendingPathComponent("b.jpg"))
+        try write("both-old", SignalDataDir.attachments(legacy).appendingPathComponent("a.jpg"))
+        XCTAssertEqual(SignalDataDir.attachmentURL(id: "a.jpg", dir: dir, legacyDir: legacy)?.path,
+                       SignalDataDir.attachments(dir).appendingPathComponent("a.jpg").path)
+        XCTAssertEqual(SignalDataDir.attachmentURL(id: "b.jpg", dir: dir, legacyDir: legacy)?.path,
+                       SignalDataDir.attachments(legacy).appendingPathComponent("b.jpg").path)
+        XCTAssertNil(SignalDataDir.attachmentURL(id: "b.jpg", dir: dir, legacyDir: nil))
+        XCTAssertNil(SignalDataDir.attachmentURL(id: "missing", dir: dir, legacyDir: legacy))
+        for bad in ["", ".hidden", "../a.jpg", "x/y", "a b"] {
+            XCTAssertNil(SignalDataDir.attachmentURL(id: bad, dir: dir, legacyDir: legacy), bad)
         }
     }
 
-    func testDeviceId() {
-        XCTAssertEqual(SignalCliAccountData.deviceId(accountsJSON: accounts, account: "+10000000001", readAccountFile: file), 1)
-        XCTAssertEqual(SignalCliAccountData.deviceId(accountsJSON: accounts, account: "+10000000002", readAccountFile: file), 3)
-        XCTAssertEqual(SignalCliAccountData.deviceId(accountsJSON: accounts, account: "u-2", readAccountFile: file), 3)
-        XCTAssertNil(SignalCliAccountData.deviceId(accountsJSON: accounts, account: "+19999999999", readAccountFile: file))
-        XCTAssertNil(SignalCliAccountData.deviceId(accountsJSON: accounts, account: "", readAccountFile: file))
-        XCTAssertNil(SignalCliAccountData.deviceId(accountsJSON: Data("{}".utf8), account: "+10000000001", readAccountFile: file))
-        // A path leaving the data directory is not followed.
-        let evil = Data(#"{"accounts":[{"path":"../x","number":"+1"}]}"#.utf8)
-        XCTAssertNil(SignalCliAccountData.deviceId(accountsJSON: evil, account: "+1") { _ in Data(#"{"deviceId":2}"#.utf8) })
-    }
+    func testMigrationCopiesOnceAndKeepsTheOldFiles() throws {
+        let root = try tempDir()
+        let dir = root.appendingPathComponent("new"), legacy = root.appendingPathComponent("old")
+        XCTAssertFalse(SignalCliMigration.isNeeded(from: legacy, to: dir)) // no signal-cli data
+        try write("a", SignalDataDir.attachments(legacy).appendingPathComponent("a.jpg"))
+        try write("b", SignalDataDir.attachments(legacy).appendingPathComponent("b.bin"))
+        try write("old avatar", SignalDataDir.avatars(legacy).appendingPathComponent("contact-+1"))
+        try write("old own", SignalDataDir.avatars(legacy).appendingPathComponent("profile-+2"))
+        try FileManager.default.createDirectory(at: SignalDataDir.attachments(legacy).appendingPathComponent("sub"),
+                                                withIntermediateDirectories: true)
+        // The backend already wrote a newer picture: it stays.
+        try write("new avatar", SignalDataDir.avatars(dir).appendingPathComponent("contact-+1"))
 
-    func testDefaultDataDir() {
-        let home = URL(fileURLWithPath: "/Users/someone")
-        XCTAssertEqual(SignalCliAccountData.defaultDataDir(environment: [:], home: home).path, "/Users/someone/.local/share/signal-cli")
-        XCTAssertEqual(SignalCliAccountData.defaultDataDir(environment: ["XDG_DATA_HOME": "/data"], home: home).path, "/data/signal-cli")
+        XCTAssertTrue(SignalCliMigration.isNeeded(from: legacy, to: dir))
+        XCTAssertEqual(SignalCliMigration.copyFiles(from: legacy, to: dir), 3)
+        func text(_ url: URL) -> String? { (try? Data(contentsOf: url)).map { String(decoding: $0, as: UTF8.self) } }
+        XCTAssertEqual(text(SignalDataDir.attachments(dir).appendingPathComponent("a.jpg")), "a")
+        XCTAssertEqual(text(SignalDataDir.attachments(dir).appendingPathComponent("b.bin")), "b")
+        XCTAssertEqual(text(SignalDataDir.avatars(dir).appendingPathComponent("contact-+1")), "new avatar")
+        XCTAssertEqual(text(SignalDataDir.avatars(dir).appendingPathComponent("profile-+2")), "old own")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: SignalDataDir.attachments(dir).appendingPathComponent("sub").path))
+        // signal-cli's files are untouched.
+        XCTAssertEqual(text(SignalDataDir.attachments(legacy).appendingPathComponent("a.jpg")), "a")
+        XCTAssertEqual(text(SignalDataDir.avatars(legacy).appendingPathComponent("contact-+1")), "old avatar")
+        // Done: the new directory has the files now.
+        XCTAssertFalse(SignalCliMigration.isNeeded(from: legacy, to: dir))
+        XCTAssertEqual(SignalCliMigration.copyFiles(from: legacy, to: dir), 0)
     }
 
     func testProxyNormalization() {

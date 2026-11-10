@@ -164,7 +164,7 @@ struct ContactDetailsFields: View {
         let n = note.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !key.isEmpty, n != saved(key).note else { return }
         guard model.connected else {
-            error = "Connect to signal-cli to save the note."
+            error = "Connect to Signal to save the note."
             return
         }
         error = nil

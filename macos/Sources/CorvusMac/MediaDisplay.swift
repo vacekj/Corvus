@@ -134,10 +134,10 @@ extension AppModel {
         }
     }
 
-    /// Local file of a video: signal-cli's own file when there is one, else a temporary copy.
+    /// Local file of a video: the backend's own file when there is one, else a temporary copy.
     func videoFile(_ key: String, _ att: Attachment, token: String) async throws -> URL {
         if let url = videoFiles[token], FileManager.default.fileExists(atPath: url.path) { return url }
-        if let url = Self.signalCliAttachmentURL(att) {
+        if let url = Self.backendAttachmentURL(att) {
             videoFiles[token] = url
             return url
         }
@@ -149,14 +149,10 @@ extension AppModel {
         return url
     }
 
-    /// signal-cli keeps received attachments as `<data dir>/attachments/<id>`; reading that file avoids
+    /// The backend keeps received attachments as `<data dir>/attachments/<id>`; reading that file avoids
     /// sending megabytes of base64 through JSON-RPC.
-    static func signalCliAttachmentURL(_ att: Attachment) -> URL? {
-        let id = att.id
-        guard !id.isEmpty, id.range(of: "^[A-Za-z0-9_.-]+$", options: .regularExpression) != nil, !id.hasPrefix(".") else { return nil }
-        let url = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".local/share/signal-cli/attachments", isDirectory: true).appendingPathComponent(id)
-        return FileManager.default.isReadableFile(atPath: url.path) ? url : nil
+    static func backendAttachmentURL(_ att: Attachment) -> URL? {
+        SignalDataDir.attachmentURL(id: att.id)
     }
 
     /// The real (rotated) pixel size became known: remember it so the bubble keeps its shape next time.

@@ -162,7 +162,7 @@ private struct ChatPopupContent: View {
             .buttonStyle(.borderless)
             .foregroundStyle(canSend ? Theme.signalBlue : Color.secondary)
             .disabled(!canSend)
-            .iconHelp("Send", tooltip: model.connected ? "Send (Return)" : "Not connected to signal-cli")
+            .iconHelp("Send", tooltip: model.connected ? "Send (Return)" : "Not connected to Signal")
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)

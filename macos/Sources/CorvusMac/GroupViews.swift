@@ -104,7 +104,7 @@ struct GroupInfoPanel: View {
             if let g = model.roster.groups[key] {
                 content(g)
             } else {
-                Text(model.roster.groupsLoaded ? "signal-cli has no details for this group." : "Loading …")
+                Text(model.roster.groupsLoaded ? "No details for this group are known." : "Loading …")
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, minHeight: 60)
             }

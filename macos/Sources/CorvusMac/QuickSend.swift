@@ -8,7 +8,7 @@ extension AppModel {
     /// Why a text cannot be sent to this chat now, or nil.
     func quickSendProblem(_ key: String) -> String? {
         guard chats.convs[key] != nil else { return "This chat no longer exists." }
-        if !connected { return "Not connected to signal-cli." }
+        if !connected { return "Not connected to Signal." }
         if isSendLocked(key) { return "Accept the message request first." }
         return nil
     }

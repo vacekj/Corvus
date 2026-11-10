@@ -359,7 +359,7 @@ extension AppModel {
                     if !m.text.isEmpty { p["message"] = m.text }
                     if !m.text.isEmpty && !m.textStyles.isEmpty { p["textStyle"] = m.textStyles.map(\.cliString) }
                     if let sticker { p["sticker"] = "\(sticker.stickerPackId):\(sticker.stickerId)" }
-                    let staged = Media.stageForSignalCli(files)
+                    let staged = Media.stageForBackend(files)
                     if !files.isEmpty { p["attachments"] = staged.paths }
                     addRecipient(&p, c)
                     do {
@@ -487,7 +487,7 @@ extension AppModel {
             showFlash("The file cannot be posted as a story.", seconds: 6)
             return
         }
-        let staged = Media.stageForSignalCli([file])
+        let staged = Media.stageForBackend([file])
         var p: JSON = ["attachment": staged.paths.first ?? file]
         if !allowReplies { p["noReplies"] = true }
         if let groupKey { p["groupId"] = String(groupKey.dropFirst(2)) }

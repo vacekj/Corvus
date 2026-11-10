@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
-"""Minimal stand-in for signal-cli used by the GUI integration test.
+"""Minimal stand-in for signal-cli (Qt tests) and corvus-signal (macOS app, signal-backend/DESIGN.md)
+used by the GUI integration test and the Swift tests.
 
 Speaks the subset of the real CLI / JSON-RPC protocol the GUI uses, with the
 JSON field names taken from signal-cli's source (JsonContact, JsonDataMessage,
 JsonAttachment, JsonQuote, JsonReaction, ...).
+
+corvus-signal options: `--config DIR` (must be an existing directory), `--store-key-stdin` (the first
+stdin line must be a 64-hex-digit key, otherwise exit 1) and `--tls-proxy HOST`. Invoked under a name
+starting with "corvus-signal", `--version` prints "corvus-signal <version>"; it also understands
+`link -n NAME` (prints a sgnl:// URI, exits 0) and `deleteLocalAccountData`.
 
 Environment:
   MOCK_LOG     file: every JSON-RPC request is appended (one JSON per line)
@@ -19,6 +25,37 @@ block / unblock (recipient and/or groupId), sendMessageRequestResponse (type acc
 import base64, io, json, os, struct, sys, threading, time, wave, zlib
 
 args = sys.argv[1:]
+
+
+def fail(msg, code=1):
+    sys.stderr.write("mock: %s\n" % msg)
+    sys.exit(code)
+
+
+def take_option(name, has_value):
+    """Removes a global option from args; returns its value (True for a flag), None when absent."""
+    if name not in args:
+        return None
+    i = args.index(name)
+    if not has_value:
+        del args[i]
+        return True
+    if i + 1 >= len(args):
+        fail("%s needs a value" % name)
+    value = args[i + 1]
+    del args[i:i + 2]
+    return value
+
+
+config_dir = take_option("--config", True)
+key_on_stdin = take_option("--store-key-stdin", False)
+tls_proxy = take_option("--tls-proxy", True)
+if config_dir is not None and not os.path.isdir(config_dir):
+    fail("--config %s is not a directory" % config_dir)
+if key_on_stdin:
+    store_key = sys.stdin.readline().strip()
+    if len(store_key) != 64 or any(c not in "0123456789abcdefABCDEF" for c in store_key):
+        fail("invalid store key on stdin")
 
 
 def png(w=64, h=48):
@@ -151,7 +188,16 @@ mode = os.environ.get("MOCK_ACCOUNTS", "ok")        # ok | empty | fail | okexit
 
 if "--version" in args:
     time.sleep(nap)
-    print("signal-cli 0.14.9")
+    name = "corvus-signal" if os.path.basename(sys.argv[0]).startswith("corvus-signal") else "signal-cli"
+    print(name + " 0.14.9")
+    sys.exit(0)
+
+if "link" in args:
+    time.sleep(nap)
+    print("sgnl://linkdevice?uuid=mock-link&pub_key=mock-key", flush=True)
+    sys.exit(0)
+
+if "deleteLocalAccountData" in args:
     sys.exit(0)
 
 if "listAccounts" in args:

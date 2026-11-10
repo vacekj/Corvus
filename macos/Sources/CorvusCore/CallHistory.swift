@@ -29,7 +29,7 @@ public struct CallRecord: Codable, Equatable, Identifiable, Sendable {
     }
 
     /// End reasons: signal-cli's call events ("remote_hangup", "ring_timeout", "acceptedonanotherdevice", …)
-    /// and Corvus's own ("declined", "hangup", "signal-cli disconnected").
+    /// and Corvus's own ("declined", "hangup", "Signal backend disconnected").
     public var outcome: Outcome {
         if endedMs == nil { return .ongoing }
         if connectedMs != nil { return .answered }

@@ -1,0 +1,168 @@
+diff -ruN a/src/control.rs b/src/control.rs
+--- a/src/control.rs	2026-11-09 20:01:07
++++ b/src/control.rs	2026-11-09 20:01:07
+@@ -29,7 +29,7 @@
+         sender_identity_key: Vec<u8>,
+         receiver_identity_key: Vec<u8>,
+     },
+-    ReceivedIce { candidates: Vec<Vec<u8>> },
++    ReceivedIce { sender_device_id: u32, candidates: Vec<Vec<u8>> },
+     Accept,
+     Hangup,
+ }
+@@ -115,7 +115,10 @@
+             } else {
+                 Vec::new()
+             };
+-            Ok(ControlMessage::ReceivedIce { candidates })
++            Ok(ControlMessage::ReceivedIce {
++                sender_device_id: v["senderDeviceId"].as_u64().unwrap_or(1) as u32,
++                candidates,
++            })
+         }
+         "accept" => Ok(ControlMessage::Accept),
+         "hangup" => Ok(ControlMessage::Hangup),
+@@ -295,7 +298,7 @@
+         let json = r#"{"type":"receivedIce","candidates":["AQID","BAUG"]}"#;
+         let msg = parse_message(json).unwrap();
+         match msg {
+-            ControlMessage::ReceivedIce { candidates } => {
++            ControlMessage::ReceivedIce { candidates, .. } => {
+                 assert_eq!(candidates.len(), 2);
+                 assert_eq!(candidates[0], vec![1, 2, 3]);
+                 assert_eq!(candidates[1], vec![4, 5, 6]);
+@@ -305,10 +308,30 @@
+     }
+ 
+     #[test]
++    fn parse_received_ice_sender_device() {
++        let msg =
++            parse_message(r#"{"type":"receivedIce","senderDeviceId":3,"candidates":["AQID"]}"#)
++                .unwrap();
++        match msg {
++            ControlMessage::ReceivedIce {
++                sender_device_id, ..
++            } => assert_eq!(sender_device_id, 3),
++            _ => panic!("expected ReceivedIce, got {:?}", msg),
++        }
++        // Absent: the primary device, as before.
++        match parse_message(r#"{"type":"receivedIce","candidates":[]}"#).unwrap() {
++            ControlMessage::ReceivedIce {
++                sender_device_id, ..
++            } => assert_eq!(sender_device_id, 1),
++            msg => panic!("expected ReceivedIce, got {:?}", msg),
++        }
++    }
++
++    #[test]
+     fn parse_received_ice_empty() {
+         let msg = parse_message(r#"{"type":"receivedIce","candidates":[]}"#).unwrap();
+         match msg {
+-            ControlMessage::ReceivedIce { candidates } => {
++            ControlMessage::ReceivedIce { candidates, .. } => {
+                 assert!(candidates.is_empty());
+             }
+             _ => panic!("expected ReceivedIce, got {:?}", msg),
+diff -ruN a/src/main.rs b/src/main.rs
+--- a/src/main.rs	2026-11-09 20:01:07
++++ b/src/main.rs	2026-11-09 20:01:07
+@@ -363,7 +363,10 @@
+                     error!("Failed to process received answer: {}", e);
+                 }
+             }
+-            ControlMessage::ReceivedIce { candidates } => {
++            ControlMessage::ReceivedIce {
++                sender_device_id,
++                candidates,
++            } => {
+                 debug!("Received {} ICE candidates", candidates.len());
+ 
+                 let ice_candidates: Vec<signaling::IceCandidate> = candidates
+@@ -375,7 +378,7 @@
+                     ice: signaling::Ice {
+                         candidates: ice_candidates,
+                     },
+-                    sender_device_id: 1 as DeviceId,
++                    sender_device_id: sender_device_id as DeviceId,
+                 };
+ 
+                 if let Err(e) = call_manager.received_ice(
+diff -ruN a/src/platform.rs b/src/platform.rs
+--- a/src/platform.rs	2026-11-09 20:01:07
++++ b/src/platform.rs	2026-11-09 20:01:07
+@@ -44,6 +44,7 @@
+     },
+     SendHangup {
+         hangup_type: String,
++        device_id: Option<DeviceId>,
+     },
+     SendBusy,
+ }
+@@ -85,13 +86,22 @@
+                         candidates_json.join(","),
+                     )
+                 }
+-                SignalingEvent::SendHangup { hangup_type } => {
+-                    format!(
++                SignalingEvent::SendHangup {
++                    hangup_type,
++                    device_id,
++                } => match device_id {
++                    Some(device_id) => format!(
++                        r#"{{"type":"sendHangup","callId":{},"hangupType":"{}","deviceId":{}}}"#,
++                        u64::from(*call_id),
++                        hangup_type,
++                        device_id,
++                    ),
++                    None => format!(
+                         r#"{{"type":"sendHangup","callId":{},"hangupType":"{}"}}"#,
+                         u64::from(*call_id),
+                         hangup_type,
+-                    )
+-                }
++                    ),
++                },
+                 SignalingEvent::SendBusy => {
+                     format!(
+                         r#"{{"type":"sendBusy","callId":{}}}"#,
+@@ -210,6 +220,7 @@
+             call_id: CallId::from(50u64),
+             message: SignalingEvent::SendHangup {
+                 hangup_type: "normal".to_string(),
++                device_id: None,
+             },
+         };
+         let json = parse_event_json(&event);
+@@ -219,6 +230,20 @@
+     }
+ 
+     #[test]
++    fn send_hangup_with_device_id_json() {
++        let event = PlatformEvent::SendSignaling {
++            call_id: CallId::from(51u64),
++            message: SignalingEvent::SendHangup {
++                hangup_type: "acceptedonanotherdevice".to_string(),
++                device_id: Some(2),
++            },
++        };
++        let json = parse_event_json(&event);
++        assert_eq!(json["hangupType"], "acceptedonanotherdevice");
++        assert_eq!(json["deviceId"], 2);
++    }
++
++    #[test]
+     fn send_busy_json() {
+         let event = PlatformEvent::SendSignaling {
+             call_id: CallId::from(8u64),
+@@ -319,9 +344,10 @@
+                 candidates: ice.candidates.into_iter().map(|c| c.opaque).collect(),
+             },
+             signaling::Message::Hangup(hangup) => {
+-                let (hangup_type, _device_id) = hangup.to_type_and_device_id();
++                let (hangup_type, device_id) = hangup.to_type_and_device_id();
+                 SignalingEvent::SendHangup {
+                     hangup_type: format!("{:?}", hangup_type).to_lowercase(),
++                    device_id,
+                 }
+             }
+             signaling::Message::Busy => SignalingEvent::SendBusy,
