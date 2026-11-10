@@ -6,6 +6,15 @@ license = "AGPL-3.0-only"
 description = "Signal backend for Corvus (signal-cli compatible JSON-RPC over stdio), built on presage"
 publish = false
 
+# The backend is a library; the binary is that library on stdin/stdout, and the macOS app links it
+# through ../corvus-core.
+[lib]
+name = "corvus_signal"
+
+[[bin]]
+name = "corvus-signal"
+path = "src/main.rs"
+
 [dependencies]
 corvus-calls = { path = "../corvus-calls" }
 presage = { path = "../vendor/presage" }

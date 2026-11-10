@@ -1,8 +1,14 @@
 # corvus-signal: Corvus's Signal backend (replaces signal-cli)
 
-A single Rust binary built on presage (vendored in `vendor/`). Corvus starts it as a child process and
-talks to it with the same JSON-RPC 2.0 protocol, method names, parameter shapes and notification
-payloads that signal-cli's `jsonRpc` mode uses. The contract is what Corvus actually uses today,
+A Rust library built on presage (vendored in `vendor/`), with the `corvus-signal` binary as the same
+code on stdin/stdout. Corvus talks to it with the same JSON-RPC 2.0 protocol, method names, parameter
+shapes and notification payloads that signal-cli's `jsonRpc` mode uses.
+
+The macOS app does not start a process: it links the library (`corvus-core`, one static library with the
+history store's key wrapping and SQLCipher in it) and runs each command line on a thread of its own
+(`corvus-signal/src/ffi.rs`, `include/corvus_signal.h`). "stdin", "stdout" and "stderr" below are then
+lines handed over through that interface; the end of the input ends a `jsonRpc` run and cancels a `link`.
+Inside the app the backend never exits the process and installs no signal handlers. The contract is what Corvus actually uses today,
 written down in `docs/corvus-rpc-spec.md` (copied from the survey). Where that spec and signal-cli
 disagree, the spec wins.
 
@@ -48,7 +54,10 @@ store is unencrypted (tests only). Never pass the key in argv or the environment
 
 ## Layout
 
-    corvus-signal/src/main.rs        argv parsing, subcommands
+    corvus-signal/src/lib.rs         argv parsing, subcommands (`run`, with its streams as `Io`)
+    corvus-signal/src/main.rs        the binary: `run` on the process's stdin/stdout
+    corvus-signal/src/ffi.rs         C interface for an app that links the backend
+    corvus-core/                     the static library the macOS app links
     corvus-signal/src/rpc.rs         JSON-RPC framing, dispatch table, error type
     corvus-signal/src/manager.rs     presage Manager lifecycle, reconnect, send queue
     corvus-signal/src/receive.rs     receive loop -> envelope JSON, attachment download

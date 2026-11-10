@@ -1,7 +1,7 @@
 #!/bin/sh
 # Builds "Corvus.app" into macos/build/.
-#   1. the Rust history store (static library, shared with the Qt app)
-#   2. the Signal backend corvus-signal (../signal-backend)
+#   1. the Rust library: the Signal backend, the history key wrapping and SQLCipher (../signal-backend, corvus-core)
+#   2. the voice call tunnel (signal-call-tunnel)
 #   3. the Swift package (release)
 #   4. the app bundle: executable, backend, resources, Info.plist, icon, ad-hoc signature
 set -eu
@@ -28,18 +28,16 @@ SIGN_ID=${CORVUS_SIGN_IDENTITY:--}
 BACKEND_MANIFEST="$REPO_DIR/signal-backend/Cargo.toml"
 if [ ! -f "$BACKEND_MANIFEST" ]; then
     echo "error: $BACKEND_MANIFEST not found." >&2
-    echo "       Corvus needs its Signal backend (corvus-signal) from signal-backend/ to build the app." >&2
+    echo "       Corvus needs its Signal backend from signal-backend/ to build the app." >&2
     exit 1
 fi
 
-echo "==> Building Rust history store"
-cargo build --release --locked --manifest-path "$REPO_DIR/history-store/Cargo.toml"
-
-echo "==> Building Signal backend (corvus-signal)"
-cargo build --release --locked --manifest-path "$BACKEND_MANIFEST" -p corvus-signal
-BACKEND_BIN="${CARGO_TARGET_DIR:-$REPO_DIR/signal-backend/target}/release/corvus-signal"
-if [ ! -x "$BACKEND_BIN" ]; then
-    echo "error: $BACKEND_BIN was not built." >&2
+echo "==> Building the Rust library (Signal backend, history key wrapping, SQLCipher)"
+# One static library, linked into the app by the Swift package (Package.swift).
+cargo build --release --locked --manifest-path "$BACKEND_MANIFEST" -p corvus-core
+CORE_LIB="${CARGO_TARGET_DIR:-$REPO_DIR/signal-backend/target}/release/libcorvus_core.a"
+if [ ! -f "$CORE_LIB" ]; then
+    echo "error: $CORE_LIB was not built." >&2
     exit 1
 fi
 
@@ -57,9 +55,7 @@ echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN/corvus" "$APP/Contents/MacOS/"
-# The app starts the backend as Contents/MacOS/corvus-signal (SignalBackend.swift).
-cp "$BACKEND_BIN" "$APP/Contents/MacOS/corvus-signal"
-# corvus-signal starts one tunnel per call from its own directory.
+# The backend (inside the app's executable) starts one tunnel per call from the executable's directory.
 cp "$TUNNEL_BIN" "$APP/Contents/MacOS/signal-call-tunnel"
 # SwiftPM resource bundle (sound) and the emoji data shared with the Qt app.
 cp -R "$BIN/CorvusMac_CorvusMac.bundle" "$APP/Contents/Resources/"
@@ -88,7 +84,6 @@ cp "$REPO_DIR/tools/signal-desktop-import/target/release/corvus-signal-import" "
 codesign --force --sign "$SIGN_ID" --timestamp=none "$APP/Contents/Helpers/corvus-signal-import"
 
 echo "==> Signing ($SIGN_ID)"
-codesign --force --options runtime --sign "$SIGN_ID" --timestamp=none "$APP/Contents/MacOS/corvus-signal"
 codesign --force --options runtime --sign "$SIGN_ID" --timestamp=none "$APP/Contents/MacOS/signal-call-tunnel"
 codesign --force --sign "$SIGN_ID" --timestamp=none "$APP"
 

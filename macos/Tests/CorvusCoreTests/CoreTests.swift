@@ -120,8 +120,12 @@ final class SignalBackendHelperTests: XCTestCase {
 
     func testBundledExecutable() {
         let main = URL(fileURLWithPath: "/Applications/Corvus.app/Contents/MacOS/corvus")
+        // The backend is part of the app's executable …
         XCTAssertEqual(SignalBackend.bundledExecutable(environment: [:], mainExecutable: main),
-                       "/Applications/Corvus.app/Contents/MacOS/corvus-signal")
+                       "/Applications/Corvus.app/Contents/MacOS/corvus")
+        XCTAssertTrue(SignalBackend.embeddedByDefault(environment: [:]))
+        // … unless another one is to be started as a process.
+        XCTAssertFalse(SignalBackend.embeddedByDefault(environment: ["CORVUS_SIGNAL_BIN": "/dev/corvus-signal"]))
         XCTAssertEqual(SignalBackend.bundledExecutable(environment: ["CORVUS_SIGNAL_BIN": "/dev/corvus-signal"], mainExecutable: main),
                        "/dev/corvus-signal")
     }

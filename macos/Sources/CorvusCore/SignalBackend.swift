@@ -31,16 +31,20 @@ public struct RpcError: Error, LocalizedError {
     public var errorDescription: String? { message }
 }
 
-/// The Signal backend: `corvus-signal` (signal-backend/ in the repository), bundled as
-/// `Contents/MacOS/corvus-signal` next to the app's executable. It is started for one-shot commands
-/// (`--version`, `listAccounts`, `link`, `deleteLocalAccountData`) and as the long-running
-/// `-a <account> jsonRpc` process, and speaks signal-cli's JSON-RPC protocol.
+/// The Signal backend: `corvus-signal` (signal-backend/ in the repository). It is linked into the app
+/// and runs inside it (`EmbeddedRun`): one-shot commands (`--version`, `listAccounts`, `link`,
+/// `deleteLocalAccountData`) and the long-running `-a <account> jsonRpc`, which speaks signal-cli's
+/// JSON-RPC protocol, line by line as the process did over its pipes. With another executable set
+/// (`CORVUS_SIGNAL_BIN`, or `executable` in tests with a mock) it is started as a process instead.
 ///
 /// Every command except `--version` gets `--config <data dir> --store-key-stdin`: the first line Corvus
-/// writes to its stdin is the key of the encrypted store (kept in the keychain, `SignalStoreKey`).
+/// gives it as input is the key of the encrypted store (kept in the keychain, `SignalStoreKey`).
 @MainActor
 public final class SignalBackend {
-    public var executable = SignalBackend.bundledExecutable()
+    /// Where the backend is: the app's own executable while it runs inside the app, else the process to start.
+    public var executable = SignalBackend.bundledExecutable() { didSet { embedded = false } }
+    /// The backend runs inside this process (the default; not with another executable set).
+    public private(set) var embedded = SignalBackend.embeddedByDefault()
     /// `--config`: where the backend keeps its store, attachments and avatars.
     public var dataDir = SignalDataDir.root
     /// The store key written as the first stdin line (tests use a fixed one instead of the keychain).
@@ -56,6 +60,9 @@ public final class SignalBackend {
     public var onLogLine: ((String) -> Void)?
 
     private var proc: Process?
+    private var embeddedRun: EmbeddedRun?
+    /// Signalled when the current embedded run has ended (it closes its store on the way out).
+    private var embeddedEnded: DispatchSemaphore?
     private var stdinPipe: Pipe?
     private var buffer = Data()
     private var lastErrLine = ""
@@ -67,19 +74,22 @@ public final class SignalBackend {
 
     public init() {}
 
-    public var isRunning: Bool { proc != nil }
+    public var isRunning: Bool { proc != nil || embeddedRun != nil }
 
     // MARK: - Helpers
 
     nonisolated public static let binaryName = "corvus-signal"
 
-    /// `Contents/MacOS/corvus-signal` next to the app's executable (with `swift run`: next to the built
-    /// binary); `CORVUS_SIGNAL_BIN` points elsewhere (development).
+    /// The backend is part of the app's executable; `CORVUS_SIGNAL_BIN` points to a backend to start as a
+    /// process instead (development, tests with a mock).
     nonisolated public static func bundledExecutable(environment: [String: String] = ProcessInfo.processInfo.environment,
                                                      mainExecutable: URL? = Bundle.main.executableURL) -> String {
         if let dev = environment["CORVUS_SIGNAL_BIN"], !dev.isEmpty { return dev }
-        let dir = mainExecutable?.deletingLastPathComponent() ?? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS")
-        return dir.appendingPathComponent(binaryName).path
+        return (mainExecutable ?? Bundle.main.bundleURL.appendingPathComponent("Contents/MacOS/corvus")).path
+    }
+
+    nonisolated public static func embeddedByDefault(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        (environment["CORVUS_SIGNAL_BIN"] ?? "").isEmpty
     }
 
     /// The full argv after the executable: `--version` alone, everything else with the data dir, the store key
@@ -166,7 +176,7 @@ public final class SignalBackend {
         FileHandle.standardError.write(Data((line + "\n").utf8))
     }
 
-    nonisolated private static func logResult(exe: String, args: [String], _ r: CliResult) {
+    nonisolated static func logResult(exe: String, args: [String], _ r: CliResult) {
         func show(_ t: String) -> String {
             var t = maskNumbers(t.trimmingCharacters(in: .whitespacesAndNewlines))
             t = t.replacingOccurrences(of: "\n", with: " ⏎ ")
@@ -195,6 +205,10 @@ public final class SignalBackend {
                 r.startError = "The store key could not be read from the keychain: \(error.localizedDescription)"
                 return r
             }
+        }
+        if embedded {
+            try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            return await Task.detached { SignalBackend.runEmbedded(args: full, storeKey: key, timeout: timeout) }.value
         }
         return await Task.detached { SignalBackend.runBlocking(exe: exe, args: full, dataDir: dir, storeKey: key, timeout: timeout) }.value
     }
@@ -273,6 +287,10 @@ public final class SignalBackend {
             onStopped?(reason)
             return
         }
+        if embedded {
+            startEmbedded(account: account, key: key)
+            return
+        }
         let p = makeProcess(["-a", account, "jsonRpc"])
         p.qualityOfService = .userInitiated
         let input = SignalBackend.inputPipe(), output = Pipe(), errors = Pipe()
@@ -319,12 +337,67 @@ public final class SignalBackend {
                                                          reason: "Receiving Signal messages")
     }
 
+    /// The JSON-RPC run inside this process: the same lines as over the pipes of the process.
+    private func startEmbedded(account: String, key: String) {
+        try? FileManager.default.createDirectory(at: dataDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        buffer.removeAll()
+        lastErrLine = ""
+        // The callbacks only know the run by this token: a run that was stopped must not be heard any more.
+        final class Token: @unchecked Sendable { var run: EmbeddedRun? }
+        let token = Token()
+        let ended = DispatchSemaphore(value: 0)
+        let run = EmbeddedRun(arguments: arguments(["-a", account, "jsonRpc"]), onLine: { [weak self] stream, line in
+            Task { @MainActor in
+                guard let self, let run = token.run, run === self.embeddedRun else { return }
+                if stream == .output {
+                    let trimmed = line.drop(while: { $0 == " " || $0 == "\r" })
+                    if !trimmed.isEmpty { self.handleLine(Data(trimmed.utf8)) }
+                } else {
+                    self.errorLine(line, current: true)
+                }
+            }
+        }, onExit: { [weak self] code in
+            ended.signal()
+            Task { @MainActor in
+                guard let self, let run = token.run, run === self.embeddedRun else { return }
+                self.embeddedRun = nil
+                self.endActivity()
+                var reason = "The Signal backend stopped (exit code \(code))"
+                if !self.lastErrLine.isEmpty { reason += ": " + self.lastErrLine }
+                self.failPending(reason)
+                self.onStopped?(reason)
+            }
+        })
+        guard let run else {
+            failPending("The Signal backend could not be started.")
+            onStopped?("The Signal backend could not be started.")
+            return
+        }
+        token.run = run
+        embeddedRun = run
+        embeddedEnded = ended
+        run.send(key) // first line, before any request
+        activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiatedAllowingIdleSystemSleep],
+                                                         reason: "Receiving Signal messages")
+    }
+
     private func endActivity() {
         if let a = activity { ProcessInfo.processInfo.endActivity(a) }
         activity = nil
     }
 
-    public func stop() {
+    /// Stops the backend. `wait` (seconds) gives a backend inside the app that long to close its store
+    /// before this returns: when the app quits, nothing else would wait for it.
+    public func stop(wait: TimeInterval = 0) {
+        if let run = embeddedRun {
+            embeddedRun = nil
+            endActivity()
+            run.closeInput() // the backend closes its store and ends; its last lines are not heard
+            if wait > 0 { _ = embeddedEnded?.wait(timeout: .now() + wait) }
+            embeddedEnded = nil
+            failPending("Disconnected")
+            return
+        }
         guard let p = proc else { return }
         proc = nil
         endActivity()
@@ -344,12 +417,22 @@ public final class SignalBackend {
     /// Sends a JSON-RPC request; returns its "result" or throws its error message.
     @discardableResult
     public func call(_ method: String, _ params: JSON = [:]) async throws -> Any {
-        guard proc != nil, let input = stdinPipe else { throw RpcError("The Signal backend is not running") }
         let id = nextId
-        nextId += 1
         var req: JSON = ["jsonrpc": "2.0", "method": method, "id": id]
         if !params.isEmpty { req["params"] = params }
         var data = try JSONSerialization.data(withJSONObject: req)
+        if let run = embeddedRun {
+            nextId += 1
+            return try await withCheckedThrowingContinuation { cont in
+                pending[id] = cont
+                if !run.send(String(decoding: data, as: UTF8.self)) {
+                    pending.removeValue(forKey: id)
+                    cont.resume(throwing: RpcError("The Signal backend is not running"))
+                }
+            }
+        }
+        guard proc != nil, let input = stdinPipe else { throw RpcError("The Signal backend is not running") }
+        nextId += 1
         data.append(0x0A)
         return try await withCheckedThrowingContinuation { cont in
             pending[id] = cont
@@ -376,10 +459,16 @@ public final class SignalBackend {
     private func onStderr(_ data: Data, from p: Process) {
         let s = String(decoding: data, as: UTF8.self)
         for l in s.split(separator: "\n") where !l.trimmingCharacters(in: .whitespaces).isEmpty {
-            if p === proc { lastErrLine = l.trimmingCharacters(in: .whitespaces) }
-            SignalBackend.log(SignalBackend.maskNumbers(String(l)))
-            onLogLine?(String(l))
+            errorLine(String(l), current: p === proc)
         }
+    }
+
+    /// A line the backend wrote for the user (standard error).
+    private func errorLine(_ l: String, current: Bool) {
+        guard !l.trimmingCharacters(in: .whitespaces).isEmpty else { return }
+        if current { lastErrLine = l.trimmingCharacters(in: .whitespaces) }
+        SignalBackend.log(SignalBackend.maskNumbers(l))
+        onLogLine?(l)
     }
 
     private func onExit(_ p: Process, code: Int32) {

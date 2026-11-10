@@ -1,5 +1,8 @@
+// The Rust side of the app, one static library (signal-backend/corvus-core): the history store's C
+// interface and the Signal backend's.
 module CHistoryStore [system] {
     header "../../../history-store/include/history_store.h"
-    link "history_store"
+    header "../../../signal-backend/corvus-signal/include/corvus_signal.h"
+    link "corvus_core"
     export *
 }

@@ -372,7 +372,7 @@ final class AppModel {
 
     func shutdown() {
         saveLaunchSnapshot(wait: true)
-        cli.stop()
+        cli.stop(wait: 2)
         saveNow()
         writer.drain()
         db.close()

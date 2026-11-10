@@ -1,0 +1,7 @@
+// SQLCipher's C interface. The library itself is part of the Rust static library (the backend's store
+// is built on it too): signal-backend/corvus-core. The header is that copy's.
+module CSQLCipher [system] {
+    header "include/sqlite3.h"
+    link "corvus_core"
+    export *
+}

@@ -1,5 +1,5 @@
 [workspace]
-members = ["corvus-signal", "corvus-calls", "vendor/presage", "vendor/presage-store-sqlite", "vendor/libsignal-service-rs"]
+members = ["corvus-signal", "corvus-core", "corvus-calls", "vendor/presage", "vendor/presage-store-sqlite", "vendor/libsignal-service-rs"]
 # signal-call-tunnel (call-tunnel/) is its own workspace: it links RingRTC and prebuilt WebRTC.
 exclude = ["call-tunnel"]
 

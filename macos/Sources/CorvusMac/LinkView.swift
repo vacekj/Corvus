@@ -15,6 +15,7 @@ struct LinkView: View {
     @State private var status = ""
     @State private var running = false
     @State private var process: Process?
+    @State private var linking: EmbeddedRun?   // the link request, while the backend runs inside the app
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -54,7 +55,7 @@ struct LinkView: View {
         .padding(20)
         .frame(width: 460)
         .onChange(of: uri) { qrImage = LinkView.qrImage(uri) }
-        .onAppear { if process == nil && uri.isEmpty { start() } } // no extra click: the QR code comes right away
+        .onAppear { if process == nil && linking == nil && uri.isEmpty { start() } } // no extra click: the QR code comes right away
     }
 
     private static func qrImage(_ uri: String) -> NSImage? {
@@ -73,6 +74,10 @@ struct LinkView: View {
             process = nil
             old.terminate()
         }
+        if let old = linking {
+            linking = nil
+            old.closeInput()
+        }
         uri = ""
         status = "Waiting for the Signal backend …"
         let key: String
@@ -83,6 +88,10 @@ struct LinkView: View {
             return
         }
         running = true
+        if cli.embedded {
+            startEmbedded(key: key)
+            return
+        }
         let p = cli.makeProcess(["link", "-n", name.trimmingCharacters(in: .whitespaces)])
         let out = Pipe(), err = Pipe()
         // The store key is the first stdin line; stdin stays open until linking has finished.
@@ -136,10 +145,59 @@ struct LinkView: View {
         }
     }
 
+    /// The link request inside the app: the URI for the QR code is a line of its output, its end is the
+    /// outcome. Only the current request is listened to (a new name replaces it).
+    private func startEmbedded(key: String) {
+        final class Current: @unchecked Sendable { var run: EmbeddedRun? }
+        final class Errors: @unchecked Sendable {
+            private let lock = NSLock()
+            private var lines: [String] = []
+            func add(_ line: String) { lock.withLock { lines.append(line) } }
+            var text: String { lock.withLock { lines.joined(separator: "\n") } }
+        }
+        let current = Current(), errors = Errors()
+        let run = EmbeddedRun(arguments: cli.arguments(["link", "-n", name.trimmingCharacters(in: .whitespaces)]), onLine: { stream, line in
+            if stream == .error {
+                errors.add(line)
+                return
+            }
+            let t = line.trimmingCharacters(in: .whitespaces)
+            guard t.hasPrefix("sgnl://") || t.hasPrefix("tsdevice:") else { return }
+            Task { @MainActor in
+                guard let run = current.run, run === linking, uri != t else { return }
+                uri = t
+                status = "Please scan the QR code with your phone …"
+            }
+        }, onExit: { code in
+            Task { @MainActor in
+                guard let run = current.run, run === linking else { return }
+                linking = nil
+                running = false
+                if code == 0 {
+                    onFinish(true)
+                } else {
+                    status = "Linking failed (exit code \(code)).\n\(errors.text)"
+                }
+            }
+        })
+        guard let run else {
+            running = false
+            status = "The Signal backend could not be started."
+            return
+        }
+        current.run = run
+        linking = run
+        run.send(key) // the store key is the first input line; the end of the input cancels linking
+    }
+
     private func cancel() {
         if let p = process {
             process = nil
             p.terminate()
+        }
+        if let run = linking {
+            linking = nil
+            run.closeInput()
         }
         onFinish(false)
     }

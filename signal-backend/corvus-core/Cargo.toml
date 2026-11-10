@@ -1,0 +1,17 @@
+[package]
+name = "corvus-core"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "Everything of Corvus that is Rust, as one static library for the macOS app"
+publish = false
+
+# A crate of its own because of its crate type: only a pure staticlib gets link-time optimisation
+# and native object code for all of its dependencies.
+[lib]
+name = "corvus_core"
+crate-type = ["staticlib"]
+
+[dependencies]
+corvus-signal = { path = "../corvus-signal" }
+history-store = { path = "../../history-store" }

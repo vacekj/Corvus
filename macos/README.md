@@ -5,8 +5,10 @@
 | ![Light](../docs/screenshots/corvus_macOS_Light.png) | ![Dark](../docs/screenshots/corvus_macOS_Dark.png) |
 
 This directory contains a native macOS version of Corvus, written in Swift / SwiftUI (macOS 14 or newer). It has the
-same features and talks the same JSON-RPC protocol, but to its own bundled Signal backend, `corvus-signal`
-(`../signal-backend`, built on presage), instead of signal-cli.
+same features and talks the same JSON-RPC protocol, but to its own Signal backend, `corvus-signal`
+(`../signal-backend`, built on presage), instead of signal-cli. The backend is linked into the app and runs
+inside it, on a thread of its own: Corvus is one process. Everything of the app that is Rust is one static
+library, `../signal-backend/corvus-core` (the backend, the history key wrapping and SQLCipher).
 
 The chat history is an encrypted SQLite database (SQLCipher), `history.db`: one row per message
 (`Sources/CorvusCore/HistoryDB.swift`). It is read in one pass at startup; afterwards only what changes is
@@ -20,19 +22,19 @@ read the database: the two no longer share a history.
 |------|-----|
 | `Sources/CorvusCore` | UI-free logic: backend process / JSON-RPC, envelope parsing, history records, chat model, keychain |
 | `Sources/CorvusMac` | SwiftUI app: window, chat view, composer, settings, notifications, menu bar icon |
-| `Sources/CHistoryStore` | module map for `history-store/include/history_store.h` (reading a `history.corvus` file, wrapping the database key) |
-| `Sources/CSQLCipher` | the SQLCipher amalgamation (SQLite 3.50.4, SQLCipher 4.10.0, on CommonCrypto) |
+| `Sources/CHistoryStore` | module map for the Rust library's C interfaces: `history_store.h` (reading a `history.corvus` file, wrapping the database key) and `corvus_signal.h` (the backend) |
+| `Sources/CSQLCipher` | module map and header for SQLCipher, which is part of the Rust library |
 
 Requirements: Xcode (its toolchain provides the SwiftUI macros; the Command Line Tools alone are not
 enough) and Rust with cargo.
 
 ```sh
-scripts/build-app.sh            # Rust store + corvus-signal + Swift release build -> build/Corvus.app
+scripts/build-app.sh            # Rust library + Swift release build -> build/Corvus.app
 open "build/Corvus.app"
 swift test                      # unit tests (envelopes, records, Rust store round trip, mock backend)
 ```
 
-The backend runs as `Contents/MacOS/corvus-signal --config ~/Library/Application Support/corvus/signal
+The backend runs (inside the app) with the command line `--config ~/Library/Application Support/corvus/signal
 --store-key-stdin …`; the key of its encrypted store is kept in the login keychain (service `corvus-signal`) and
 written as the first line of its stdin. `CORVUS_SIGNAL_BIN` points a `swift run` build at another binary. On first
 use, attachments and avatars of a former signal-cli installation (`~/.local/share/signal-cli`) are copied into the

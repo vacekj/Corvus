@@ -163,6 +163,41 @@ struct OutLine {
 }
 
 /// The single stdout writer. Cloneable handle.
+/// Standard output as a writer: every complete line goes to the run's `out`.
+pub struct LineWriter {
+    out: Rc<dyn Fn(&str)>,
+    partial: Vec<u8>,
+}
+
+impl LineWriter {
+    pub fn new(out: Rc<dyn Fn(&str)>) -> Self {
+        Self { out, partial: Vec::new() }
+    }
+}
+
+impl AsyncWrite for LineWriter {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        _cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        self.partial.extend_from_slice(buf);
+        while let Some(end) = self.partial.iter().position(|b| *b == b'\n') {
+            let line: Vec<u8> = self.partial.drain(..=end).collect();
+            (self.out)(&String::from_utf8_lossy(&line[..end]));
+        }
+        std::task::Poll::Ready(Ok(buf.len()))
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+}
+
 #[derive(Clone)]
 pub struct Output {
     tx: mpsc::UnboundedSender<OutLine>,

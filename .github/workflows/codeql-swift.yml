@@ -22,18 +22,18 @@ jobs:
 
       # Rust-Universal-Lib (arm64 + x86_64) – VOR init, damit der Cargo-Build
       # nicht unter dem CodeQL-Tracer läuft. --release ist Pflicht, weil
-      # Package.swift hart auf history-store/target/release zeigt.
-      - name: Build history-store (universal staticlib)
+      # Package.swift hart auf signal-backend/target/release zeigt.
+      - name: Build corvus-core (universal staticlib)
         run: |
           rustup target add x86_64-apple-darwin
-          cargo build --release --locked --manifest-path history-store/Cargo.toml
-          cargo build --release --locked --manifest-path history-store/Cargo.toml --target x86_64-apple-darwin
+          cargo build --release --locked --manifest-path signal-backend/Cargo.toml -p corvus-core
+          cargo build --release --locked --manifest-path signal-backend/Cargo.toml -p corvus-core --target x86_64-apple-darwin
           lipo -create \
-            history-store/target/release/libhistory_store.a \
-            history-store/target/x86_64-apple-darwin/release/libhistory_store.a \
-            -output history-store/target/release/libhistory_store_universal.a
-          mv history-store/target/release/libhistory_store_universal.a \
-             history-store/target/release/libhistory_store.a
+            signal-backend/target/release/libcorvus_core.a \
+            signal-backend/target/x86_64-apple-darwin/release/libcorvus_core.a \
+            -output signal-backend/target/release/libcorvus_core_universal.a
+          mv signal-backend/target/release/libcorvus_core_universal.a \
+             signal-backend/target/release/libcorvus_core.a
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4

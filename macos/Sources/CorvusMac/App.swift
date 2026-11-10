@@ -58,6 +58,9 @@ enum SingleInstance {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     let model: AppModel = {
         Perf.mark("delegate")
+        // The Signal backend runs inside this process and writes to pipes of its own (the call tunnel): a
+        // closed one must be an error there, not the end of the app.
+        signal(SIGPIPE, SIG_IGN)
         LegacyMigration.migrateDefaults() // before anything reads the preferences
         let m = AppModel()
         m.beginEarlyUnlock()
