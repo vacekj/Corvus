@@ -570,6 +570,8 @@ for line in sys.stdin:
             res["timestamp"] = int(time.time() * 1000)
         if "editTimestamp" in p:  # an edit gets a newer timestamp than the revision it edits
             res["timestamp"] = int(p["editTimestamp"]) + 1000
+    elif m == "sendSyncRead":  # read here, told to the other devices
+        res = {}
     elif m == "sendReceipt":
         # Read/viewed receipts share the same JSON-RPC method; accept them so UI tests can
         # assert the exact targetTimestamps + type payload without generating mock errors.

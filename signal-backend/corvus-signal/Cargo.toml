@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 corvus-calls = { path = "../corvus-calls" }
-presage = { path = "../vendor/presage" }
+presage = { path = "../vendor/presage", features = ["cdsi"] }
 presage-store-sqlite = { path = "../vendor/presage-store-sqlite" }
 
 base64 = "0.22"

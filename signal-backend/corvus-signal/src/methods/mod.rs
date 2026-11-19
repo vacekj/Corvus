@@ -42,7 +42,7 @@ mod tests {
             "listContacts", "updateContact", "removeContact", "block", "unblock",
             "sendMessageRequestResponse", "listIdentities", "trust", "getAvatar", "listGroups",
             "updateGroup", "quitGroup", "joinGroup", "send", "sendReaction", "remoteDelete",
-            "sendTyping", "sendReceipt", "sendPinMessage", "sendUnpinMessage", "sendPollCreate",
+            "sendTyping", "sendReceipt", "sendSyncRead", "sendPinMessage", "sendUnpinMessage", "sendPollCreate",
             "sendPollVote", "sendPollTerminate", "sendStory", "getAttachment", "listStickerPacks",
             "getSticker", "addStickerPack", "uploadStickerPack", "updateProfile", "updateAccount",
             "subscribeCallEvents", "startCall", "acceptCall", "rejectCall", "hangupCall",

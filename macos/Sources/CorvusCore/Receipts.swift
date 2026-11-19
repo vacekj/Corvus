@@ -255,3 +255,21 @@ extension ChatState {
         return found
     }
 }
+
+/// Messages read on another of the user's devices: `syncMessage.readMessages` = [{sender…, timestamp}].
+public struct ReadSyncItem: Equatable {
+    public var sender = ""
+    public var timestamp: Int64 = 0
+}
+
+public func parseReadSync(_ env: JSON) -> [ReadSyncItem] {
+    jsonArray(jsonObject(env["syncMessage"])["readMessages"]).compactMap { v in
+        let o = jsonObject(v)
+        var it = ReadSyncItem()
+        it.sender = jsonString(o["senderNumber"])
+        if it.sender.isEmpty { it.sender = jsonString(o["senderUuid"]) }
+        if it.sender.isEmpty { it.sender = jsonString(o["sender"]) }
+        it.timestamp = jsonInt64(o["timestamp"])
+        return it.sender.isEmpty || it.timestamp <= 0 ? nil : it
+    }
+}

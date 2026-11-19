@@ -20,6 +20,46 @@ final class KeyboardNavigation {
 
     @ObservationIgnored private var tabMonitor: Any?
 
+    // The switcher's entries, kept until a message, a name, a contact or an avatar changes: building them
+    // ranks every chat by its recent messages.
+    private struct Stamp: Equatable {
+        var newChat: Bool, people: Int, convs: Int, messages: Int, latest: Int64, names: Int
+    }
+    @ObservationIgnored private var cache: (stamp: Stamp, entries: [PickerPerson])?
+
+    private func stamp(_ model: AppModel, newChat: Bool) -> Stamp {
+        var messages = 0, latest: Int64 = 0
+        var names = Hasher()
+        for c in model.chats.convs.values {
+            messages &+= c.msgs.count
+            latest = max(latest, c.msgs.last?.ts ?? 0)
+            names.combine(c.key)
+            names.combine(c.title)
+        }
+        return Stamp(newChat: newChat, people: model.peopleVersion, convs: model.chats.convs.count, messages: messages,
+                     latest: latest, names: names.finalize())
+    }
+
+    func entries(_ model: AppModel, newChat: Bool) -> [PickerPerson] {
+        let s = stamp(model, newChat: newChat)
+        if let cache, cache.stamp == s { return cache.entries }
+        let e = newChat ? model.pickerPeople() : model.switcherEntries()
+        cache = (s, e)
+        return e
+    }
+
+    /// Keeps the entries ready for ⌘K: built once the app has settled after launch, then rebuilt every
+    /// 20 s if something changed (checking costs a fraction of a millisecond; a rebuild about 20 ms).
+    func prewarm(_ model: AppModel) {
+        Task { @MainActor [weak model] in
+            try? await Task.sleep(for: .seconds(3))
+            while let m = model {
+                if !quickSwitcherShown { _ = entries(m, newChat: false) }
+                try? await Task.sleep(for: .seconds(20))
+            }
+        }
+    }
+
     /// ⌃Tab / ⌃⇧Tab: next / previous chat, like browser tabs. A key monitor rather than menu items:
     /// a menu item has one shortcut, and ⌥↑ / ⌥↓ already name these commands in the menu.
     func installTabMonitor(_ model: AppModel) {
@@ -85,6 +125,10 @@ struct QuickSwitcherOverlay: View {
     private let nav = KeyboardNavigation.shared
 
     var body: some View {
+        ZStack { layer }.animation(.easeOut(duration: 0.1), value: nav.quickSwitcherShown)
+    }
+
+    @ViewBuilder private var layer: some View {
         if nav.quickSwitcherShown {
             ZStack(alignment: .top) {
                 Color.black.opacity(0.18)
@@ -186,7 +230,7 @@ private struct QuickSwitcherPanel: View {
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).strokeBorder(.separator))
         .shadow(color: .black.opacity(0.25), radius: 18, y: 8)
         .onAppear {
-            entries = newChat ? model.pickerPeople() : model.switcherEntries()
+            entries = KeyboardNavigation.shared.entries(model, newChat: newChat)
             installKeys()
         }
         .onDisappear { removeKeys() }

@@ -68,6 +68,9 @@ pub struct Account {
     pub number: String,
     pub device_id: u32,
     directory: RefCell<Option<(Instant, Rc<Directory>)>>,
+    /// Numbers contact discovery (CDSI) found not on Signal, with when it was asked (CDSI is rate
+    /// limited). Found accounts are kept in the local store under [DISCOVERED_KEY].
+    discovery_misses: RefCell<HashMap<String, Instant>>,
 }
 
 /// Number and group-name lookups for the envelope mapping, cached briefly.
@@ -89,6 +92,8 @@ impl Lookup for Directory {
 }
 
 const DIRECTORY_TTL: Duration = Duration::from_secs(60);
+const DISCOVERED_KEY: &str = "discovered_numbers";
+const DISCOVERY_MISS_TTL: Duration = Duration::from_secs(10 * 60);
 
 impl Account {
     pub fn new(store: SqliteStore, manager: Mgr) -> Self {
@@ -105,6 +110,7 @@ impl Account {
             number,
             device_id,
             directory: RefCell::new(None),
+            discovery_misses: RefCell::new(HashMap::new()),
         }
     }
 
@@ -176,6 +182,9 @@ impl Account {
                 dir.numbers.insert(c.uuid, p.to_string());
             }
         }
+        for (number, aci) in self.discovered().await {
+            dir.numbers.entry(aci).or_insert(number);
+        }
         dir.numbers.insert(self.aci, self.number.clone());
         for (key, group) in self.groups().await.unwrap_or_default() {
             dir.group_names.insert(key, group.title);
@@ -203,11 +212,50 @@ impl Account {
                     return Ok(Aci::from(c.uuid).into());
                 }
             }
-            return Err(RpcError::failed(format!(
-                "Unknown recipient {id}: no account with this number is known (number lookup is not supported yet)"
-            )));
+            return match self.discover(id).await? {
+                Some(sid) => Ok(sid),
+                None => Err(RpcError::failed(format!("{id} is not on Signal"))),
+            };
         }
         Err(RpcError::invalid_params(format!("Invalid recipient: {id}")))
+    }
+
+    /// Numbers resolved through contact discovery, number → ACI.
+    async fn discovered(&self) -> HashMap<String, Uuid> {
+        self.local().value(DISCOVERED_KEY).await
+    }
+
+    /// Looks a number up with Signal's contact discovery service (CDSI); None when it has no account.
+    async fn discover(&self, number: &str) -> Result<Option<ServiceId>, RpcError> {
+        let key: String = std::iter::once('+').chain(number.chars().filter(char::is_ascii_digit)).collect();
+        let mut known = self.discovered().await;
+        if let Some(aci) = known.get(&key) {
+            return Ok(Some(Aci::from(*aci).into()));
+        }
+        if self.discovery_misses.borrow().get(&key).is_some_and(|at| at.elapsed() < DISCOVERY_MISS_TTL) {
+            return Ok(None);
+        }
+        let found = self
+            .manager()
+            .discover_contacts_by_phone_number([key.as_str()])
+            .await
+            .map_err(|e| RpcError::failed(format!("Could not look up {number}: {e}")))?
+            .into_iter()
+            .find_map(|(_, sid)| sid);
+        match found {
+            Some(ServiceId::Aci(aci)) => {
+                known.insert(key, aci.into());
+                if let Err(e) = self.local().set_value(DISCOVERED_KEY, &known).await {
+                    tracing::warn!("saving discovered number: {e}");
+                }
+                self.invalidate_directory();
+            }
+            Some(ServiceId::Pni(_)) => {}
+            None => {
+                self.discovery_misses.borrow_mut().insert(key, Instant::now());
+            }
+        }
+        Ok(found)
     }
 
     /// Like [Self::resolve] but requires an ACI (mentions, quotes, reactions need one).

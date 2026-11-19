@@ -304,6 +304,10 @@ struct ImageViewerOverlay: View {
     @State private var keyMonitor: Any?
 
     var body: some View {
+        ZStack { layer }.animation(.easeOut(duration: 0.12), value: viewer.item?.id)
+    }
+
+    @ViewBuilder private var layer: some View {
         if let item = viewer.item {
             ZStack {
                 Color.black.opacity(0.92)

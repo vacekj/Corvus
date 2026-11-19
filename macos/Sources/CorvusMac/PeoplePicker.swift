@@ -55,6 +55,9 @@ extension AppModel {
             add(PickerPerson(key: c.key, title: t, detail: detail(c.key, title: t), avatar: avatarImage(c),
                              lastTs: c.msgs.last?.ts ?? 0, activity: PickerRanking.activity(c.msgs.reversed().lazy.map { ($0.ts, $0.outgoing) }, now: now)))
         }
+        // Every name listed so far, and the key of the numbered (not UUID) entry per name: lookups instead of
+        // scanning all entries for each contact.
+        var titles = Set(out.values.lazy.map(\.title))
         for e in roster.pickableContacts {
             let k = chats.resolveKey(e.key)
             guard !k.isEmpty, out[k] == nil, out[numberOf[k] ?? k] == nil, chats.convs[k] == nil, k != account, !isBlocked(k)
@@ -62,15 +65,17 @@ extension AppModel {
             let named = chats.displayName(k)
             let t = named.isEmpty ? e.title : named
             // A contact known only by UUID with the same name as someone the user has a chat with is that person.
-            if People.isServiceId(k), out.values.contains(where: { $0.title == t }) { continue }
+            if People.isServiceId(k), titles.contains(t) { continue }
             add(PickerPerson(key: k, title: t, detail: detail(k, title: t),
                              avatar: avatars[k] ?? Media.placeholderAvatar(key: k, title: t), lastTs: 0))
+            titles.insert(t)
         }
         // A chat kept under a UUID (from before the number was known) next to the numbered chat of a
         // person with the same name: one person.
+        var numbered: [String: String] = [:]
+        for (k, p) in out where !People.isServiceId(p.key) && numbered[p.title] == nil { numbered[p.title] = k }
         for (k, p) in out where People.isServiceId(p.key) {
-            guard let (ok, other) = out.first(where: { $0.key != k && !People.isServiceId($0.value.key) && $0.value.title == p.title })
-            else { continue }
+            guard let ok = numbered[p.title], ok != k, let other = out[ok] else { continue }
             out.removeValue(forKey: k)
             let (main, rest) = PickerPerson.busierFirst(p, other) ? (p, other) : (other, p)
             out[ok] = PickerPerson(key: main.key, title: main.title, detail: other.detail, avatar: other.avatar,

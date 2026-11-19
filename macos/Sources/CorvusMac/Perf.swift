@@ -16,6 +16,12 @@ enum Perf {
     /// Something that must not go unnoticed (kept in the system log, unlike the marks).
     static func failure(_ what: String) { log.error("\(what, privacy: .public)") }
 
+    /// Milliseconds since `start` (DispatchTime), logged with a label.
+    static func since(_ start: UInt64, _ what: String) {
+        let ms = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e6
+        log.info("\(what, privacy: .public): \(String(format: "%.1f", ms), privacy: .public) ms")
+    }
+
     static func mark(_ what: String) {
         let ms = Int(Date().timeIntervalSince(t0) * 1000)
         log.info("\(ms, privacy: .public) ms: \(what, privacy: .public)")

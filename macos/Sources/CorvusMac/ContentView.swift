@@ -72,10 +72,9 @@ struct ContentView: View {
         .hidingWindowTitle()
         .withoutWritingTools()
         .tint(Theme.signalBlue)
+        // The overlays animate themselves: reading their state here would rebuild the whole window on open.
         .overlay { QuickSwitcherOverlay() }
-        .animation(.easeOut(duration: 0.1), value: KeyboardNavigation.shared.quickSwitcherShown)
         .overlay { ImageViewerOverlay() }
-        .animation(.easeOut(duration: 0.12), value: ImageViewerWindow.shared.item?.id)
         .background(WindowAccessor())
         .sheet(isPresented: $model.linkSheetShown) {
             LinkView(cli: model.cli) { model.finishLinking($0) }

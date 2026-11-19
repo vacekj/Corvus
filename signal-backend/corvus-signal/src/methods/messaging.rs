@@ -7,8 +7,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use presage::libsignal_service::content::ContentBody;
 use presage::proto::{
-    AttachmentPointer, BodyRange, DataMessage, EditMessage, Preview, ReceiptMessage, TypingMessage,
-    body_range, data_message, receipt_message, typing_message,
+    AttachmentPointer, BodyRange, DataMessage, EditMessage, Preview, ReceiptMessage, SyncMessage, TypingMessage,
+    body_range, data_message, receipt_message, sync_message, typing_message,
 };
 use presage::store::ContentsStore;
 use serde_json::{Value, json};
@@ -25,6 +25,7 @@ pub const METHODS: &[Method] = &[
     method!("remoteDelete", remote_delete),
     method!("sendTyping", send_typing),
     method!("sendReceipt", send_receipt),
+    method!("sendSyncRead", send_sync_read),
     method!("sendPinMessage", send_pin),
     method!("sendUnpinMessage", send_unpin),
     method!("sendPollCreate", poll_create),
@@ -312,6 +313,30 @@ async fn send_receipt(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
     };
     let timestamp = now_millis();
     deliver(a, &Target::Contacts(vec![recipient]), ContentBody::ReceiptMessage(rm), timestamp, false).await
+}
+
+/// Tells the user's other devices that messages were read here: `messages` = [{sender, timestamp}].
+async fn send_sync_read(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
+    let a = ctx.account()?;
+    let mut read = Vec::new();
+    for m in p.get("messages").and_then(Value::as_array).into_iter().flatten() {
+        let (Some(sender), Some(ts)) = (str_param(m, "sender"), i64_param(m, "timestamp")) else { continue };
+        if ts <= 0 {
+            continue;
+        }
+        let Ok(aci) = a.resolve_aci(&sender).await else { continue };
+        read.push(sync_message::Read {
+            sender_aci: Some(aci.to_string()),
+            timestamp: Some(ts as u64),
+            ..Default::default()
+        });
+    }
+    if read.is_empty() {
+        return Ok(json!({}));
+    }
+    let sync = SyncMessage { read, ..Default::default() };
+    let own = Target::Contacts(vec![a.own_service_id()]);
+    deliver(a, &own, ContentBody::SynchronizeMessage(sync), now_millis(), false).await
 }
 
 async fn send_pin(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {

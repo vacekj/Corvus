@@ -129,7 +129,7 @@ final class AppModel {
     private var scrollSerial = 0
 
     // avatars (cached in memory only)
-    var avatars: [String: NSImage] = [:] { didSet { chatListCache.removeAll() } }
+    var avatars: [String: NSImage] = [:] { didSet { chatListCache.removeAll(); peopleVersion &+= 1 } }
     @ObservationIgnored private var avatarTried: Set<String> = []
     @ObservationIgnored private var avatarBusy: Set<String> = []
     @ObservationIgnored private var avatarInFlight = 0
@@ -171,7 +171,9 @@ final class AppModel {
     var pollComposerShown = false
 
     // groups, blocking and message requests (Groups.swift, MessageRequests.swift)
-    var roster = Roster() { didSet { chatListCache.removeAll() } }
+    var roster = Roster() { didSet { chatListCache.removeAll(); peopleVersion &+= 1 } }
+    /// Changes with the contacts and avatars (part of the ⌘K switcher's cache key).
+    @ObservationIgnored var peopleVersion = 0
     /// Chat list rows (per folder), rebuilt only after a change to what they show.
     @ObservationIgnored private var chatListCache: [Int: (day: Int, items: [ChatListItem])] = [:]
     var infoPanelShown = false                 // info panel (inspector) of the open chat
@@ -280,6 +282,7 @@ final class AppModel {
             // A chat opened from the launch snapshot is marked read now; otherwise the last one opens.
             if let key = current { openConversation(key) } else { reopenLastChat() }
             prewarmTopChats()
+            KeyboardNavigation.shared.prewarm(self)
             saveLaunchSnapshot()
             let early = earlyEnvelopes
             earlyEnvelopes = []
@@ -1334,6 +1337,8 @@ final class AppModel {
             handleTyping(typing)
             return
         }
+        let readSync = parseReadSync(env)
+        if !readSync.isEmpty { handleReadSync(readSync) }
         var pe = parseEnvelope(env)
         if pe.kind == .none { return }
         if !pe.mentions.isEmpty {

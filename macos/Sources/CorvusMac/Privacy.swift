@@ -18,15 +18,21 @@ extension AppModel {
         sendReadReceipts(key, Array(msgs))
     }
 
+    /// Reading here is told to the user's other devices (always, like the official clients) and, when
+    /// read receipts are on, to the authors.
     func sendReadReceipts(_ key: String, _ msgs: [Message]) {
-        guard privacy.readReceipts, cli.isRunning, let c = chats.convs[key], mayAcknowledge(key) else { return }
+        guard cli.isRunning, let c = chats.convs[key] else { return }
         var byAuthor: [String: [Int64]] = [:]
         for m in msgs where !m.outgoing && !m.deleted && !m.isNotice && m.ts > 0 {
             let author = chats.resolveKey(chats.effectiveAuthor(c, m))
-            guard !author.isEmpty, author != account, !isBlocked(author) else { continue }
+            guard !author.isEmpty, author != account else { continue }
             byAuthor[author, default: []].append(m.ts)
         }
-        for (author, ts) in byAuthor {
+        if byAuthor.isEmpty { return }
+        let synced = byAuthor.flatMap { author, ts in ts.map { ["sender": author, "timestamp": $0] as [String: Any] } }
+        Task { try? await cli.call("sendSyncRead", ["messages": synced]) }
+        guard privacy.readReceipts, mayAcknowledge(key) else { return }
+        for (author, ts) in byAuthor where !isBlocked(author) {
             Task { try? await cli.call("sendReceipt", ["recipient": author, "targetTimestamp": ts, "type": "read"]) }
         }
     }
@@ -52,5 +58,33 @@ struct PrivacySettingsView: View {
             if !loaded { p = model.privacy; loaded = true }
         }
         .onChange(of: p) { _, new in model.applyPrivacy(new) }
+    }
+}
+
+extension AppModel {
+    /// Messages read on another device: the chats holding them count only newer incoming messages as unread.
+    func handleReadSync(_ items: [ReadSyncItem]) {
+        var changed = false
+        for it in items {
+            let author = chats.resolveKey(it.sender)
+            for key in chats.convs.keys where chats.convs[key]!.unread > 0 || chats.convs[key]!.markedUnread {
+                let c = chats.convs[key]!
+                guard key == author || c.isGroup else { continue }
+                // Only the unread tail is searched: older messages are read already.
+                var newer = 0, found = false
+                for m in c.msgs.reversed() where !m.outgoing && !m.isNotice {
+                    if m.ts == it.timestamp && chats.resolveKey(chats.effectiveAuthor(c, m)) == author { found = true; break }
+                    if m.ts > it.timestamp { newer += 1 }
+                    if newer > c.unread { break }
+                }
+                guard found else { continue }
+                if newer < c.unread { chats.convs[key]!.unread = newer; changed = true }
+                if newer == 0 {
+                    notifier.close(key)
+                    if c.markedUnread { setMarkedUnread(key, false) }
+                }
+            }
+        }
+        if changed { listChanged() }
     }
 }
