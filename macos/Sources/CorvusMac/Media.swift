@@ -209,3 +209,25 @@ enum AvatarThumbs {
         return (Media.roundAvatar(jpeg: jpeg), stamp)
     }
 }
+
+/// A picture on the clipboard: its original bytes under their own type (JPEG, PNG, GIF, HEIC …) and a TIFF
+/// for apps that only take that.
+enum ImageClipboard {
+    /// The system clipboard; a private one in hidden test mode, so tests leave the user's clipboard alone.
+    static var pasteboard: NSPasteboard {
+        HiddenMode.on ? NSPasteboard(name: NSPasteboard.Name("io.github.corvus.hidden-test")) : .general
+    }
+
+    static func copy(data: Data, image: NSImage?) {
+        let item = NSPasteboardItem()
+        if let src = CGImageSourceCreateWithData(data as CFData, nil), let type = CGImageSourceGetType(src) {
+            item.setData(data, forType: NSPasteboard.PasteboardType(type as String))
+        }
+        if let tiff = (image ?? NSImage(data: data))?.tiffRepresentation {
+            item.setData(tiff, forType: .tiff)
+        }
+        let pb = pasteboard
+        pb.clearContents()
+        pb.writeObjects([item])
+    }
+}

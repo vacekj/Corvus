@@ -4,7 +4,7 @@ import CorvusCore
 import SwiftUI
 
 /// Pictures and videos shown over the main window: zoom (pinch, ⌘+ / ⌘− / ⌘0, double-click), pan,
-/// ← → through the chat's media, Save and Forward. Esc, a click outside or the close button closes it.
+/// ← → through the chat's media, Copy (⌘C), Save and Forward. Esc, a click outside or the close button closes it.
 @MainActor @Observable
 final class ImageViewerWindow {
     static let shared = ImageViewerWindow()
@@ -42,6 +42,24 @@ final class ImageViewerWindow {
     @ObservationIgnored private var prefetched: [MediaRef: Item] = [:]
     @ObservationIgnored private var prefetching: Set<MediaRef> = []
     @ObservationIgnored private var savedSharingType: NSWindow.SharingType?
+
+    /// Set for a moment after Copy, for the check mark on the button.
+    var copied = false
+    @ObservationIgnored private var copiedReset: Task<Void, Never>?
+
+    var canCopy: Bool { item.map { !$0.viewOnce && !$0.isVideo && !$0.data.isEmpty } ?? false }
+
+    /// Puts the shown picture, in full, on the clipboard.
+    func copyCurrent() {
+        guard canCopy, let item else { return }
+        ImageClipboard.copy(data: item.data, image: item.image)
+        copied = true
+        copiedReset?.cancel()
+        copiedReset = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1.5))
+            if !Task.isCancelled { self?.copied = false }
+        }
+    }
 
     var canGoBack: Bool { item?.viewOnce == false && position > 0 && !refs.isEmpty }
     var canGoForward: Bool { item?.viewOnce == false && position + 1 < refs.count }
@@ -334,6 +352,13 @@ struct ImageViewerOverlay: View {
                     } label: { Image(systemName: "arrowshape.turn.up.right") }
                         .iconHelp("Forward", tooltip: "Forward …")
                 }
+                if !item.isVideo {
+                    Button { viewer.copyCurrent() } label: {
+                        Image(systemName: viewer.copied ? "checkmark" : "doc.on.doc")
+                    }
+                    .iconHelp("Copy image", tooltip: "Copy image (⌘C)")
+                    .disabled(!viewer.canCopy)
+                }
                 Button { save(item) } label: { Image(systemName: "square.and.arrow.down") }
                     .iconHelp("Save", tooltip: "Save …")
                     .disabled(item.data.isEmpty && item.videoFile == nil)
@@ -433,6 +458,7 @@ struct ImageViewerOverlay: View {
                 case "=", "+": viewer.zoomView?.zoomStep(in: true); return nil
                 case "-", "_": viewer.zoomView?.zoomStep(in: false); return nil
                 case "0": viewer.zoomView?.zoomToFit(); return nil
+                case "c" where viewer.canCopy: viewer.copyCurrent(); return nil
                 default: break
                 }
             }

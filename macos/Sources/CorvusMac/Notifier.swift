@@ -23,7 +23,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     static let markReadAction = "corvus.markRead"
 
     /// UNUserNotificationCenter only works inside an app bundle (not for `swift run`).
-    var available: Bool { Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app" }
+    var available: Bool { !HiddenMode.on && Bundle.main.bundleIdentifier != nil && Bundle.main.bundleURL.pathExtension == "app" }
 
     private var center: UNUserNotificationCenter? { available ? .current() : nil }
 
@@ -107,6 +107,7 @@ final class SoundPlayer {
     /// Plays the configured sound; returns an error text if that was not possible.
     @discardableResult
     func play(_ s: NotificationSettings) -> String? {
+        if HiddenMode.on { return nil }
         guard let url = resolve(s) else {
             NSSound.beep()
             return "No audio file is available to play."

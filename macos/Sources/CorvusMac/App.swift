@@ -72,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillFinishLaunching(_ notification: Notification) {
         Perf.mark("will finish launching")
+        if HiddenMode.on { NSApp.setActivationPolicy(.prohibited) }
         guard SingleInstance.acquire() else {
             if !SingleInstance.activateOther() {
                 let alert = NSAlert()
@@ -151,7 +152,7 @@ struct CorvusMacApp: App {
                 .font(TypeScale.body)
         }
 
-        MenuBarExtra(isInserted: Binding(get: { model.notify.trayIcon }, set: { _ in })) {
+        MenuBarExtra(isInserted: Binding(get: { model.notify.trayIcon && !HiddenMode.on }, set: { _ in })) {
             MenuBarContent().environment(model)
         } label: {
             MenuBarLabel(unread: model.totalUnread)

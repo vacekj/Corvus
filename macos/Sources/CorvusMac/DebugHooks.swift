@@ -5,7 +5,7 @@ import CorvusCore
 /// Debug builds only: a tiny command channel for unattended UI checks against tests/mock-signal-cli.py.
 /// Set SIGNAL_CLI_MAC_DEBUG_COMMANDS=<file>; every line appended to it is executed:
 ///   open <conversation key> | type <text> | send | reply-last | react-last <emoji> | edit-last <text>
-///   search <text> | archived on|off | snapshot <png path> | quit
+///   search <text> | archived on|off | view-image | copy-image | clipboard <file> | snapshot <png path> | quit
 @MainActor
 enum DebugHooks {
     private static var offset: UInt64 = 0
@@ -73,6 +73,15 @@ enum DebugHooks {
         case "block": if let k = model.current { Task { await model.setBlocked(k, arg != "off") } }
         case "group-info", "info": model.infoPanelShown = arg != "off"
         case "new-group": model.newGroupShown = arg != "off"
+        case "view-image":
+            if let m = model.currentConversation?.msgs.last(where: { $0.attachments.contains(where: \.isImage) }),
+               let i = m.attachments.firstIndex(where: \.isImage) { model.openMediaViewer(m, i) }
+        case "copy-image": ImageViewerWindow.shared.copyCurrent()
+        case "clipboard":
+            // One line per pasteboard type: "<type> <byte count>".
+            let item = ImageClipboard.pasteboard.pasteboardItems?.first
+            let lines = (item?.types ?? []).map { "\($0.rawValue) \(item?.data(forType: $0)?.count ?? 0)" }
+            try? (lines.joined(separator: "\n") + "\n").write(toFile: arg, atomically: true, encoding: .utf8)
         case "snapshot": snapshot(to: arg)
         case "quit": NSApp.terminate(nil)
         default: break

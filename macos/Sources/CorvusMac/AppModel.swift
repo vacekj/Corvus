@@ -1199,7 +1199,7 @@ final class AppModel {
 
     func activateConversation(_ key: String) {
         openMainWindow?()
-        NSApp.activate(ignoringOtherApps: true)
+        HiddenMode.activateApp()
         guard let c = chats.convs[key] else { return }
         showArchived = c.archived
         openConversation(key)
@@ -2009,6 +2009,19 @@ final class AppModel {
         }
     }
 
+    func copyImageAttachment(_ m: Message, _ i: Int) {
+        guard let key = current, i < m.attachments.count else { return }
+        let att = m.attachments[i]
+        Task {
+            do {
+                ImageClipboard.copy(data: try await fetchAttachmentData(key, att), image: nil)
+                showFlash("Image copied", seconds: 2)
+            } catch {
+                await Dialogs.warn("Attachment", error.localizedDescription)
+            }
+        }
+    }
+
     /// Saved files are marked as downloaded, so Gatekeeper checks them when they are opened later.
     private func presentSavePanel(data: Data, filename: String) {
         let panel = NSSavePanel()
@@ -2238,6 +2251,6 @@ final class AppModel {
                 + "Chat history (encrypted): \(AppPaths.historyPath)",
             attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.labelColor])
         NSApp.orderFrontStandardAboutPanel(options: [.credits: credits, .applicationName: "Corvus"])
-        NSApp.activate(ignoringOtherApps: true)
+        HiddenMode.activateApp()
     }
 }

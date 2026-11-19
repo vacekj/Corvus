@@ -9,7 +9,7 @@ enum Dialogs {
         if let window = MainWindowTracker.shared.window, window.isVisible, window.attachedSheet == nil {
             return await alert.beginSheetModal(for: window)
         }
-        NSApp.activate(ignoringOtherApps: true)
+        HiddenMode.activateApp()
         return alert.runModal()
     }
 
@@ -165,10 +165,31 @@ final class MainWindowTracker {
     static let shared = MainWindowTracker()
     weak var window: NSWindow? {
         didSet {
+            if HiddenMode.on, let window {
+                // Laid out and drawn as usual (debug `snapshot`), but never seen or clicked.
+                window.alphaValue = 0
+                window.ignoresMouseEvents = true
+            }
             // No state restoration: macOS would keep a picture of the window for it (some 17 MB each time it
             // is taken). The window's place is remembered by its frame autosave, the open chat by the app.
             window?.isRestorable = false
             if oldValue == nil, window != nil { Perf.mark("main window") }
         }
+    }
+}
+
+/// Debug builds started with CORVUS_HIDDEN=1 (unattended UI checks next to someone's work): no Dock or menu
+/// bar icon, never the active app, an invisible window, no notifications or sounds. Driven through
+/// SIGNAL_CLI_MAC_DEBUG_COMMANDS and checked with its `snapshot` command.
+enum HiddenMode {
+    #if DEBUG
+    static let on = ProcessInfo.processInfo.environment["CORVUS_HIDDEN"] != nil
+    #else
+    static let on = false
+    #endif
+
+    /// NSApp.activate, except in hidden mode.
+    @MainActor static func activateApp() {
+        if !on { NSApp.activate(ignoringOtherApps: true) }
     }
 }

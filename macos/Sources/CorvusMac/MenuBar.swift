@@ -63,7 +63,7 @@ struct MenuBarContent: View {
 
     private func showMainWindow() {
         openWindow(id: "main")
-        NSApp.activate(ignoringOtherApps: true)
+        HiddenMode.activateApp()
         MainWindowTracker.shared.window?.makeKeyAndOrderFront(nil)
     }
 

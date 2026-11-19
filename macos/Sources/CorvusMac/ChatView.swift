@@ -992,6 +992,9 @@ private struct MessageMenu: View {
             } label: { Label("Copy text", systemImage: "doc.on.doc") }
         }
         ForEach(Array(m.attachments.enumerated()).filter { !$0.element.isSticker && !$0.element.isLongText && !m.viewOnce }, id: \.offset) { i, a in
+            if a.isImage {
+                Button { model.copyImageAttachment(m, i) } label: { Label("Copy image", systemImage: "doc.on.doc") }
+            }
             Button { model.saveAttachment(m, i) } label: {
                 Label("Save “\(a.filename.isEmpty ? "attachment" : a.filename)” …", systemImage: "square.and.arrow.down")
             }

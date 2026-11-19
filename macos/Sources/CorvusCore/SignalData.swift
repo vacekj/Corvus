@@ -3,9 +3,15 @@ import Foundation
 /// The backend's data directory (`corvus-signal --config`, see signal-backend/DESIGN.md) and the files
 /// Corvus reads from it directly. This is the only place that knows the layout.
 public enum SignalDataDir {
-    /// ~/Library/Application Support/corvus/signal
+    /// ~/Library/Application Support/corvus/signal (debug builds: $CORVUS_DATA_DIR/signal when that is set, so a
+    /// test instance never touches the real account's files).
     public static var root: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        #if DEBUG
+        if let dir = ProcessInfo.processInfo.environment["CORVUS_DATA_DIR"] {
+            return URL(fileURLWithPath: dir, isDirectory: true).appendingPathComponent("signal", isDirectory: true)
+        }
+        #endif
+        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("corvus/signal", isDirectory: true)
     }
 
@@ -90,6 +96,13 @@ public enum SignalStoreKey {
         lock.lock()
         defer { lock.unlock() }
         if let cached { return cached }
+        #if DEBUG
+        // Test instances (CORVUS_DATA_DIR) use a throwaway key and leave the keychain alone.
+        if ProcessInfo.processInfo.environment["CORVUS_DATA_DIR"] != nil {
+            cached = String(repeating: "0", count: 64)
+            return cached!
+        }
+        #endif
         if let saved = try Keychain.load(service: service, account: account) {
             guard isValid(saved) else { throw Invalid() }
             cached = saved

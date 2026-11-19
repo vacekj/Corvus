@@ -74,4 +74,6 @@ first launch open it with right-click → *Open*.
 loading and saving a synthetic history of 90,000 messages (database and former history file).
 
 Debug builds (`swift build`) accept `SIGNAL_CLI_MAC_TEST_PASSPHRASE` and `SIGNAL_CLI_MAC_DEBUG_COMMANDS`
-for unattended runs against `tests/mock-signal-cli.py` (see `Sources/CorvusMac/DebugHooks.swift`).
+for unattended runs against `tests/mock-signal-cli.py` (see `Sources/CorvusMac/DebugHooks.swift`). `scripts/run-hidden.sh` starts such a run in hidden mode (`CORVUS_HIDDEN=1`): no Dock or menu bar
+icon, never in front, an invisible window and a private clipboard, so it can run next to your work; check it with
+the `snapshot` command.
