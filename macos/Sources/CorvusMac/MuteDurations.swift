@@ -40,6 +40,25 @@ extension AppModel {
         guard c.muted != (until != nil) || c.muteUntilMs != (until ?? 0) else { return }
         if let rec = chats.setMute(key, until: until) { persist(rec) }
         MuteExpiry.shared.schedule(self)
+        // The phone and other devices mute it too (Storage Service).
+        let phone: Int64 = until.map { $0 == 0 ? -1 : $0 } ?? 0
+        PhoneMutes.seen[key] = phone
+        var params: [String: Any] = ["mutedUntil": phone]
+        if key.hasPrefix("g:") { params["groupId"] = String(key.dropFirst(2)) } else { params["recipient"] = key }
+        Task { try? await cli.call("setMuted", params) }
+    }
+
+    /// A mute set on the phone (Storage Service `mutedUntil`: 0 none, -1 for good, else ms). Followed
+    /// only when it changed there, so a mute set here before it reached the phone is kept.
+    func applyPhoneMute(_ key: String, _ phone: Int64) {
+        let previous = PhoneMutes.seen[key]
+        guard previous != phone, chats.convs[key] != nil else { return }
+        PhoneMutes.seen[key] = phone
+        let now = nowMs()
+        let until: Int64? = phone == -1 ? 0 : phone > now ? phone : nil
+        if until == nil && previous == nil { return } // never muted there: keep the local state
+        if let rec = chats.setMute(key, until: until) { persist(rec) }
+        MuteExpiry.shared.schedule(self)
     }
 
     /// Unmutes chats whose timed mute ran out and sets the timer for the next one.
@@ -117,5 +136,14 @@ struct MuteInfoRow: View {
 
     private static func untilStyle(_ d: Date) -> Date.FormatStyle {
         Calendar.current.isDateInToday(d) ? .dateTime.hour().minute() : .dateTime.weekday(.abbreviated).day().month(.abbreviated).hour().minute()
+    }
+}
+
+/// The last mute state reported by the phone per chat, to follow only its changes.
+@MainActor
+enum PhoneMutes {
+    private static let defaultsKey = "phoneMutes"
+    static var seen: [String: Int64] = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: Int64]) ?? [:] {
+        didSet { UserDefaults.standard.set(seen, forKey: defaultsKey) }
     }
 }

@@ -220,8 +220,9 @@ public struct ChatState {
         message.orderTs = max(message.orderTs, max(nowMs(), previousOrder + 1))
         let at = convs[key]!.insertSorted(message)
         var recs = [Records.message(key, message)]
-        // Like the official client: activity brings an archived chat back.
-        if convs[key]!.archived {
+        // Like the official client: activity brings an archived chat back, unless it is muted
+        // (Signal's "keep muted chats archived").
+        if convs[key]!.archived && !convs[key]!.isMuted(at: nowMs()) {
             convs[key]!.archived = false
             recs.append(Records.archive(key, archived: false, sigArchived: convs[key]!.sigArchived))
         }

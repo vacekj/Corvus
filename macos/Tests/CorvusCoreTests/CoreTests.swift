@@ -204,6 +204,19 @@ final class ChatStateTests: XCTestCase {
         XCTAssertNil(s.addMessage("+49alice", m))
     }
 
+    func testMutedArchivedChatStaysArchived() {
+        var s = makeState()
+        var m = Message()
+        m.ts = 10
+        m.text = "a"
+        m.authorKey = "+49alice"
+        s.ensure("+49alice")
+        s.convs["+49alice"]!.archived = true
+        _ = s.setMute("+49alice", until: 0)
+        XCTAssertEqual(s.addMessage("+49alice", m)?.records.count, 1) // message only
+        XCTAssertTrue(s.convs["+49alice"]!.archived)
+    }
+
     func testIncorrectSenderClockDoesNotInsertNewMessageIntoPast() {
         var s = makeState()
         s.ensure("+49alice")

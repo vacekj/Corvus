@@ -14,6 +14,13 @@ pub const METHODS: &[Method] = &[];
 
 /// Local value: ids of the groups archived on the phone (from the Storage Service).
 pub const ARCHIVED_GROUPS: &str = "archived-groups";
+/// Local value: group id → muted-until (ms) of the groups muted on the phone.
+pub const MUTED_GROUPS: &str = "muted-groups";
+
+/// Mute end as Corvus reads it: 0 = not muted, -1 = for good, else ms since 1970.
+pub fn mute_json(until: u64) -> i64 {
+    if until >= (i64::MAX as u64) / 2 { -1 } else { until as i64 }
+}
 
 thread_local! {
     static SYNCING: Cell<bool> = const { Cell::new(false) };
@@ -56,6 +63,7 @@ async fn apply(ctx: &Ctx, a: &Account, state: &StorageState) {
                 c.blocked = record.blocked;
                 c.hidden = record.hidden;
                 c.archived = record.archived;
+                c.muted_until = record.muted_until_timestamp;
                 c.nick_given_name = nickname.given.clone();
                 c.nick_family_name = nickname.family.clone();
                 c.note = record.note.clone();
@@ -68,10 +76,14 @@ async fn apply(ctx: &Ctx, a: &Account, state: &StorageState) {
         }
     }
     let mut archived_groups = Vec::new();
+    let mut muted_groups = std::collections::BTreeMap::<String, u64>::new();
     for record in state.groups_v2() {
         let Some(id) = group_id_from_master_key(&record.master_key) else { continue };
         if record.archived {
             archived_groups.push(normalize_group_id(&id));
+        }
+        if record.muted_until_timestamp > 0 {
+            muted_groups.insert(normalize_group_id(&id), record.muted_until_timestamp);
         }
         if local.group_blocked(&id).await != record.blocked {
             let _ = local.set_group_blocked(&normalize_group_id(&id), record.blocked).await;
@@ -79,6 +91,9 @@ async fn apply(ctx: &Ctx, a: &Account, state: &StorageState) {
     }
     if let Err(error) = local.set_value(ARCHIVED_GROUPS, &archived_groups).await {
         tracing::warn!(%error, "cannot store the archived groups");
+    }
+    if let Err(error) = local.set_value(MUTED_GROUPS, &muted_groups).await {
+        tracing::warn!(%error, "cannot store the muted groups");
     }
     if let Some(account) = state.account() {
         let username = (!account.username.is_empty()).then_some(account.username.as_str());

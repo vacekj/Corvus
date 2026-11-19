@@ -570,6 +570,8 @@ for line in sys.stdin:
             res["timestamp"] = int(time.time() * 1000)
         if "editTimestamp" in p:  # an edit gets a newer timestamp than the revision it edits
             res["timestamp"] = int(p["editTimestamp"]) + 1000
+    elif m == "setMuted":  # mute written to the Storage Service
+        res = {}
     elif m == "sendSyncRead":  # read here, told to the other devices
         res = {}
     elif m == "sendReceipt":

@@ -49,6 +49,8 @@ pub struct LocalContact {
     pub blocked: bool,
     pub hidden: bool,
     pub archived: bool,
+    /// Muted until this time (ms since 1970; 0 = not muted, i64::MAX = for good), from the Storage Service.
+    pub muted_until: u64,
     pub nick_given_name: String,
     pub nick_family_name: String,
     pub note: String,

@@ -666,6 +666,7 @@ final class AppModel {
                 chats.convs[key]!.archived = sig
                 persist(Records.archive(key, archived: sig, sigArchived: sig))
             }
+            applyPhoneMute(key, jsonInt64(c["mutedUntil"]))
         }
     }
 
@@ -689,6 +690,7 @@ final class AppModel {
                 chats.convs[key]!.archived = sig
                 persist(Records.archive(key, archived: sig, sigArchived: sig))
             }
+            applyPhoneMute(key, jsonInt64(g["mutedUntil"]))
             let expiration = jsonInt(g["messageExpirationTime"])
             if chats.convs[key]!.expirationSeconds != expiration {
                 chats.convs[key]!.expirationSeconds = expiration
@@ -1446,7 +1448,9 @@ final class AppModel {
         let quiet = !m.outgoing && isQuiet(key, author: m.authorKey) // blocked sender or unaccepted request
         if !m.outgoing && !quiet && !(key == current && userIsLooking()) { chats.convs[key]!.unread += 1 }
         else if !m.outgoing && !quiet { sendReadReceipts(key, [m]) } // read right away
-        if !m.outgoing && !quiet && !NSApp.isActive { NSApp.requestUserAttention(.informationalRequest) }
+        if !m.outgoing && !quiet && !NSApp.isActive && !chats.convs[key]!.isMuted(at: nowMs()) && !alertSuppressed(key) {
+            NSApp.requestUserAttention(.informationalRequest)
+        }
         if key == current { updateSearch() }
         listChanged()
         return true

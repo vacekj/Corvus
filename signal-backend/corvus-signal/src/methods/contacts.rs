@@ -25,6 +25,7 @@ pub const METHODS: &[Method] = &[
     method!("unblock", unblock),
     method!("sendMessageRequestResponse", message_request_response),
     method!("getAvatar", get_avatar),
+    method!("setMuted", set_muted),
 ];
 
 async fn list_contacts(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
@@ -82,6 +83,7 @@ pub async fn contact_json(a: &Account, uuid: &Uuid) -> Value {
         "isBlocked": local.blocked,
         "isHidden": local.hidden,
         "isArchived": local.archived,
+        "mutedUntil": storage::mute_json(local.muted_until),
         "messageExpirationTime": expiration,
     });
     if let Some(profile) = profile {
@@ -308,4 +310,38 @@ async fn get_avatar(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
         Some(b) if !b.is_empty() => Ok(json!({"data": B64.encode(b)})),
         _ => Err(RpcError::failed("No avatar")),
     }
+}
+
+/// Mutes a chat everywhere (Storage Service): `recipient` or `groupId`, `mutedUntil` in ms since 1970,
+/// 0 to unmute, -1 for good.
+async fn set_muted(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
+    let a = ctx.account()?;
+    let until = match i64_param(&p, "mutedUntil").unwrap_or(0) {
+        v if v < 0 => i64::MAX as u64,
+        v => v as u64,
+    };
+    if let Some(group_id) = str_param(&p, "groupId") {
+        let (master_key, _) = a.group_by_id(&group_id).await?;
+        let mut muted: BTreeMap<String, u64> = a.local().value(storage::MUTED_GROUPS).await;
+        let id = crate::ctx::normalize_group_id(&group_id);
+        if until > 0 { muted.insert(id, until); } else { muted.remove(&id); }
+        a.local().set_value(storage::MUTED_GROUPS, &muted).await.map_err(fail)?;
+        let patch = presage::libsignal_service::storage_service::GroupV2Patch {
+            muted_until_timestamp: Some(until),
+            ..Default::default()
+        };
+        a.manager().update_group_record(master_key, patch).await.map_err(fail)?;
+    } else {
+        let uuid = a.resolve_aci(&req_str(&p, "recipient")?).await?;
+        a.local().update_contact(&uuid, |c| c.muted_until = until).await.map_err(fail)?;
+        let patch = presage::libsignal_service::storage_service::ContactPatch {
+            muted_until_timestamp: Some(until),
+            ..Default::default()
+        };
+        a.manager()
+            .update_contact_record(presage::libsignal_service::storage_service::ContactTarget::aci(uuid), patch)
+            .await
+            .map_err(fail)?;
+    }
+    Ok(json!({}))
 }

@@ -82,6 +82,14 @@ pub async fn group_json(a: &Account, id: &str, master_key: &[u8; 32], g: &Group)
             .value::<Vec<String>>(super::storage::ARCHIVED_GROUPS)
             .await
             .contains(&normalize_group_id(id)),
+        "mutedUntil": super::storage::mute_json(
+            a.local()
+                .value::<std::collections::BTreeMap<String, u64>>(super::storage::MUTED_GROUPS)
+                .await
+                .get(&normalize_group_id(id))
+                .copied()
+                .unwrap_or(0),
+        ),
         "isTerminated": g.terminated,
         "messageExpirationTime": g.disappearing_messages_timer.as_ref().map(|t| t.duration).unwrap_or(0),
         "members": members,
