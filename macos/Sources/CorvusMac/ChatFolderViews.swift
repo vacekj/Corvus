@@ -137,14 +137,14 @@ struct ChatFolderTabs: View {
                 Text(title).lineLimit(1)
                 if unread > 0 {
                     Text("\(unread)")
-                        .font(.system(size: 10, weight: .bold))
+                        .font(.inter(10, weight: .bold))
                         .foregroundStyle(.white)
                         .padding(.horizontal, 5)
                         .frame(minWidth: 16, minHeight: 16)
                         .background(Capsule().fill(Theme.signalBlue))
                 }
             }
-            .font(.system(size: 12, weight: selected ? .semibold : .regular))
+            .font(.inter(12, weight: selected ? .semibold : .regular))
             .foregroundStyle(selected ? Color.primary : Color.secondary)
             .padding(.horizontal, 10)
             .padding(.vertical, 4)
@@ -244,7 +244,7 @@ struct ChatFolderEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text(request.isNew ? "New folder" : "Edit folder").font(.title3.weight(.semibold))
+            Text(request.isNew ? "New folder" : "Edit folder").font(TypeScale.title3.weight(.semibold))
             TextField("Folder name", text: $folder.name).textFieldStyle(.roundedBorder)
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("All 1:1 chats", isOn: $folder.includeDirect)
@@ -253,9 +253,9 @@ struct ChatFolderEditor: View {
                 Toggle("Include muted chats", isOn: $folder.includeMuted)
             }
             HStack {
-                Text("Chats").font(.headline)
+                Text("Chats").font(TypeScale.headline)
                 Spacer()
-                Text("\(picked.count) picked").foregroundStyle(.secondary).font(.caption)
+                Text("\(picked.count) picked").foregroundStyle(.secondary).font(TypeScale.caption)
             }
             TextField("Search", text: $search).textFieldStyle(.roundedBorder)
             List {
@@ -337,7 +337,7 @@ struct ChatFolderSettings: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(f.name)
-                            Text(summary(f)).font(.caption).foregroundStyle(.secondary)
+                            Text(summary(f)).font(TypeScale.caption).foregroundStyle(.secondary)
                         }
                         Spacer()
                         Button("Edit …") { editing = ChatFolderEditRequest(folder: f, isNew: false) }

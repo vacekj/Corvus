@@ -3,111 +3,7 @@ import CorvusCore
 import Observation
 import SwiftUI
 
-// Bubble content beyond text and attachments: shared contacts, payments, shared locations, the
-// disappearing-message countdown and chat notices.
-
-// MARK: - Disappearing messages
-
-/// One clock for all countdown icons on screen. It runs only while an icon is shown, and only as often as the
-/// shortest timer among them needs (from once a second for 30-second timers to once a minute).
-@MainActor @Observable
-final class ExpiryClock {
-    static let shared = ExpiryClock()
-
-    /// Read by the icons to update with the clock; the time itself is taken when drawing.
-    private(set) var tick = 0
-    @ObservationIgnored private var shown: [Int: Int] = [:]    // timer seconds -> icons on screen
-    @ObservationIgnored private var timer: Timer?
-    @ObservationIgnored private var interval: TimeInterval = 0
-
-    func add(_ seconds: Int) {
-        shown[seconds, default: 0] += 1
-        reschedule()
-    }
-
-    func remove(_ seconds: Int) {
-        guard let n = shown[seconds] else { return }
-        shown[seconds] = n > 1 ? n - 1 : nil
-        reschedule()
-    }
-
-    private func reschedule() {
-        guard let shortest = shown.keys.min() else {
-            timer?.invalidate()
-            timer = nil
-            interval = 0
-            return
-        }
-        let want = DisappearingTimer.tickInterval(shortestSeconds: shortest)
-        if timer != nil && want == interval { return }
-        timer?.invalidate()
-        interval = want
-        let t = Timer(timeInterval: want, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.tick &+= 1 }
-        }
-        t.tolerance = want / 5
-        RunLoop.main.add(t, forMode: .common) // also while the list is being scrolled
-        timer = t
-    }
-}
-
-/// The countdown of a disappearing message in the time row: a circle that empties like Signal's timer icon.
-struct ExpiryCountdownIcon: View {
-    let seconds: Int
-    let startMs: Int64
-
-    var body: some View {
-        // Not started (unread) messages stay full and need no clock.
-        if startMs <= 0 {
-            ExpiryPie(step: DisappearingTimer.steps)
-        } else {
-            Running(seconds: seconds, startMs: startMs)
-        }
-    }
-
-    private struct Running: View {
-        let seconds: Int
-        let startMs: Int64
-        private let clock = ExpiryClock.shared
-
-        var body: some View {
-            _ = clock.tick
-            return ExpiryPie(step: DisappearingTimer.step(expiresInSeconds: seconds, startMs: startMs, now: nowMs()))
-                .onAppear { clock.add(seconds) }
-                .onDisappear { clock.remove(seconds) }
-        }
-    }
-}
-
-private struct ExpiryPie: View, Equatable {
-    let step: Int
-
-    var body: some View {
-        let fraction = Double(step) / Double(DisappearingTimer.steps)
-        ZStack {
-            Circle().strokeBorder(lineWidth: 1.1)
-            PieSlice(fraction: fraction).padding(2.2)
-        }
-        .frame(width: 10, height: 10)
-        .accessibilityLabel("Disappearing message")
-    }
-}
-
-private struct PieSlice: Shape {
-    let fraction: Double
-
-    func path(in rect: CGRect) -> Path {
-        var p = Path()
-        guard fraction > 0 else { return p }
-        let c = CGPoint(x: rect.midX, y: rect.midY)
-        if fraction >= 1 { p.addEllipse(in: rect); return p }
-        p.move(to: c)
-        p.addArc(center: c, radius: min(rect.width, rect.height) / 2, startAngle: .degrees(-90),
-                 endAngle: .degrees(-90 + 360 * fraction), clockwise: false)
-        p.closeSubpath()
-        return p
-    }
-}
+// Bubble content beyond text and attachments: shared contacts, payments, shared locations and chat notices.
 
 /// "You set the disappearing message timer to 1 week." between the bubbles.
 struct ChatNoticeRow: View {
@@ -119,7 +15,7 @@ struct ChatNoticeRow: View {
             Image(systemName: message.notice.seconds > 0 ? "timer" : "timer.slash")
             Text(text)
         }
-        .font(.caption)
+        .font(TypeScale.caption)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
         .padding(.horizontal, 12)
@@ -212,8 +108,8 @@ private struct ContactCard: View {
                     AvatarView(image: avatar ?? Media.placeholderAvatar(key: contact.signalNumber ?? contact.displayName,
                                                                        title: contact.displayName), size: 40)
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(contact.displayName).font(.system(size: NSFont.systemFontSize + 1, weight: .semibold)).lineLimit(2)
-                        if let sub = subtitle { Text(sub).font(.caption).opacity(0.8).lineLimit(1) }
+                        Text(contact.displayName).font(.inter(NSFont.systemFontSize + 1, weight: .semibold)).lineLimit(2)
+                        if let sub = subtitle { Text(sub).font(TypeScale.caption).opacity(0.8).lineLimit(1) }
                     }
                     Spacer(minLength: 0)
                 }
@@ -225,7 +121,7 @@ private struct ContactCard: View {
             if let number = contact.signalNumber {
                 Divider().overlay(foreground.opacity(0.25))
                 Button { model.startConversation(model.chats.resolveKey(number)) } label: {
-                    Text("Message").font(.callout.weight(.semibold)).frame(maxWidth: .infinity)
+                    Text("Message").font(TypeScale.callout.weight(.semibold)).frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.plain)
                 .help("Start a chat with \(number)")
@@ -259,7 +155,7 @@ private struct ContactDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(contact.displayName).font(.headline)
+            Text(contact.displayName).font(TypeScale.headline)
             if !contact.organization.isEmpty && contact.organization != contact.displayName {
                 Text(contact.organization).foregroundStyle(.secondary)
             }
@@ -273,7 +169,7 @@ private struct ContactDetails: View {
 
     private func row(_ label: String, _ value: String) -> some View {
         VStack(alignment: .leading, spacing: 1) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
+            Text(label).font(TypeScale.caption).foregroundStyle(.secondary)
             Text(value).textSelection(.enabled)
         }
     }
@@ -290,11 +186,11 @@ private struct PaymentCard: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Image(systemName: "creditcard")
-                Text(title).font(.system(size: NSFont.systemFontSize + 1, weight: .semibold))
+                Text(title).font(.inter(NSFont.systemFontSize + 1, weight: .semibold))
             }
             if !payment.note.isEmpty { Text(payment.note).fixedSize(horizontal: false, vertical: true) }
             Text("Payments aren't supported here. Open Signal on your phone to see this payment.")
-                .font(.caption)
+                .font(TypeScale.caption)
                 .opacity(0.75)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -321,9 +217,9 @@ private struct LocationCard: View {
                 Image(systemName: "mappin.circle.fill").font(.system(size: 26))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(location.title.isEmpty ? "Location" : location.title)
-                        .font(.system(size: NSFont.systemFontSize + 1, weight: .semibold))
-                    if !location.address.isEmpty { Text(location.address).font(.callout) }
-                    Text(location.coordinateText).font(.caption.monospacedDigit()).opacity(0.75)
+                        .font(.inter(NSFont.systemFontSize + 1, weight: .semibold))
+                    if !location.address.isEmpty { Text(location.address).font(TypeScale.callout) }
+                    Text(location.coordinateText).font(TypeScale.caption.monospacedDigit()).opacity(0.75)
                 }
                 Spacer(minLength: 0)
             }

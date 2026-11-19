@@ -95,7 +95,7 @@ private struct AppearanceSettings: View {
             HStack {
                 Button("Reset to defaults") { a = Appearance() }
                 Spacer()
-                Text("Untouched colours follow the light or dark system appearance.").font(.caption).foregroundStyle(.secondary)
+                Text("Untouched colours follow the light or dark system appearance.").font(TypeScale.caption).foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -150,7 +150,7 @@ private struct NotificationSettingsView: View {
                 .disabled(!n.notifications)
                 if !model.notifier.available {
                     Text("Notifications need the app bundle (run it via scripts/build-app.sh, not swift run).")
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(TypeScale.caption).foregroundStyle(.secondary)
                 }
                 Button("Notification settings in System Settings …") {
                     NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!)
@@ -173,10 +173,10 @@ private struct NotificationSettingsView: View {
                 }
                 HStack {
                     Button("Test") { soundError = model.sound.play(n) }
-                    if let soundError { Text(soundError).font(.caption).foregroundStyle(.red) }
+                    if let soundError { Text(soundError).font(TypeScale.caption).foregroundStyle(.red) }
                 }
                 Text("Muted chats (right-click a chat) and the chat you are looking at never alert.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(TypeScale.caption).foregroundStyle(.secondary)
             }
             Section("Menu bar") {
                 Toggle("Show icon in the menu bar", isOn: $n.trayIcon)

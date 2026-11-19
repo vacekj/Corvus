@@ -149,8 +149,8 @@ private struct ComposerCard: View {
             RoundedRectangle(cornerRadius: 2).fill(accent).frame(width: 3)
             Image(systemName: icon).foregroundStyle(accent)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.caption.weight(.semibold)).foregroundStyle(accent)
-                Text(text).font(.callout).lineLimit(1).truncationMode(.tail).foregroundStyle(.secondary)
+                Text(title).font(TypeScale.caption.weight(.semibold)).foregroundStyle(accent)
+                Text(text).font(TypeScale.callout).lineLimit(1).truncationMode(.tail).foregroundStyle(.secondary)
             }
             Spacer()
             Button(action: close) { Image(systemName: "xmark.circle.fill").font(.system(size: 15)) }
@@ -178,8 +178,8 @@ private struct AttachmentTray: View {
                                 PendingImageThumb(path: f)
                             } else {
                                 VStack(spacing: 4) {
-                                    Image(systemName: "doc.fill").font(.title3)
-                                    Text((f as NSString).lastPathComponent).font(.caption2).lineLimit(2)
+                                    Image(systemName: "doc.fill").font(TypeScale.title3)
+                                    Text((f as NSString).lastPathComponent).font(TypeScale.caption2).lineLimit(2)
                                         .multilineTextAlignment(.center)
                                 }
                                 .padding(6)
@@ -258,7 +258,7 @@ struct MessageInput: NSViewRepresentable {
         tv.isRichText = false
         tv.importsGraphics = false
         tv.allowsUndo = true
-        tv.font = .systemFont(ofSize: NSFont.systemFontSize + 1)
+        tv.font = Fonts.ns(14)
         tv.textContainerInset = NSSize(width: 2, height: 7)
         tv.isAutomaticQuoteSubstitutionEnabled = false
         tv.isAutomaticDashSubstitutionEnabled = false

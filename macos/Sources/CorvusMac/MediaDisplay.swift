@@ -199,7 +199,7 @@ struct FullImageView: View {
             } else {
                 Rectangle().fill(Theme.field)
                 if failed {
-                    Image(systemName: "photo").font(.title2).foregroundStyle(.secondary)
+                    Image(systemName: "photo").font(TypeScale.title2).foregroundStyle(.secondary)
                 } else if slow {
                     ProgressView().controlSize(.small) // only for a slow load: no spinner blinking past
                 }

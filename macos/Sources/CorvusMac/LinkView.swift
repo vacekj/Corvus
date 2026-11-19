@@ -19,7 +19,7 @@ struct LinkView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Link device").font(.title2.bold())
+            Text("Link device").font(TypeScale.title2.bold())
             Text("Open Signal on your phone → Settings → Linked devices → “Link new device” and scan the QR code.")
                 .fixedSize(horizontal: false, vertical: true)
             HStack {

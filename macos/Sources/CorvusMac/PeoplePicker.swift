@@ -97,7 +97,7 @@ struct PickerRow: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(person.title).lineLimit(1)
                 if !person.detail.isEmpty {
-                    Text(person.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text(person.detail).font(TypeScale.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer(minLength: 0)
@@ -179,7 +179,7 @@ struct ContactPicker: View {
                 }
             }
             Text(selection.isEmpty ? "Click people to add them" : "\(selection.count) selected")
-                .font(.caption).foregroundStyle(.secondary)
+                .font(TypeScale.caption).foregroundStyle(.secondary)
         }
         .onAppear { people = model.pickerPeople() }
     }

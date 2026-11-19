@@ -43,7 +43,7 @@ struct PrivacySettingsView: View {
                 Toggle("Send read receipts", isOn: $p.readReceipts)
                 Toggle("Send typing indicators", isOn: $p.typingIndicators)
                 Text("Never sent for message requests you have not accepted or to blocked people.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(TypeScale.caption).foregroundStyle(.secondary)
             }
             AccountPrivacySections()
         }

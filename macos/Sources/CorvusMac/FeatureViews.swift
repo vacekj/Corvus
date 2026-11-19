@@ -57,9 +57,9 @@ struct StickerPicker: View {
             if model.stickerPacks.isEmpty {
                 VStack(spacing: 10) {
                     Image(systemName: "face.smiling").font(.system(size: 34)).foregroundStyle(.secondary)
-                    Text("No sticker packs installed").font(.headline)
+                    Text("No sticker packs installed").font(TypeScale.headline)
                     Text("Install packs on your phone (they sync to Corvus) or add one from a signal.art link.")
-                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        .font(TypeScale.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     if !adding { Button("Add sticker pack …") { adding = true } }
                 }
                 .padding(20)
@@ -119,9 +119,9 @@ struct PollView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label(poll.ended ? "Poll · ended" : (poll.allowMultiple ? "Poll · select one or more" : "Poll"),
                   systemImage: "chart.bar.xaxis")
-                .font(.caption.weight(.semibold))
+                .font(TypeScale.caption.weight(.semibold))
                 .opacity(0.8)
-            Text(poll.question).font(.system(size: NSFont.systemFontSize + 2, weight: .semibold))
+            Text(poll.question).font(.inter(NSFont.systemFontSize + 2, weight: .semibold))
                 .fixedSize(horizontal: false, vertical: true)
             ForEach(Array(poll.options.enumerated()), id: \.offset) { i, option in
                 let voters = poll.voters(for: i)
@@ -149,11 +149,11 @@ struct PollView: View {
                 .disabled(poll.ended || !model.connected)
                 .help(voters.isEmpty ? "No votes" : voters.map(model.displayName).joined(separator: ", "))
             }
-            Text(poll.totalVoters == 1 ? "1 vote" : "\(poll.totalVoters) votes").font(.caption).opacity(0.7)
+            Text(poll.totalVoters == 1 ? "1 vote" : "\(poll.totalVoters) votes").font(TypeScale.caption).opacity(0.7)
             if message.outgoing && !poll.ended {
                 Button("End poll") { model.endPoll(message.id) }
                     .buttonStyle(.link)
-                    .font(.caption)
+                    .font(TypeScale.caption)
             }
         }
         .foregroundStyle(foreground)
@@ -182,7 +182,7 @@ struct PollComposerSheet: View {
         let valid = !question.trimmingCharacters(in: .whitespaces).isEmpty
             && options.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.count >= 2
         VStack(alignment: .leading, spacing: 12) {
-            Text("New poll").font(.title3.weight(.semibold))
+            Text("New poll").font(TypeScale.title3.weight(.semibold))
             TextField("Question", text: $question).textFieldStyle(.roundedBorder)
             ForEach(options.indices, id: \.self) { i in
                 HStack {
@@ -249,7 +249,7 @@ struct SafetyNumberSheet: View {
     var body: some View {
         let title = model.chats.convs[key]?.title ?? key
         VStack(spacing: 14) {
-            Text("Safety number with \(title)").font(.title3.weight(.semibold))
+            Text("Safety number with \(title)").font(TypeScale.title3.weight(.semibold))
             if loading {
                 ProgressView().padding(30)
             } else if let info, !info.safetyNumber.isEmpty {
@@ -273,7 +273,7 @@ struct SafetyNumberSheet: View {
                     .foregroundStyle(info.isVerified ? .green : .secondary)
                 Text("Compare these numbers with \(title), in person or over a trusted channel, or scan the code with their phone. "
                      + "If they match, mark the contact as verified.")
-                    .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .font(TypeScale.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
                 HStack {
                     if info.isVerified {
@@ -331,7 +331,7 @@ struct ForwardSheet: View {
         let list = (model.chats.sortedConversations(archived: false) + model.chats.sortedConversations(archived: true))
             .filter { q.isEmpty || model.title($0).localizedCaseInsensitiveContains(q) || $0.key.localizedCaseInsensitiveContains(q) }
         VStack(alignment: .leading, spacing: 10) {
-            Text("Forward to …").font(.title3.weight(.semibold))
+            Text("Forward to …").font(TypeScale.title3.weight(.semibold))
             SearchField(text: $filter, prompt: "Search chats")
                 .modifier(PickerKeys(count: list.count, index: $index) {
                     if list.indices.contains(index) { toggle(list[index].key) }
@@ -367,7 +367,7 @@ struct ForwardSheet: View {
             }
             HStack {
                 Text("\(selected.count) of \(AppModel.maxForwardTargets) chats · ↑↓ Return to select, ⌘Return to forward")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(TypeScale.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button("Forward") {
@@ -467,7 +467,7 @@ struct MediaGalleryView<Accessory: View>: View {
                                     Text([it.message.time.formatted(date: .abbreviated, time: .shortened),
                                           it.attachment.size > 0 ? Media.humanSize(it.attachment.size) : ""]
                                             .filter { !$0.isEmpty }.joined(separator: " · "))
-                                        .font(.caption).foregroundStyle(.secondary)
+                                        .font(TypeScale.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                                 Button { model.openAttachment(it.message, it.index) } label: {
@@ -489,7 +489,7 @@ struct MediaGalleryView<Accessory: View>: View {
                                 Image(systemName: "link").frame(width: 28)
                                 VStack(alignment: .leading) {
                                     Link(l.url.absoluteString, destination: l.url).lineLimit(1)
-                                    Text(l.message.time.formatted(date: .abbreviated, time: .shortened)).font(.caption).foregroundStyle(.secondary)
+                                    Text(l.message.time.formatted(date: .abbreviated, time: .shortened)).font(TypeScale.caption).foregroundStyle(.secondary)
                                 }
                                 Spacer()
                             }
@@ -528,7 +528,7 @@ struct TextStory: View {
                 Color(hexARGB: story.backgroundColor) ?? Color(red: 0.2, green: 0.3, blue: 0.6)
             }
             VStack(spacing: 10) {
-                Text(story.text).font(.system(size: 28, weight: .semibold)).multilineTextAlignment(.center)
+                Text(story.text).font(.inter(28, weight: .semibold)).multilineTextAlignment(.center)
                     .foregroundStyle(Color(hexARGB: story.textColor) ?? .white)
                 if let u = URL(string: story.previewUrl), !story.previewUrl.isEmpty { Link(story.previewUrl, destination: u) }
             }
@@ -598,7 +598,7 @@ struct GalleryTile: View {
                 Image(nsImage: image).resizable().aspectRatio(contentMode: .fill)
             } else {
                 Rectangle().fill(Theme.field)
-                Image(systemName: a.isVideo ? "film" : "photo").font(.title2).foregroundStyle(.secondary)
+                Image(systemName: a.isVideo ? "film" : "photo").font(TypeScale.title2).foregroundStyle(.secondary)
             }
             if a.isVideo {
                 Image(systemName: "play.circle.fill").font(.system(size: 28)).foregroundStyle(.white).shadow(radius: 3)

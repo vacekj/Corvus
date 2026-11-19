@@ -8,7 +8,7 @@ struct KeyboardShortcutsSheet: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("Keyboard shortcuts").font(.title3.weight(.semibold))
+                Text("Keyboard shortcuts").font(TypeScale.title3.weight(.semibold))
                 Spacer()
                 Button { dismiss() } label: { Image(systemName: "xmark.circle.fill").font(.system(size: 16)) }
                     .buttonStyle(.borderless)
@@ -24,7 +24,7 @@ struct KeyboardShortcutsSheet: View {
                           alignment: .leading, spacing: 22) {
                     ForEach(ShortcutCatalog.sections, id: \.title) { section in
                         VStack(alignment: .leading, spacing: 8) {
-                            Text(section.title).font(.headline)
+                            Text(section.title).font(TypeScale.headline)
                             ForEach(section.entries, id: \.self) { entry in
                                 ShortcutRow(entry: entry)
                             }
@@ -46,13 +46,13 @@ private struct ShortcutRow: View {
             Text(entry.action).frame(maxWidth: .infinity, alignment: .leading)
             HStack(spacing: 4) {
                 ForEach(Array(entry.alternatives.enumerated()), id: \.offset) { i, keys in
-                    if i > 0 { Text("or").font(.caption).foregroundStyle(.secondary) }
+                    if i > 0 { Text("or").font(TypeScale.caption).foregroundStyle(.secondary) }
                     ForEach(Array(keys.enumerated()), id: \.offset) { _, key in KeyCap(key) }
                 }
             }
             .fixedSize()
         }
-        .font(.callout)
+        .font(TypeScale.callout)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(entry.action)
         .accessibilityValue(entry.alternatives.map(ShortcutCatalog.text).joined(separator: " or "))

@@ -27,12 +27,12 @@ private struct LaunchAtLoginToggle: View {
             .disabled(!available)
         if status == .requiresApproval {
             HStack {
-                Text("Allow Corvus in System Settings → General → Login Items.").font(.caption).foregroundStyle(.secondary)
+                Text("Allow Corvus in System Settings → General → Login Items.").font(TypeScale.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Open Login Items") { SMAppService.openSystemSettingsLoginItems() }
             }
         }
-        if let error { Text(error).font(.caption).foregroundStyle(.red) }
+        if let error { Text(error).font(TypeScale.caption).foregroundStyle(.red) }
     }
 
     private func set(_ on: Bool) {
@@ -85,10 +85,10 @@ private struct ProxySection: View {
                 .disabled(!enabled)
                 .onSubmit { if normalized != nil && target != saved { apply(target) } }
             if enabled && normalized == nil && !address.isEmpty {
-                Text("Enter a host name, host:port or a signal.tube link.").font(.caption).foregroundStyle(.red)
+                Text("Enter a host name, host:port or a signal.tube link.").font(TypeScale.caption).foregroundStyle(.red)
             } else {
                 Text("Signal TLS proxies only, the kind the Signal apps use. HTTP and SOCKS proxies are not supported.")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(TypeScale.caption).foregroundStyle(.secondary)
             }
             HStack {
                 Spacer()

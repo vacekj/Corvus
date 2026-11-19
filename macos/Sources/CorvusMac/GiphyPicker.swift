@@ -28,7 +28,7 @@ struct GiphyPicker: View {
                 .textFieldStyle(.roundedBorder)
                 .onSubmit { run(debounce: false) }
                 .onChange(of: query) { _, _ in run(debounce: true) }
-            Text(status).font(.caption).foregroundStyle(.secondary)
+            Text(status).font(TypeScale.caption).foregroundStyle(.secondary)
             ScrollView {
                 LazyVGrid(columns: Array(repeating: GridItem(.fixed(140), spacing: 6), count: 3), spacing: 6) {
                     ForEach(gifs) { g in
@@ -54,10 +54,10 @@ struct GiphyPicker: View {
                 }
             }
             HStack {
-                Link("Powered by GIPHY", destination: URL(string: "https://giphy.com")!).font(.caption)
+                Link("Powered by GIPHY", destination: URL(string: "https://giphy.com")!).font(TypeScale.caption)
                 Spacer()
                 if let onChangeKey {
-                    Button("Change API key …", action: onChangeKey).buttonStyle(.link).font(.caption)
+                    Button("Change API key …", action: onChangeKey).buttonStyle(.link).font(TypeScale.caption)
                 }
             }
         }

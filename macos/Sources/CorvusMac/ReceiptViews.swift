@@ -18,8 +18,8 @@ extension Message {
     }
 }
 
-/// Sent: one bare check; delivered: two muted bare checks; read: two bright bare checks.
-/// One stroked shape only — the double check is part of the same path, no overlapping SF Symbols.
+/// Signal's message status icons: dotted circle (sending), circled check (sent), two outlined circles
+/// (delivered), two filled circles (read), all in the colour of the time next to them.
 struct DeliveryTicks: View {
     let message: Message
     let pending: Bool
@@ -45,7 +45,7 @@ struct DeliveryTicks: View {
 
     private var ticks: some View {
         ReceiptTicks(status: pending ? nil : status)
-            .foregroundStyle(status >= 2 ? read : muted)
+            .foregroundStyle(muted)
     }
 
     // The hover text: for direct chats when the message was read (or delivered), for groups the
@@ -107,44 +107,37 @@ struct DeliveryTicks: View {
     }
 }
 
-/// The receipt check: (1,5)→(4,8)→(10,1) and, when double, a second (9,7)→(10,8)→(16,1).
-/// Single checks use an 11×10 frame, double checks 17×10; the stroke is 1.35 with round caps and joins.
-private struct ReceiptTickStroke: Shape {
-    let double: Bool
-
-    func path(in rect: CGRect) -> Path {
-        let baseWidth: CGFloat = double ? 17 : 11
-        let sx = rect.width / baseWidth, sy = rect.height / 10
-        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
-            CGPoint(x: rect.minX + x * sx, y: rect.minY + y * sy)
-        }
-        var p = Path()
-        p.move(to: point(1, 5))
-        p.addLine(to: point(4, 8))
-        p.addLine(to: point(10, 1))
-        if double {
-            p.move(to: point(9, 7))
-            p.addLine(to: point(10, 8))
-            p.addLine(to: point(16, 1))
-        }
-        return p
-    }
-}
-
-/// The receipt check shared by message rows and the chat list: nil while sending.
+/// The receipt icon shared by message rows and the chat list: nil while sending.
 struct ReceiptTicks: View {
     let status: Int?
 
     var body: some View {
-        if let status {
-            ReceiptTickStroke(double: status >= 1)
-                .stroke(.foreground, style: StrokeStyle(lineWidth: 1.35, lineCap: .round, lineJoin: .round))
-                .frame(width: status >= 1 ? 17 : 11, height: 10)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(Message.receiptLabel(status))
-        } else {
-            Image(systemName: "circle.dotted").accessibilityLabel("Sending")
+        let (name, width): (String, CGFloat) = switch status {
+        case nil: ("sending", 12)
+        case 0?: ("sent", 12)
+        case 1?: ("delivered", 18)
+        default: ("read", 18)
         }
+        Image(nsImage: ReceiptIcons.image(name))
+            .renderingMode(.template)
+            .resizable()
+            .frame(width: width, height: 12)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(status.map { Message.receiptLabel($0) } ?? "Sending")
+    }
+}
+
+/// The four status SVGs from Signal Desktop, loaded once as template images.
+@MainActor
+enum ReceiptIcons {
+    private static var cache: [String: NSImage] = [:]
+
+    static func image(_ name: String) -> NSImage {
+        if let i = cache[name] { return i }
+        let i = AppResources.bundle.image(forResource: "messagestatus-" + name) ?? NSImage()
+        i.isTemplate = true
+        cache[name] = i
+        return i
     }
 }
 
@@ -156,7 +149,7 @@ struct MessageInfoSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Message info").font(.title3.weight(.semibold))
+            Text("Message info").font(TypeScale.title3.weight(.semibold))
             if let found = model.message(withId: messageId), let c = model.currentConversation {
                 let m = found.message
                 LabeledContent("Sent", value: m.time.formatted(date: .abbreviated, time: .standard))
@@ -169,7 +162,7 @@ struct MessageInfoSheet: View {
                             GridRow {
                                 Text("Recipient"); Text("Status"); Text("Delivered"); Text("Read")
                             }
-                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            .font(TypeScale.caption.weight(.semibold)).foregroundStyle(.secondary)
                             Divider()
                             ForEach(rows, id: \.key) { key, r in
                                 GridRow {

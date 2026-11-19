@@ -34,10 +34,10 @@ struct AddStickerPackField: View {
                 }
             }
             if let error {
-                Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+                Text(error).font(TypeScale.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
             } else if !text.isEmpty && link == nil {
                 Text("Not a Signal sticker pack link (https://signal.art/addstickers/#pack_id=…&pack_key=…).")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    .font(TypeScale.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
         }
         .frame(minWidth: 300)

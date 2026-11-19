@@ -19,7 +19,7 @@ struct StoriesSheet: View {
         HStack(spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 HStack {
-                    Text("Stories").font(.title3.weight(.semibold))
+                    Text("Stories").font(TypeScale.title3.weight(.semibold))
                     Spacer()
                     Menu {
                         Button("My Story …") { post(group: nil) }
@@ -42,10 +42,10 @@ struct StoriesSheet: View {
                         Circle().strokeBorder(st.viewed || st.outgoing ? Color.secondary.opacity(0.4) : Theme.signalBlue, lineWidth: 2.5)
                             .frame(width: 34, height: 34)
                             .overlay(Image(systemName: st.attachment?.isVideo == true ? "film" : (st.attachment == nil ? "textformat" : "photo"))
-                                        .font(.caption))
+                                        .font(TypeScale.caption))
                         VStack(alignment: .leading, spacing: 2) {
                             Text(model.storyTitle(st)).fontWeight(st.viewed ? .regular : .semibold).lineLimit(1)
-                            Text(st.time.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary)
+                            Text(st.time.formatted(.relative(presentation: .named))).font(TypeScale.caption).foregroundStyle(.secondary)
                         }
                     }
                     .tag(st.id)
@@ -53,11 +53,11 @@ struct StoriesSheet: View {
                 .listStyle(.sidebar)
                 if stories.isEmpty {
                     Text("No stories in the last 24 hours.\nStories received while Corvus is running appear here.")
-                        .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding()
+                        .font(TypeScale.caption).foregroundStyle(.secondary).multilineTextAlignment(.center).padding()
                 }
                 Divider()
                 HStack {
-                    Text("← → to switch stories").font(.caption).foregroundStyle(.secondary)
+                    Text("← → to switch stories").font(TypeScale.caption).foregroundStyle(.secondary)
                     Spacer()
                     Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
                 }
@@ -165,7 +165,7 @@ private struct StoryViewer: View {
                 .disabled(!model.connected)
             } else {
                 Text(story.outgoing ? "Your story" : "Replies are turned off for this story")
-                    .font(.caption).foregroundStyle(.secondary).padding(10)
+                    .font(TypeScale.caption).foregroundStyle(.secondary).padding(10)
             }
         }
         .task { await load() }

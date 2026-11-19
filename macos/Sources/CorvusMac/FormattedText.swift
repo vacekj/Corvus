@@ -31,7 +31,7 @@ struct FormattedMessageText: View {
                 text(cut.map { Self.shortened(full, b.text, at: $0) } ?? full)
                 Button("Read more") { readMore(shown: cut.map { b.text.distance(from: b.text.startIndex, to: $0) } ?? b.text.count) }
                     .buttonStyle(.plain)
-                    .font(.system(size: Self.size, weight: .semibold))
+                    .font(.inter(Self.size, weight: .semibold))
                     .foregroundStyle(foreground)
             }
         } else {
@@ -135,7 +135,9 @@ struct FormattedMessageText: View {
                   let ar = Range(r, in: s) else { continue }
             var weight: Font.Weight = run.styles.contains(.bold) ? .bold : .regular
             if run.mention != nil && weight == .regular { weight = .semibold }
-            var font = Font.system(size: DisplaySettings.shared.size(Self.size), weight: weight, design: run.styles.contains(.monospace) ? .monospaced : .default)
+            let size = DisplaySettings.shared.size(Self.size)
+            var font = run.styles.contains(.monospace) ? Font.system(size: size, weight: weight, design: .monospaced)
+                : Font.inter(size, weight: weight)
             if run.styles.contains(.italic) { font = font.italic() }
             s[ar].font = font
             if run.styles.contains(.strikethrough) { s[ar].strikethroughStyle = .single }

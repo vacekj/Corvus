@@ -45,8 +45,8 @@ struct GiphyKeyForm: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             if !compact {
-                Text("GIPHY API key").font(.headline)
-                Text("GIF search needs a free API key from GIPHY.").font(.callout).foregroundStyle(.secondary)
+                Text("GIPHY API key").font(TypeScale.headline)
+                Text("GIF search needs a free API key from GIPHY.").font(TypeScale.callout).foregroundStyle(.secondary)
             }
             HStack {
                 SecureField("API key", text: $text)
@@ -61,7 +61,7 @@ struct GiphyKeyForm: View {
                 Spacer()
                 if let e = error ?? loadError { Text(e).foregroundStyle(.red).lineLimit(2) }
             }
-            .font(.caption)
+            .font(TypeScale.caption)
         }
         .onAppear {
             if !loaded { text = initial; loaded = true }

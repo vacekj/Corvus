@@ -142,7 +142,7 @@ struct EmojiPicker: View {
                 SkinToneMenu()
             }
             if search.isEmpty {
-                Text(category).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                Text(category).font(TypeScale.caption.weight(.semibold)).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.leading, 2)
             }
@@ -158,7 +158,7 @@ struct EmojiPicker: View {
                         categoryButton(Self.recentKey) { Image(systemName: "clock").font(.system(size: 15)) }
                     }
                     ForEach(EmojiCatalog.categories, id: \.key) { c in
-                        categoryButton(c.key) { Text(c.icon).font(.title3) }
+                        categoryButton(c.key) { Text(c.icon).font(TypeScale.title3) }
                     }
                 }
             }

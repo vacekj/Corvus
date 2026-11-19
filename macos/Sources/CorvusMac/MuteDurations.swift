@@ -109,7 +109,7 @@ struct MuteInfoRow: View {
                 let now = Int64(context.date.timeIntervalSince1970 * 1000)
                 let until = Date(timeIntervalSince1970: Double(c.muteUntilMs) / 1000)
                 Text("Muted until \(until.formatted(Self.untilStyle(until))) · \(MuteText.remaining(untilMs: c.muteUntilMs, now: now)) left")
-                    .font(.caption)
+                    .font(TypeScale.caption)
                     .foregroundStyle(.secondary)
             }
         }

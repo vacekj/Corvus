@@ -116,7 +116,7 @@ struct ProfileEditor: View {
                 }
             }
             HStack {
-                if let status { Text(status.text).foregroundStyle(status.error ? .red : .secondary).font(.callout) }
+                if let status { Text(status.text).foregroundStyle(status.error ? .red : .secondary).font(TypeScale.callout) }
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
                 Button("Revert") { fill(from: saved) }.disabled(!dirty || busy)
@@ -147,7 +147,7 @@ struct ProfileEditor: View {
             .frame(width: 64, height: 64)
             .clipShape(Circle())
             VStack(alignment: .leading, spacing: 3) {
-                Text(saved.name.isEmpty ? "No profile name" : saved.name).font(.title3.weight(.semibold))
+                Text(saved.name.isEmpty ? "No profile name" : saved.name).font(TypeScale.title3.weight(.semibold))
                 if !saved.aboutLine.isEmpty { Text(saved.aboutLine).foregroundStyle(.secondary).lineLimit(2) }
                 if !saved.username.isEmpty { Text(saved.username).foregroundStyle(.secondary).textSelection(.enabled) }
                 HStack(spacing: 12) {
@@ -185,13 +185,13 @@ struct ProfileEditor: View {
                     .disabled(usernameBusy || Username.problem(usernameText) != nil)
             }
             if !usernameText.isEmpty, let p = Username.problem(usernameText) {
-                Text(p).font(.caption).foregroundStyle(.secondary)
+                Text(p).font(TypeScale.caption).foregroundStyle(.secondary)
             }
             if let usernameError { InlineError(text: usernameError) }
             if let usernameLink {
                 LabeledContent("Link") {
                     HStack {
-                        Text(usernameLink).font(.caption.monospaced()).lineLimit(1).truncationMode(.middle)
+                        Text(usernameLink).font(TypeScale.caption.monospaced()).lineLimit(1).truncationMode(.middle)
                             .textSelection(.enabled)
                         Button { copy(usernameLink, "Username link copied.") } label: { Image(systemName: "doc.on.doc") }
                             .buttonStyle(.borderless)

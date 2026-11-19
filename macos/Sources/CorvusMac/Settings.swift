@@ -52,7 +52,7 @@ struct Appearance: Equatable {
     var outText: String?
     var inBg: String?         // received messages
     var inText: String?
-    var radius = 16           // bubble corner radius in points
+    var radius = 18           // bubble corner radius in points (Signal: 18)
     var showAvatars = true    // contact avatars in the chat list
     var generateLinkPreviews = true // preview card for the first https link of a message you send
 
@@ -61,19 +61,11 @@ struct Appearance: Equatable {
     ]
 
     // Defaults (adapt to the system appearance where it makes sense).
-    static let defaultBackground = NSColor.textBackgroundColor
-    static let defaultOutBg = NSColor(srgbRed: 0x2c / 255, green: 0x6b / 255, blue: 0xed / 255, alpha: 1) // Signal blue
+    static let defaultBackground = Theme.dynamic(0xfafafa, 0x191919) // Signal: surface-primary
+    static let defaultOutBg = Theme.rgb(0x2267f5) // Signal blue
     static let defaultOutText = NSColor.white
-    static let defaultInBg = NSColor(name: nil) { a in
-        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0x3a / 255, green: 0x3a / 255, blue: 0x3c / 255, alpha: 1)
-            : NSColor(srgbRed: 0xe9 / 255, green: 0xe9 / 255, blue: 0xeb / 255, alpha: 1)
-    }
-    static let defaultInText = NSColor(name: nil) { a in
-        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0xee / 255, green: 0xee / 255, blue: 0xee / 255, alpha: 1)
-            : NSColor(srgbRed: 0x1b / 255, green: 0x1b / 255, blue: 0x1b / 255, alpha: 1)
-    }
+    static let defaultInBg = Theme.dynamic(0xebebeb, 0x323232)
+    static let defaultInText = Theme.dynamic(0x1a1a1a, 0xe6e6e6)
 
     var backgroundColor: Color { Color(nsColor: Appearance.color(background) ?? Appearance.defaultBackground) }
     var outBgColor: Color { Color(nsColor: Appearance.color(outBg) ?? Appearance.defaultOutBg) }
@@ -117,7 +109,7 @@ struct Appearance: Equatable {
         for (name, kp) in Appearance.colorKeys {
             if let v = self[keyPath: kp] { d.set(v, forKey: p + name) } else { d.removeObject(forKey: p + name) }
         }
-        if radius == 16 { d.removeObject(forKey: p + "radius") } else { d.set(radius, forKey: p + "radius") }
+        if radius == 18 { d.removeObject(forKey: p + "radius") } else { d.set(radius, forKey: p + "radius") }
         if showAvatars { d.removeObject(forKey: p + "showAvatars") } else { d.set(false, forKey: p + "showAvatars") }
         if generateLinkPreviews { d.removeObject(forKey: p + "generateLinkPreviews") } else { d.set(false, forKey: p + "generateLinkPreviews") }
     }

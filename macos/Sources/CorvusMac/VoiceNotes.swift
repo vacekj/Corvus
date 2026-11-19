@@ -304,7 +304,7 @@ struct VoiceNoteView: View {
             .help(active && audio.playing ? "Pause" : "Play")
             VStack(alignment: .leading, spacing: 4) {
                 if !attachment.filename.isEmpty {
-                    Text(attachment.filename).font(.caption).lineLimit(1).truncationMode(.middle)
+                    Text(attachment.filename).font(TypeScale.caption).lineLimit(1).truncationMode(.middle)
                 }
                 VoiceNoteWaveform(bars: info?.bars, active: active, scrub: scrub, played: played,
                                   rest: foreground.opacity(0.35))
@@ -327,7 +327,7 @@ struct VoiceNoteView: View {
                     if active && audio.ready {
                         Button { audio.cycleSpeed() } label: {
                             Text(Waveform.speedLabel(audio.speed))
-                                .font(.caption2.weight(.semibold).monospacedDigit())
+                                .font(TypeScale.caption2.weight(.semibold).monospacedDigit())
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 1)
                                 .background(Capsule().fill(foreground.opacity(0.18)))
@@ -391,7 +391,7 @@ private struct VoiceNoteTime: View {
         // Like Signal: the remaining time while playing, the length otherwise.
         let shown = active && a.ready ? max(0, total - a.position) : total
         Text(Waveform.time(shown))
-            .font(.caption2.monospacedDigit())
+            .font(TypeScale.caption2.monospacedDigit())
             .opacity(0.75)
     }
 }

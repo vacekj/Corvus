@@ -312,16 +312,16 @@ struct ImageViewerOverlay: View {
                 Text(item.title).foregroundStyle(.white.opacity(0.8)).lineLimit(1)
             } else {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(item.sender).font(.headline).foregroundStyle(.white).lineLimit(1)
+                    Text(item.sender).font(TypeScale.headline).foregroundStyle(.white).lineLimit(1)
                     if let d = item.date {
                         Text(d.formatted(date: .abbreviated, time: .shortened))
-                            .font(.caption)
+                            .font(TypeScale.caption)
                             .foregroundStyle(.white.opacity(0.7))
                     }
                 }
                 if viewer.refs.count > 1 {
                     Text("\(viewer.position + 1) of \(viewer.refs.count)")
-                        .font(.caption.monospacedDigit())
+                        .font(TypeScale.caption.monospacedDigit())
                         .foregroundStyle(.white.opacity(0.6))
                 }
             }

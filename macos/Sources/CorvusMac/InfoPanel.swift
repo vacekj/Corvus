@@ -52,9 +52,9 @@ struct ConversationInfoPanel: View {
         let detail = c.isGroup ? groupLine(c) : model.chatDetail(c)
         return VStack(spacing: 6) {
             AvatarView(image: model.avatarImage(c), size: 72)
-            Text(model.visibleTitle(c)).font(.title3.weight(.semibold)).multilineTextAlignment(.center).textSelection(.enabled)
+            Text(model.visibleTitle(c)).font(TypeScale.title3.weight(.semibold)).multilineTextAlignment(.center).textSelection(.enabled)
             if !detail.isEmpty {
-                Text(detail).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+                Text(detail).font(TypeScale.callout).foregroundStyle(.secondary).textSelection(.enabled)
             }
         }
         .frame(maxWidth: .infinity)
@@ -112,7 +112,7 @@ private struct SharedMediaSection: View {
     var body: some View {
         let items = recent(6)
         VStack(alignment: .leading, spacing: 8) {
-            Text("Shared media").font(.headline)
+            Text("Shared media").font(TypeScale.headline)
             if !items.isEmpty {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 6), count: 3), spacing: 6) {
                     ForEach(items) { it in

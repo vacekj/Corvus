@@ -1,30 +1,27 @@
 import AppKit
 import SwiftUI
 
-/// Colours and metrics shared by the views (close to the official Signal desktop client).
+/// Colours and metrics shared by the views (Signal Desktop's own design tokens, light / dark).
 enum Theme {
-    static let signalBlue = Color(red: 0x2c / 255, green: 0x6b / 255, blue: 0xed / 255)
+    static let signalBlue = Color(nsColor: rgb(0x2267f5))
 
-    /// Background of the chat list and composer (slightly different from the chat area).
-    static let chrome = Color(nsColor: NSColor(name: nil) { a in
-        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.13, green: 0.13, blue: 0.14, alpha: 1)
-            : NSColor(srgbRed: 0.97, green: 0.97, blue: 0.98, alpha: 1)
-    })
+    static func rgb(_ v: UInt32) -> NSColor {
+        NSColor(srgbRed: CGFloat((v >> 16) & 0xff) / 255, green: CGFloat((v >> 8) & 0xff) / 255,
+                blue: CGFloat(v & 0xff) / 255, alpha: 1)
+    }
 
-    /// Filled background of the message field.
-    static let field = Color(nsColor: NSColor(name: nil) { a in
-        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.20, green: 0.20, blue: 0.21, alpha: 1)
-            : NSColor(srgbRed: 0.92, green: 0.92, blue: 0.93, alpha: 1)
-    })
+    static func dynamic(_ light: UInt32, _ dark: UInt32) -> NSColor {
+        NSColor(name: nil) { a in a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? rgb(dark) : rgb(light) }
+    }
 
-    /// Background of the selected chat in the chat list.
-    static let selection = Color(nsColor: NSColor(name: nil) { a in
-        a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.26, green: 0.26, blue: 0.28, alpha: 1)
-            : NSColor(srgbRed: 0.86, green: 0.86, blue: 0.88, alpha: 1)
-    })
+    /// Background of the chat list and composer (Signal: surface-secondary).
+    static let chrome = Color(nsColor: dynamic(0xf5f5f5, 0x1e1e1e))
+
+    /// Filled background of the message field (surface-tertiary).
+    static let field = Color(nsColor: dynamic(0xebebeb, 0x2e2e2e))
+
+    /// Background of the selected chat in the chat list (surface-quaternary).
+    static let selection = Color(nsColor: dynamic(0xe1e1e1, 0x373737))
 
     /// Stable colour per contact for sender names in groups (readable on light and dark bubbles).
     static func senderColor(_ key: String) -> Color {
@@ -41,6 +38,46 @@ enum Theme {
 
     /// Messages of the same author within this time form one group (joined bubbles, one avatar).
     static let groupGapMs: Int64 = 3 * 60 * 1000
+}
+
+/// Inter, the typeface of Signal Desktop, bundled with the app and registered at launch.
+enum Fonts {
+    static let family = "Inter"
+
+    static func register() {
+        guard let e = FileManager.default.enumerator(at: AppResources.bundle.bundleURL, includingPropertiesForKeys: nil)
+        else { return }
+        let urls = e.compactMap { $0 as? URL }.filter { $0.pathExtension == "otf" }
+        CTFontManagerRegisterFontURLs(urls as CFArray, .process, true, nil)
+    }
+
+    static func ns(_ size: CGFloat, weight: NSFont.Weight = .regular) -> NSFont {
+        let d = NSFontDescriptor(fontAttributes: [.family: family])
+            .addingAttributes([.traits: [NSFontDescriptor.TraitKey.weight: weight]])
+        return NSFont(descriptor: d, size: size) ?? .systemFont(ofSize: size, weight: weight)
+    }
+}
+
+extension Font {
+    /// Inter at a fixed size (scaled by the caller where the text size setting applies).
+    static func inter(_ size: CGFloat, weight: Font.Weight = .regular) -> Font {
+        .custom(Fonts.family, fixedSize: size).weight(weight)
+    }
+}
+
+/// Signal Desktop's type scale in Inter, in place of the system text styles.
+enum TypeScale {
+    static let largeTitle = Font.inter(26, weight: .semibold)
+    static let title = Font.inter(20, weight: .semibold)
+    static let title2 = Font.inter(17, weight: .semibold)
+    static let title3 = Font.inter(15, weight: .semibold)
+    static let headline = Font.inter(14, weight: .semibold)
+    static let body = Font.inter(14)
+    static let callout = Font.inter(13)
+    static let subheadline = Font.inter(12)
+    static let footnote = Font.inter(12)
+    static let caption = Font.inter(12)
+    static let caption2 = Font.inter(11)
 }
 
 /// Small round avatar from the model's cache (or the letter placeholder).

@@ -67,10 +67,10 @@ final class DisplaySettings {
     /// A font size scaled by the text size setting.
     func size(_ base: CGFloat) -> CGFloat { (base * textZoom).rounded() }
 
-    // Sizes of the system text styles, scaled.
-    static let bodySize = NSFont.systemFontSize
-    static let captionSize = NSFont.preferredFont(forTextStyle: .caption1).pointSize
-    static let caption2Size = NSFont.preferredFont(forTextStyle: .caption2).pointSize
+    // Signal Desktop's sizes: body, chat list preview, chat list date.
+    static let bodySize: CGFloat = 14
+    static let captionSize: CGFloat = 13
+    static let caption2Size: CGFloat = 12
 
     func zoomIn() { set(TextZoomLevels.larger(textZoom)) }
     func zoomOut() { set(TextZoomLevels.smaller(textZoom)) }

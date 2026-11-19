@@ -10,6 +10,7 @@ struct ContentView: View {
         @Bindable var model = model
         NavigationSplitView {
             Sidebar()
+                .background(Theme.chrome.ignoresSafeArea()) // solid like Signal's, not the translucent material
                 .navigationSplitViewColumnWidth(min: 240, ideal: 290, max: 420)
         } detail: {
             VStack(spacing: 0) {
@@ -123,7 +124,7 @@ private struct ChatHeader: View {
         HStack(spacing: 10) {
             AvatarView(image: model.avatarImage(c), size: 30)
             VStack(alignment: .leading, spacing: 0) {
-                Text(model.visibleTitle(c)).font(.headline).lineLimit(1)
+                Text(model.visibleTitle(c)).font(TypeScale.headline).lineLimit(1)
                 HStack(spacing: 6) {
                     if let typing = model.typingLabel(c.key) {
                         Text(typing).foregroundStyle(Theme.signalBlue)
@@ -136,7 +137,7 @@ private struct ChatHeader: View {
                     if model.isBlocked(c.key) { Label("Blocked", systemImage: "nosign") }
                 }
                 .labelStyle(.titleAndIcon)
-                .font(.caption)
+                .font(TypeScale.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             }
@@ -157,7 +158,7 @@ private struct Welcome: View {
                     .font(.system(size: 44))
                     .foregroundStyle(Theme.signalBlue)
             }
-            Text("Welcome to Corvus").font(.title2.weight(.semibold))
+            Text("Welcome to Corvus").font(TypeScale.title2.weight(.semibold))
             HStack(spacing: 8) {
                 if !model.historyReady { ProgressView().controlSize(.small) }
                 Text(model.historyReady
@@ -184,7 +185,7 @@ private struct Toast: View {
     let text: String
     var body: some View {
         Text(text)
-            .font(.callout)
+            .font(TypeScale.callout)
             .lineLimit(3)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 14)
@@ -326,7 +327,7 @@ private struct Sidebar: View {
                                     .padding(.vertical, 4)
                             }
                             Text("Archived chats")
-                                .font(.caption.weight(.semibold))
+                                .font(TypeScale.caption.weight(.semibold))
                                 .foregroundStyle(.secondary)
                         }
                         if !q.isEmpty && !list.isEmpty && !messageHits.isEmpty { SidebarSectionHeader(title: "Chats") }
@@ -345,6 +346,7 @@ private struct Sidebar: View {
                         }
                     }
                     .listStyle(.sidebar)
+                    .scrollContentBackground(.hidden)
                     // With the list focused (Tab), ↑ / ↓ open the chat above / below.
                     .onMoveCommand { direction in
                         switch direction {
@@ -479,21 +481,21 @@ private struct ConversationRow: View, Equatable {
     var body: some View {
         let c = item
         let d = DisplaySettings.shared // text size (Settings → Appearance, ⌘+ / ⌘-)
-        HStack(spacing: 10) {
+        HStack(spacing: 12) {
             if let avatar = c.avatar {
-                AvatarView(image: avatar, size: d.size(40))
+                AvatarView(image: avatar, size: d.size(48))
             }
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
                     Text(c.title)
-                        .font(.system(size: d.size(13), weight: c.unread > 0 ? .bold : .semibold))
+                        .font(.inter(d.size(14), weight: c.unread > 0 ? .bold : .semibold))
                         .lineLimit(1)
                     if c.muted { Image(systemName: "bell.slash.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
                     if c.blocked { Image(systemName: "nosign").font(.system(size: 9)).foregroundStyle(.red) }
                     Spacer(minLength: 4)
                     if c.pinned { Image(systemName: "pin.fill").font(.system(size: 9)).foregroundStyle(.secondary) }
                     Text(c.time)
-                        .font(.system(size: d.size(DisplaySettings.caption2Size)))
+                        .font(.inter(d.size(DisplaySettings.caption2Size)))
                         .foregroundStyle(c.unread > 0 ? Theme.signalBlue : .secondary)
                 }
                 HStack(spacing: 4) {
@@ -508,8 +510,7 @@ private struct ConversationRow: View, Equatable {
                             .accessibilityLabel("Failed to send")
                     } else if let status = c.lastStatus, c.unread == 0 {
                         ReceiptTicks(status: status < 0 ? nil : status)
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(status >= 2 ? Color.primary : Color.secondary) // as in the bubbles: read is the full colour
+                            .foregroundStyle(.secondary)
                     }
                     if c.markedUnread && c.unread == 0 {
                         Circle().fill(c.muted ? Color.secondary : Theme.signalBlue).frame(width: 10, height: 10)
@@ -517,16 +518,16 @@ private struct ConversationRow: View, Equatable {
                     }
                     if c.unread > 0 {
                         Text(c.unread > 99 ? "99+" : "\(c.unread)")
-                            .font(.system(size: 10, weight: .bold))
+                            .font(.inter(11, weight: .semibold))
                             .foregroundStyle(.white)
-                            .padding(.horizontal, 6)
+                            .padding(.horizontal, 5)
                             .frame(minWidth: 18, minHeight: 18)
                             .background(Capsule().fill(c.muted ? Color.secondary : Theme.signalBlue))
                     }
                 }
             }
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 8)
     }
 }
 
@@ -618,9 +619,9 @@ private struct SidebarRow<Content: View>: View {
 
     var body: some View {
         content
-            .padding(.horizontal, 8)
+            .padding(.horizontal, 12)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(RoundedRectangle(cornerRadius: 8).fill(selected ? Theme.selection : .clear))
+            .background(RoundedRectangle(cornerRadius: 10).fill(selected ? Theme.selection : .clear))
             .contentShape(Rectangle())
             .gesture(DragGesture(minimumDistance: 0)
                 .onChanged { _ in
@@ -715,7 +716,7 @@ private struct ConnectionFooter: View {
             }
             .padding(.horizontal, 12)
         }
-        .font(.caption)
+        .font(TypeScale.caption)
         .foregroundStyle(.secondary)
         .padding(.bottom, 8)
     }

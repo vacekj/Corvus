@@ -77,7 +77,7 @@ private struct ChatPopupContent: View {
             if let error {
                 HStack {
                     Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Text(error).font(.caption).lineLimit(2)
+                    Text(error).font(TypeScale.caption).lineLimit(2)
                     Spacer()
                     Button { self.error = nil } label: { Image(systemName: "xmark") }
                         .buttonStyle(.borderless)
@@ -116,11 +116,11 @@ private struct ChatPopupContent: View {
         HStack(spacing: 8) {
             AvatarView(image: model.avatarImage(c), size: 26)
             VStack(alignment: .leading, spacing: 0) {
-                Text(model.visibleTitle(c)).font(.headline).lineLimit(1)
+                Text(model.visibleTitle(c)).font(TypeScale.headline).lineLimit(1)
                 if let typing = model.typingLabel(c.key) {
-                    Text(typing).font(.caption).foregroundStyle(Theme.signalBlue).lineLimit(1)
+                    Text(typing).font(TypeScale.caption).foregroundStyle(Theme.signalBlue).lineLimit(1)
                 } else if c.isGroup {
-                    Text("Group").font(.caption).foregroundStyle(.secondary)
+                    Text("Group").font(TypeScale.caption).foregroundStyle(.secondary)
                 }
             }
         }
@@ -131,8 +131,8 @@ private struct ChatPopupContent: View {
             RoundedRectangle(cornerRadius: 2).fill(Theme.signalBlue).frame(width: 3)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Reply to " + (quote.authorKey == model.account ? "yourself" : model.displayName(quote.authorKey)))
-                    .font(.caption.weight(.semibold))
-                Text(quote.text.isEmpty ? "Attachment" : quote.text).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(TypeScale.caption.weight(.semibold))
+                Text(quote.text.isEmpty ? "Attachment" : quote.text).font(TypeScale.caption).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer()
             Button { quote = Quote() } label: { Image(systemName: "xmark.circle.fill") }
@@ -238,7 +238,7 @@ private struct PopupMessageList: View, Equatable {
                         let prev = i > 0 ? msgs[i - 1] : nil
                         if prev.map({ !Calendar.current.isDate($0.time, inSameDayAs: m.time) }) ?? true {
                             Text(m.time.formatted(date: .abbreviated, time: .omitted))
-                                .font(.caption.weight(.medium))
+                                .font(TypeScale.caption.weight(.medium))
                                 .foregroundStyle(.secondary)
                                 .padding(.vertical, 6)
                         }
@@ -282,7 +282,7 @@ private struct PopupBubble: View {
                 VStack(alignment: .leading, spacing: 5) {
                     if showSender {
                         Text(m.sender.isEmpty ? model.displayName(m.authorKey) : m.sender)
-                            .font(.caption.weight(.semibold))
+                            .font(TypeScale.caption.weight(.semibold))
                             .foregroundStyle(Theme.senderColor(m.authorKey))
                     }
                     if m.quote.valid && !m.deleted { quoteView(m.quote, fg) }
@@ -294,7 +294,7 @@ private struct PopupBubble: View {
                             DeliveryTicks(message: m, pending: pending, isGroup: isGroup, muted: fg.opacity(0.7), read: fg)
                         }
                     }
-                    .font(.caption2)
+                    .font(TypeScale.caption2)
                     .foregroundStyle(fg.opacity(0.7))
                     .frame(maxWidth: .infinity, alignment: .trailing)
                 }
@@ -340,8 +340,8 @@ private struct PopupBubble: View {
         HStack(spacing: 6) {
             RoundedRectangle(cornerRadius: 2).fill(fg.opacity(0.8)).frame(width: 3)
             VStack(alignment: .leading, spacing: 1) {
-                Text(q.authorKey == model.account ? "You" : model.displayName(q.authorKey)).font(.caption.weight(.semibold))
-                Text(q.text.isEmpty ? "Attachment" : q.text).font(.caption).lineLimit(2)
+                Text(q.authorKey == model.account ? "You" : model.displayName(q.authorKey)).font(TypeScale.caption.weight(.semibold))
+                Text(q.text.isEmpty ? "Attachment" : q.text).font(TypeScale.caption).lineLimit(2)
             }
         }
         .foregroundStyle(fg)
@@ -352,7 +352,7 @@ private struct PopupBubble: View {
     private func reactions(_ m: Message) -> some View {
         let counts = Dictionary(grouping: m.reactions.values, by: { $0 }).map { ($0.key, $0.value.count) }.sorted { $0.1 > $1.1 }
         return HStack(spacing: 4) {
-            ForEach(counts, id: \.0) { emoji, n in Text(n > 1 ? "\(emoji) \(n)" : emoji).font(.caption) }
+            ForEach(counts, id: \.0) { emoji, n in Text(n > 1 ? "\(emoji) \(n)" : emoji).font(TypeScale.caption) }
         }
         .padding(.horizontal, 6).padding(.vertical, 2)
         .background(Capsule().fill(.regularMaterial))
@@ -391,7 +391,7 @@ private struct PopupBubble: View {
 
     static func linkified(_ text: String) -> AttributedString {
         var s = AttributedString(text)
-        s.font = .system(size: NSFont.systemFontSize + 1)
+        s.font = .inter(NSFont.systemFontSize + 1)
         guard let detector = linkDetector else { return s }
         for match in detector.matches(in: text, range: NSRange(location: 0, length: (text as NSString).length)) {
             guard let url = match.url, ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? ""),
@@ -485,7 +485,7 @@ private struct PopupTextInput: NSViewRepresentable {
         tv.isRichText = false
         tv.allowsUndo = true
         tv.drawsBackground = false
-        tv.font = .systemFont(ofSize: NSFont.systemFontSize + 1)
+        tv.font = Fonts.ns(14)
         tv.textContainerInset = NSSize(width: 0, height: 2)
         tv.isVerticallyResizable = true
         tv.isHorizontallyResizable = false

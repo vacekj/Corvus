@@ -53,14 +53,14 @@ struct NewGroupSheet: View {
     var body: some View {
         let title = name.trimmingCharacters(in: .whitespacesAndNewlines)
         VStack(alignment: .leading, spacing: 10) {
-            Text("New group").font(.title3.weight(.semibold))
+            Text("New group").font(TypeScale.title3.weight(.semibold))
             TextField("Group name", text: $name).textFieldStyle(.roundedBorder)
             TextField("Description (optional)", text: $about, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...3)
-            Text("Members").font(.headline)
+            Text("Members").font(TypeScale.headline)
             ContactPicker(selection: $members).frame(height: 340)
-            if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            if let error { Text(error).font(TypeScale.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack {
                 if busy { ProgressView().controlSize(.small) }
                 Spacer()
@@ -143,12 +143,12 @@ struct GroupInfoPanel: View {
             }
             GroupPhotoButton(key: key)
         } else if !g.description.isEmpty {
-            Text(g.description).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
+            Text(g.description).font(TypeScale.callout).foregroundStyle(.secondary).textSelection(.enabled)
         }
 
         Divider()
         HStack {
-            Text("\(g.members.count) member\(g.members.count == 1 ? "" : "s")").font(.headline)
+            Text("\(g.members.count) member\(g.members.count == 1 ? "" : "s")").font(TypeScale.headline)
             Spacer()
             Button { addShown = true } label: { Label("Add members …", systemImage: "person.badge.plus") }
                 .buttonStyle(.borderless)
@@ -168,7 +168,7 @@ struct GroupInfoPanel: View {
         }
 
         if !g.pending.isEmpty {
-            Text("Invited").font(.headline).padding(.top, 4)
+            Text("Invited").font(TypeScale.headline).padding(.top, 4)
             ForEach(g.pending, id: \.self) { m in
                 HStack(spacing: 4) {
                     PickerRow(person: model.memberPerson(m))
@@ -177,7 +177,7 @@ struct GroupInfoPanel: View {
             }
         }
         if !g.requesting.isEmpty {
-            Text("Join requests").font(.headline).padding(.top, 4)
+            Text("Join requests").font(TypeScale.headline).padding(.top, 4)
             ForEach(g.requesting, id: \.self) { m in
                 HStack(spacing: 4) {
                     PickerRow(person: model.memberPerson(m))
@@ -198,7 +198,7 @@ struct GroupInfoPanel: View {
             GroupPermissionsSection(group: g)
         }
 
-        if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+        if let error { Text(error).font(TypeScale.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
         if busy { ProgressView().controlSize(.small) }
     }
 
@@ -215,7 +215,7 @@ struct GroupInfoPanel: View {
                 MemberLabelBadge(text: m.labelText)
             }
             if m.isAdmin {
-                Text("Admin").font(.caption2.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2)
+                Text("Admin").font(TypeScale.caption2.weight(.semibold)).padding(.horizontal, 6).padding(.vertical, 2)
                     .background(Capsule().fill(Theme.signalBlue.opacity(0.15))).foregroundStyle(Theme.signalBlue)
             }
             if admin && !isMe {
@@ -268,9 +268,9 @@ struct AddMembersSheet: View {
     var body: some View {
         let existing = Set((model.roster.groups[key]?.members ?? []).flatMap { [$0.number, $0.uuid] }.filter { !$0.isEmpty })
         VStack(alignment: .leading, spacing: 10) {
-            Text("Add members").font(.title3.weight(.semibold))
+            Text("Add members").font(TypeScale.title3.weight(.semibold))
             ContactPicker(selection: $selection, exclude: existing).frame(height: 280)
-            if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            if let error { Text(error).font(TypeScale.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             HStack {
                 if busy { ProgressView().controlSize(.small) }
                 Spacer()

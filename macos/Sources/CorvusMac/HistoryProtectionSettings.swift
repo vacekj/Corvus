@@ -42,7 +42,7 @@ struct HistoryProtectionSection: View {
                         // Keychain → passphrase
                         newPassphraseFields
                         Text("If you forget the passphrase, your chat history cannot be recovered.")
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(TypeScale.caption).foregroundStyle(.secondary)
                         actionRow("Use passphrase", enabled: PassphrasePolicy.isAcceptable(new: new, repeated: repeated))
                     }
                 } else if active == .passphrase {
@@ -73,13 +73,13 @@ struct HistoryProtectionSection: View {
         SecureField(changingPassphrase ? "New passphrase" : "Passphrase", text: $new)
         SecureField("Repeat passphrase", text: $repeated).onSubmit(apply)
         if let p = PassphrasePolicy.problem(new: new, repeated: repeated), !p.isEmpty {
-            Text(p).font(.caption).foregroundStyle(.red)
+            Text(p).font(TypeScale.caption).foregroundStyle(.red)
         }
     }
 
     private func actionRow(_ title: String, enabled: Bool, cancel: (() -> Void)? = nil) -> some View {
         HStack {
-            if let error { Text(error).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
+            if let error { Text(error).font(TypeScale.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
             Spacer()
             if busy { ProgressView().controlSize(.small) }
             Button("Cancel") {

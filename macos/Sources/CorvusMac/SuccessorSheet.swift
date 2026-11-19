@@ -13,7 +13,7 @@ struct SuccessorSheet: View {
             .map { (member: $0, person: model.memberPerson($0)) }
             .filter { People.matches(filter, name: $0.person.title, detail: $0.person.detail, number: $0.member.number) }
         VStack(alignment: .leading, spacing: 10) {
-            Text("Choose a new admin").font(.title3.weight(.semibold))
+            Text("Choose a new admin").font(TypeScale.title3.weight(.semibold))
             Text("You are the only admin. Who should take over?").foregroundStyle(.secondary)
             SearchField(text: $filter, prompt: "Search members")
             ScrollView {

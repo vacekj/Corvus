@@ -45,13 +45,13 @@ struct ChatRowPreview: View {
                 Text("typing")
                 RowTypingDots()
             }
-            .font(.system(size: fontSize))
+            .font(.inter(fontSize))
             .foregroundStyle(Theme.signalBlue)
             .lineLimit(1)
             .accessibilityLabel("typing")
         } else {
             Text(preview)
-                .font(.system(size: fontSize))
+                .font(.inter(fontSize))
                 .italic(isDraft)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

@@ -13,7 +13,7 @@ struct ImportProgressSheet: View {
     var body: some View {
         let state = model.importProgress ?? .running
         VStack(alignment: .leading, spacing: 14) {
-            Text("Import from Signal Desktop").font(.title3.weight(.semibold))
+            Text("Import from Signal Desktop").font(TypeScale.title3.weight(.semibold))
             switch state {
             case .running:
                 HStack(spacing: 10) {
@@ -21,12 +21,12 @@ struct ImportProgressSheet: View {
                     Text("Importing the Signal Desktop history …")
                 }
                 ProgressView().progressViewStyle(.linear)
-                Text("This can take a few minutes for a long history.").font(.caption).foregroundStyle(.secondary)
+                Text("This can take a few minutes for a long history.").font(TypeScale.caption).foregroundStyle(.secondary)
             case .finished(let summary):
-                Label("Import finished", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(.headline)
+                Label("Import finished", systemImage: "checkmark.circle.fill").foregroundStyle(.green).font(TypeScale.headline)
                 Text(summary).fixedSize(horizontal: false, vertical: true)
             case .failed(let error):
-                Label("Import failed", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(.headline)
+                Label("Import failed", systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).font(TypeScale.headline)
                 Text(error).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             }
             HStack {

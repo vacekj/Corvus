@@ -153,7 +153,7 @@ private struct QuickSwitcherPanel: View {
     var body: some View {
         let list = results(filter.trimmingCharacters(in: .whitespaces))
         VStack(alignment: .leading, spacing: 8) {
-            if newChat { Text("New conversation").font(.headline) }
+            if newChat { Text("New conversation").font(TypeScale.headline) }
             SearchField(text: $filter, prompt: newChat ? "Name, phone number (+…) or username" : "Go to conversation")
                 .onChange(of: filter) { index = 0 }
             ScrollViewReader { proxy in
@@ -178,7 +178,7 @@ private struct QuickSwitcherPanel: View {
                         .multilineTextAlignment(.center).foregroundStyle(.secondary).padding()
                 }
             }
-            Text("↑↓ to move, Return to open, Esc to close").font(.caption).foregroundStyle(.secondary)
+            Text("↑↓ to move, Return to open, Esc to close").font(TypeScale.caption).foregroundStyle(.secondary)
         }
         .padding(14)
         .frame(width: 440)
@@ -242,7 +242,7 @@ struct SidebarSectionHeader: View {
 
     var body: some View {
         Text(title)
-            .font(.caption.weight(.semibold))
+            .font(TypeScale.caption.weight(.semibold))
             .foregroundStyle(.secondary)
             .padding(.top, 6)
     }
@@ -260,11 +260,11 @@ struct MessageHitRow: View {
             if model.appearance.showAvatars, let c { AvatarView(image: model.avatarImage(c), size: 32) }
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 4) {
-                    Text(c.map(model.title) ?? hit.key).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                    Text(c.map(model.title) ?? hit.key).font(.inter(13, weight: .semibold)).lineLimit(1)
                     Spacer(minLength: 4)
-                    Text(ChatListItem.shortTime(hit.time)).font(.caption2).foregroundStyle(.secondary)
+                    Text(ChatListItem.shortTime(hit.time)).font(TypeScale.caption2).foregroundStyle(.secondary)
                 }
-                Text(snippet(who)).font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                Text(snippet(who)).font(TypeScale.caption).foregroundStyle(.secondary).lineLimit(2)
             }
         }
         .padding(.vertical, 4)

@@ -42,7 +42,7 @@ struct ChatPane: View {
                             RoundedRectangle(cornerRadius: 16)
                                 .strokeBorder(Theme.signalBlue, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
                             Label("Drop to attach", systemImage: "paperclip")
-                                .font(.title3.weight(.medium))
+                                .font(TypeScale.title3.weight(.medium))
                                 .foregroundStyle(Theme.signalBlue)
                         }
                         .padding(12)
@@ -98,11 +98,11 @@ private struct SearchBar: View {
                     }
                 if model.searchBusy {
                     Text("Searching …")
-                        .font(.caption)
+                        .font(TypeScale.caption)
                         .foregroundStyle(.secondary)
                 } else if !model.searchText.isEmpty {
                     Text(model.searchResults.isEmpty ? "No results" : "\(model.searchPosition + 1) of \(model.searchResults.count)")
-                        .font(.caption.monospacedDigit())
+                        .font(TypeScale.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
             }
@@ -414,11 +414,11 @@ private struct EmptyChat: View {
     var body: some View {
         VStack(spacing: 10) {
             AvatarView(image: model.avatarImage(conversation), size: 72)
-            Text(model.visibleTitle(conversation)).font(.title2.weight(.semibold))
+            Text(model.visibleTitle(conversation)).font(TypeScale.title2.weight(.semibold))
             let detail = conversation.isGroup ? "Group" : model.chatDetail(conversation)
             if !detail.isEmpty { Text(detail).foregroundStyle(.secondary) }
             Text("Messages are end-to-end encrypted by Signal.\nThis Mac keeps its own encrypted copy of the history.")
-                .font(.caption)
+                .font(TypeScale.caption)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
                 .padding(.top, 6)
@@ -432,7 +432,7 @@ private struct DateSeparator: View {
 
     var body: some View {
         Text(label)
-            .font(.caption.weight(.semibold))
+            .font(TypeScale.caption.weight(.semibold))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 12)
             .padding(.vertical, 4)
@@ -632,7 +632,7 @@ private struct Bubble: View {
                     VStack(alignment: .leading, spacing: 6) {
                         if showSender { senderLabel }
                         Text(m.deletedText)
-                            .font(.system(size: DisplaySettings.shared.size(NSFont.systemFontSize + 1)).italic())
+                            .font(.inter(DisplaySettings.shared.size(14)).italic())
                             .foregroundStyle(fg.opacity(0.7))
                     }
                     MetaRow(message: m, pending: pending, color: fg.opacity(0.7), readColor: fg, isGroup: isGroup)
@@ -806,7 +806,7 @@ private struct Bubble: View {
     static func linkified(_ text: String, emojiOnly: Bool = false) -> AttributedString {
         var s = AttributedString(text)
         let d = DisplaySettings.shared // Settings → Appearance → Text size
-        s.font = emojiOnly ? .system(size: d.size(40)) : .system(size: d.size(NSFont.systemFontSize + 1))
+        s.font = emojiOnly ? .system(size: d.size(40)) : .inter(d.size(14))
         guard !emojiOnly else { return s }
         for (range, url) in links(in: text) {
             guard let r = Range(range, in: text), let ar = Range(r, in: s) else { continue }
@@ -828,7 +828,7 @@ extension Message {
     var deletedText: String { outgoing ? "You deleted this message." : "This message was deleted." }
 }
 
-/// Timer, "edited", time and delivery state.
+/// "Edited", time and delivery state.
 private struct MetaRow: View {
     let message: Message
     let pending: Bool
@@ -838,10 +838,7 @@ private struct MetaRow: View {
     @Environment(\.messageHovered) private var hovered
 
     var body: some View {
-        HStack(spacing: 3) {
-            if message.expiresInSeconds > 0 {
-                ExpiryCountdownIcon(seconds: message.expiresInSeconds, startMs: message.expirationStartMs)
-            }
+        HStack(spacing: 4) {
             if message.isEdited { Text("Edited") }
             // The full date as a tooltip, installed only under the pointer (a tooltip per row costs scrolling).
             if hovered {
@@ -857,7 +854,7 @@ private struct MetaRow: View {
                               muted: color, read: readColor)
             }
         }
-        .font(.system(size: 10, weight: .medium))
+        .font(.inter(11))
         .foregroundStyle(color)
     }
 }
@@ -875,10 +872,10 @@ private struct QuoteView: View {
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 2).fill(accent).frame(width: 3)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(author).font(.caption.weight(.semibold)).foregroundStyle(accent)
+                    Text(author).font(TypeScale.caption.weight(.semibold)).foregroundStyle(accent)
                     Text(quote.attachmentNote == "story" ? "📖 " + quote.text
                          : quote.text.isEmpty ? (quote.attachmentNote.hasPrefix("image/") ? "📷 Photo" : "📎 Attachment") : quote.text)
-                        .font(.callout)
+                        .font(TypeScale.callout)
                         .lineLimit(3)
                         .foregroundStyle(foreground.opacity(0.9))
                 }
@@ -907,7 +904,7 @@ private struct ReactionsView: View {
                 Button { whoShown = true } label: {
                     HStack(spacing: 3) {
                         Text(emoji).font(.system(size: 14))
-                        if who.count > 1 { Text("\(who.count)").font(.caption.weight(.semibold)).foregroundStyle(.secondary) }
+                        if who.count > 1 { Text("\(who.count)").font(TypeScale.caption.weight(.semibold)).foregroundStyle(.secondary) }
                     }
                     .padding(.horizontal, 7)
                     .padding(.vertical, 2)
@@ -948,7 +945,7 @@ private struct ReactorsList: View {
                                     model.sendReaction(message.id, emoji)
                                 }
                                 .buttonStyle(.link)
-                                .font(.caption)
+                                .font(TypeScale.caption)
                             }
                         }
                         .padding(.vertical, 3)

@@ -63,7 +63,7 @@ struct StickerPackCreatorSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Create sticker pack").font(.title3.weight(.semibold))
+            Text("Create sticker pack").font(TypeScale.title3.weight(.semibold))
             if let link {
                 done(link)
             } else {
@@ -92,8 +92,8 @@ struct StickerPackCreatorSheet: View {
                 if items.count < StickerRules.maxStickers {
                     Button(action: pick) {
                         VStack(spacing: 4) {
-                            Image(systemName: "plus").font(.title2)
-                            Text("Add stickers").font(.caption)
+                            Image(systemName: "plus").font(TypeScale.title2)
+                            Text("Add stickers").font(TypeScale.caption)
                         }
                         .frame(width: 96, height: 96)
                         .background(RoundedRectangle(cornerRadius: 10).strokeBorder(.secondary.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [5, 4])))
@@ -116,13 +116,13 @@ struct StickerPackCreatorSheet: View {
             return true
         }
         Text("Click a sticker to choose its emoji. The star marks the cover.")
-            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            .font(TypeScale.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
         TextField("Title", text: $title).textFieldStyle(.roundedBorder)
         TextField("Author", text: $author).textFieldStyle(.roundedBorder)
         let problem = items.contains { $0.png == nil && $0.error == nil } ? "Converting …" : manifest.problem
         if let error { InlineError(text: error) }
         HStack {
-            if let problem, !items.isEmpty || !title.isEmpty { Text(problem).font(.caption).foregroundStyle(.secondary) }
+            if let problem, !items.isEmpty || !title.isEmpty { Text(problem).font(TypeScale.caption).foregroundStyle(.secondary) }
             if busy { ProgressView().controlSize(.small) }
             Spacer()
             Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -140,7 +140,7 @@ struct StickerPackCreatorSheet: View {
                         if let t = it.thumbnail {
                             Image(nsImage: t).resizable().interpolation(.high).scaledToFit()
                         } else if let e = it.error {
-                            Image(systemName: "exclamationmark.triangle").font(.title2).foregroundStyle(.orange).help(e)
+                            Image(systemName: "exclamationmark.triangle").font(TypeScale.title2).foregroundStyle(.orange).help(e)
                         } else {
                             ProgressView().controlSize(.small)
                         }
@@ -246,7 +246,7 @@ struct StickerPackCreatorSheet: View {
     private func done(_ link: StickerPackLink) -> some View {
         Label("Your sticker pack is uploaded.", systemImage: "checkmark.circle.fill")
             .foregroundStyle(.green)
-        Text(link.uri).font(.caption.monospaced()).lineLimit(3).textSelection(.enabled)
+        Text(link.uri).font(TypeScale.caption.monospaced()).lineLimit(3).textSelection(.enabled)
         if let error { InlineError(text: error) }
         HStack {
             Button {

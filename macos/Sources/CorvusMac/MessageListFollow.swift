@@ -104,7 +104,7 @@ struct JumpToBottomButton: View {
             } label: {
                 HStack(spacing: 5) {
                     Image(systemName: "arrow.down").font(.system(size: 12, weight: .bold))
-                    if f.unseen > 0 { Text(f.unseen == 1 ? "1 new" : "\(f.unseen) new").font(.callout.weight(.semibold)) }
+                    if f.unseen > 0 { Text(f.unseen == 1 ? "1 new" : "\(f.unseen) new").font(TypeScale.callout.weight(.semibold)) }
                 }
                 .foregroundStyle(f.unseen > 0 ? Color.white : Color.primary)
                 .padding(.horizontal, f.unseen > 0 ? 12 : 9)
@@ -126,7 +126,7 @@ struct UnreadDivider: View {
     var body: some View {
         HStack(spacing: 10) {
             Rectangle().fill(Theme.signalBlue.opacity(0.5)).frame(height: 1)
-            Text("Unread messages").font(.caption.weight(.semibold)).foregroundStyle(Theme.signalBlue).fixedSize()
+            Text("Unread messages").font(TypeScale.caption.weight(.semibold)).foregroundStyle(Theme.signalBlue).fixedSize()
             Rectangle().fill(Theme.signalBlue.opacity(0.5)).frame(height: 1)
         }
         .padding(.top, 14)

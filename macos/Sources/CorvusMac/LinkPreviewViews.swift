@@ -34,11 +34,11 @@ struct LinkPreviewCard: View {
                         .clipped()
                 }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(preview.title).font(.system(size: NSFont.systemFontSize, weight: .semibold)).lineLimit(2)
+                    Text(preview.title).font(.inter(NSFont.systemFontSize, weight: .semibold)).lineLimit(2)
                     if !preview.description.isEmpty {
-                        Text(preview.description).font(.system(size: NSFont.smallSystemFontSize)).lineLimit(2).opacity(0.85)
+                        Text(preview.description).font(.inter(NSFont.smallSystemFontSize)).lineLimit(2).opacity(0.85)
                     }
-                    Text(preview.host).font(.system(size: NSFont.smallSystemFontSize - 1)).opacity(0.6).lineLimit(1)
+                    Text(preview.host).font(.inter(NSFont.smallSystemFontSize - 1)).opacity(0.6).lineLimit(1)
                 }
                 .multilineTextAlignment(.leading)
                 .padding(8)
@@ -66,18 +66,18 @@ struct LinkPreviewChip: View {
                 if let img = PreviewImageCache.image(for: preview) {
                     Image(nsImage: img).resizable().scaledToFill()
                 } else {
-                    Image(systemName: "link").font(.title3).foregroundStyle(.secondary)
+                    Image(systemName: "link").font(TypeScale.title3).foregroundStyle(.secondary)
                 }
             }
             .frame(width: 48, height: 48)
             .background(Theme.field.opacity(0.5))
             .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
             VStack(alignment: .leading, spacing: 1) {
-                Text(preview.title).font(.callout.weight(.semibold)).lineLimit(1)
+                Text(preview.title).font(TypeScale.callout.weight(.semibold)).lineLimit(1)
                 if !preview.description.isEmpty {
-                    Text(preview.description).font(.caption).lineLimit(1).foregroundStyle(.secondary)
+                    Text(preview.description).font(TypeScale.caption).lineLimit(1).foregroundStyle(.secondary)
                 }
-                Text(preview.host).font(.caption2).lineLimit(1).foregroundStyle(.secondary)
+                Text(preview.host).font(TypeScale.caption2).lineLimit(1).foregroundStyle(.secondary)
             }
             Spacer(minLength: 0)
             Button(action: remove) { Image(systemName: "xmark.circle.fill").font(.system(size: 15)) }

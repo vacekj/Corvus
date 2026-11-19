@@ -61,6 +61,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // The Signal backend runs inside this process and writes to pipes of its own (the call tunnel): a
         // closed one must be an error there, not the end of the app.
         signal(SIGPIPE, SIG_IGN)
+        Fonts.register()
         LegacyMigration.migrateDefaults() // before anything reads the preferences
         let m = AppModel()
         m.beginEarlyUnlock()
@@ -129,6 +130,7 @@ struct CorvusMacApp: App {
         Window("Corvus", id: "main") {
             ContentView()
                 .environment(model)
+                .font(TypeScale.body)
                 .frame(minWidth: 720, minHeight: 460)
         }
         .defaultSize(width: 1020, height: 680)
@@ -139,13 +141,14 @@ struct CorvusMacApp: App {
 
         // "Open in new window": one window per chat (opening it again brings that window to the front).
         WindowGroup("Chat", id: ChatPopups.windowId, for: String.self) { $key in
-            if let key { ChatPopupWindow(key: key).environment(model) }
+            if let key { ChatPopupWindow(key: key).environment(model).font(TypeScale.body) }
         }
         .defaultSize(width: 440, height: 600)
 
         Settings {
             SettingsView()
                 .environment(model)
+                .font(TypeScale.body)
         }
 
         MenuBarExtra(isInserted: Binding(get: { model.notify.trayIcon }, set: { _ in })) {

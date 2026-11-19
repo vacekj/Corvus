@@ -56,8 +56,8 @@ private struct IncomingCallBanner: View {
             }
             VStack(alignment: .leading, spacing: 1) {
                 Text(model.chats.convs[session.peerKey].map { model.title($0) } ?? session.peerKey)
-                    .font(.headline).lineLimit(1)
-                Text("Incoming voice call").font(.caption).foregroundStyle(.secondary)
+                    .font(TypeScale.headline).lineLimit(1)
+                Text("Incoming voice call").font(TypeScale.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
             Button(role: .destructive) { model.declineCall() } label: {

@@ -232,8 +232,8 @@ struct RequestBanner: View {
         let label = HStack(alignment: .top, spacing: 12) {
             Image(systemName: icon).font(.system(size: 20)).foregroundStyle(Theme.signalBlue)
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.callout.weight(.semibold))
-                if !text.isEmpty { Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(4) }
+                Text(title).font(TypeScale.callout.weight(.semibold))
+                if !text.isEmpty { Text(text).font(TypeScale.caption).foregroundStyle(.secondary).lineLimit(4) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

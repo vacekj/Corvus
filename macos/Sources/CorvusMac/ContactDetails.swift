@@ -103,7 +103,7 @@ struct ContactDetailsFields: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Nickname").font(.headline)
+            Text("Nickname").font(TypeScale.headline)
             HStack(spacing: 6) {
                 TextField("First name", text: $given, prompt: Text("First name"))
                     .focused($focus, equals: .given)
@@ -112,7 +112,7 @@ struct ContactDetailsFields: View {
             }
             .textFieldStyle(.roundedBorder)
             .onSubmit(saveNickname)
-            Text("Note").font(.headline).padding(.top, 4)
+            Text("Note").font(TypeScale.headline).padding(.top, 4)
             TextField("Note", text: $note, prompt: Text("Add a note"), axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(1...6)

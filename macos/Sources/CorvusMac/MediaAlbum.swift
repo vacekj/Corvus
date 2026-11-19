@@ -67,7 +67,7 @@ private struct AlbumTile: View {
                     .frame(width: size.width, height: size.height)
             } else {
                 Rectangle().fill(att.isVideo ? Color.black.opacity(0.6) : Theme.field)
-                if failed { Image(systemName: att.isVideo ? "film" : "photo").font(.title3).foregroundStyle(.secondary) }
+                if failed { Image(systemName: att.isVideo ? "film" : "photo").font(TypeScale.title3).foregroundStyle(.secondary) }
             }
             if att.isVideo && overflow == 0 {
                 Image(systemName: "play.circle.fill")
@@ -77,7 +77,7 @@ private struct AlbumTile: View {
             }
             if overflow > 0 {
                 Rectangle().fill(.black.opacity(0.45))
-                Text("+\(overflow)").font(.system(size: 26, weight: .semibold)).foregroundStyle(.white)
+                Text("+\(overflow)").font(.inter(26, weight: .semibold)).foregroundStyle(.white)
             }
         }
         .frame(width: size.width, height: size.height)
@@ -86,7 +86,7 @@ private struct AlbumTile: View {
         .onTapGesture { model.openMediaViewer(message, index) }
         .overlay(alignment: .bottomLeading) {
             if att.isGif && overflow == 0 {
-                Text("GIF").font(.caption2.weight(.bold)).foregroundStyle(.white)
+                Text("GIF").font(TypeScale.caption2.weight(.bold)).foregroundStyle(.white)
                     .padding(.horizontal, 5).padding(.vertical, 1)
                     .background(Capsule().fill(.black.opacity(0.5)))
                     .padding(6)

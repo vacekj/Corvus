@@ -197,4 +197,4 @@ The Swift app requires macOS 14 or newer. See [`macos/README.md`](macos/README.m
 
 ## License
 
-Corvus is licensed under the [GNU Affero General Public License v3.0](LICENSE). `corvus-cli` and `signal-cli` are separate projects and are distributed under their own licenses (`corvus-cli`: AGPL-3.0, `signal-cli`: GPL-3.0).
+Corvus is licensed under the [GNU Affero General Public License v3.0](LICENSE). `corvus-cli` and `signal-cli` are separate projects and are distributed under their own licenses (`corvus-cli`: AGPL-3.0, `signal-cli`: GPL-3.0). The bundled Inter typeface is under the SIL Open Font License 1.1 (`macos/Sources/CorvusMac/Resources/Fonts/Inter-LICENSE.txt`); the message status icons come from Signal Desktop (AGPL-3.0).

@@ -155,8 +155,8 @@ struct AppUpdateBanner: View {
             HStack(spacing: 10) {
                 Image(systemName: "arrow.down.circle.fill").font(.system(size: 20)).foregroundStyle(Theme.signalBlue)
                 VStack(alignment: .leading, spacing: 1) {
-                    Text("Update available").font(.callout.weight(.semibold))
-                    Text("Corvus \(r.displayVersion)").font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    Text("Update available").font(TypeScale.callout.weight(.semibold))
+                    Text("Corvus \(r.displayVersion)").font(TypeScale.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
                 Spacer(minLength: 4)
                 Button("What's new") { notesShown = true }
@@ -182,9 +182,9 @@ private struct ReleaseNotesView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(release.name).font(.headline)
+            Text(release.name).font(TypeScale.headline)
             if let d = release.publishedAt {
-                Text(d.formatted(date: .long, time: .omitted)).font(.caption).foregroundStyle(.secondary)
+                Text(d.formatted(date: .long, time: .omitted)).font(TypeScale.caption).foregroundStyle(.secondary)
             }
             ScrollView {
                 Text(Self.notes(release.notes))
@@ -225,7 +225,7 @@ struct AppUpdateSettingsSection: View {
                 if updater.checking {
                     ProgressView().controlSize(.small)
                 } else if let result = updater.lastResult {
-                    Text(result).font(.caption).foregroundStyle(.secondary)
+                    Text(result).font(TypeScale.caption).foregroundStyle(.secondary)
                 }
             }
             if let r = updater.available {

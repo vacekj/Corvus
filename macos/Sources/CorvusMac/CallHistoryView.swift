@@ -137,7 +137,7 @@ struct SidebarTabBar: View {
                     .overlay(alignment: .topTrailing) {
                         if let dot { Circle().fill(dot).frame(width: 7, height: 7).offset(x: 4, y: -2) }
                     }
-                Text(title).font(.caption2)
+                Text(title).font(TypeScale.caption2)
             }
             .foregroundStyle(on ? Theme.signalBlue : Color.secondary)
             .frame(maxWidth: .infinity)
@@ -223,17 +223,17 @@ private struct CallRow: View {
         HStack(spacing: 10) {
             if let c { AvatarView(image: model.avatarImage(c), size: 34) }
             VStack(alignment: .leading, spacing: 2) {
-                Text(c.map(model.title) ?? r.peerKey).font(.system(size: 13, weight: .semibold)).lineLimit(1)
+                Text(c.map(model.title) ?? r.peerKey).font(.inter(13, weight: .semibold)).lineLimit(1)
                     .foregroundStyle(r.isMissed ? Color.red : Color.primary)
                 Label(detail, systemImage: Self.icon(r))
                     .labelStyle(.titleAndIcon)
-                    .font(.caption)
+                    .font(TypeScale.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 6)
             Text(ChatListItem.shortTime(Date(timeIntervalSince1970: TimeInterval(r.startedMs) / 1000)))
-                .font(.caption)
+                .font(TypeScale.caption)
                 .foregroundStyle(.secondary)
             Button { Task { await model.startCall(r.peerKey) } } label: { Image(systemName: "phone.fill") }
                 .buttonStyle(.borderless)

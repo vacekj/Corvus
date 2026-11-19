@@ -147,9 +147,9 @@ struct PinnedMessagesBar: View {
                         Image(systemName: "pin.fill").foregroundStyle(.secondary)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(m.outgoing ? "You" : model.displayName(pin.authorKey))
-                                .font(.caption.weight(.semibold))
+                                .font(TypeScale.caption.weight(.semibold))
                                 .foregroundStyle(m.outgoing ? Color.primary : Theme.senderColor(pin.authorKey))
-                            Text(Self.preview(m)).font(.callout).lineLimit(1).truncationMode(.tail).foregroundStyle(.secondary)
+                            Text(Self.preview(m)).font(TypeScale.callout).lineLimit(1).truncationMode(.tail).foregroundStyle(.secondary)
                         }
                         Spacer(minLength: 0)
                     }
@@ -278,7 +278,7 @@ private struct SelectionBar: View {
                 .buttonStyle(.borderless)
                 .iconHelp("Cancel", tooltip: "Cancel (Esc)")
             Text(msgs.count == 1 ? "1 selected" : "\(msgs.count) selected")
-                .font(.body.weight(.medium))
+                .font(TypeScale.body.weight(.medium))
                 .monospacedDigit()
             Spacer()
             if MessageSelectionRules.canForward(msgs) {

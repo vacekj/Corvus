@@ -50,7 +50,7 @@ private struct FileRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text(FileKind.detail(filename: attachment.filename, contentType: attachment.contentType, size: attachment.size))
-                        .font(.caption)
+                        .font(TypeScale.caption)
                         .opacity(0.75)
                 }
             }

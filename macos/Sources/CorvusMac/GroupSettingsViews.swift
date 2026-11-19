@@ -53,7 +53,7 @@ struct GroupPermissionsSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("Permissions").font(.headline)
+            Text("Permissions").font(TypeScale.headline)
             ForEach(Self.rows, id: \.1) { kind, title in
                 Picker(title, selection: Binding(get: { kind.value(in: group) }, set: { set(kind, $0) })) {
                     Text("All members").tag(GroupPermission.everyMember)
@@ -94,7 +94,7 @@ struct GroupLinkSection: View {
         let approval = pendingApproval ?? model.linkNeedsApproval(g)
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Group link").font(.headline)
+                Text("Group link").font(TypeScale.headline)
                 Spacer()
                 if busy { ProgressView().controlSize(.small) }
                 if admin && g.isMember {
@@ -106,7 +106,7 @@ struct GroupLinkSection: View {
                 }
             }
             if on && !g.inviteLink.isEmpty {
-                Text(g.inviteLink).font(.caption.monospaced()).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+                Text(g.inviteLink).font(TypeScale.caption.monospaced()).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
                 HStack(spacing: 12) {
                     Button { copy(g.inviteLink) } label: { Label("Copy link", systemImage: "doc.on.doc") }
                     if admin {
@@ -116,7 +116,7 @@ struct GroupLinkSection: View {
                 }
                 .buttonStyle(.borderless)
             } else if !on && !admin {
-                Text("The group link is off.").font(.callout).foregroundStyle(.secondary)
+                Text("The group link is off.").font(TypeScale.callout).foregroundStyle(.secondary)
             }
             if admin && on {
                 Toggle("Require admin approval", isOn: Binding(get: { approval }, set: { setApproval($0) }))
@@ -180,7 +180,7 @@ struct BannedMembersSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Banned").font(.headline)
+            Text("Banned").font(TypeScale.headline)
             ForEach(group.banned, id: \.self) { m in
                 HStack(spacing: 4) {
                     PickerRow(person: model.memberPerson(m))
@@ -211,7 +211,7 @@ struct MemberLabelBadge: View {
 
     var body: some View {
         Text(text)
-            .font(.caption2)
+            .font(TypeScale.caption2)
             .lineLimit(1)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
@@ -258,7 +258,7 @@ private struct MemberLabelEditor: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("Member label").font(.headline)
+            Text("Member label").font(TypeScale.headline)
             HStack(spacing: 6) {
                 Button { emojiShown = true } label: {
                     Group {
@@ -338,10 +338,10 @@ struct SenderNameLabel: View {
         let label = labels[message.authorKey] ?? labels[model.chats.resolveKey(message.authorKey)]
         HStack(spacing: 5) {
             Text(name)
-                .font(.caption.weight(.semibold))
+                .font(TypeScale.caption.weight(.semibold))
                 .foregroundStyle(Theme.senderColor(message.authorKey))
             if let label {
-                Text(label).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(label).font(TypeScale.caption).foregroundStyle(.secondary).lineLimit(1)
             }
         }
     }
@@ -362,18 +362,18 @@ struct JoinGroupSheet: View {
     var body: some View {
         let link = GroupInviteLink.find(in: text)
         VStack(alignment: .leading, spacing: 12) {
-            Text("Join group").font(.title3.weight(.semibold))
+            Text("Join group").font(TypeScale.title3.weight(.semibold))
             if request.link == nil {
                 TextField("Group link", text: $text, prompt: Text("https://signal.group/#…"))
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { if let link { join(link) } }
                 if !text.isEmpty && link == nil {
-                    Text("This is not a Signal group link.").font(.caption).foregroundStyle(.secondary)
+                    Text("This is not a Signal group link.").font(TypeScale.caption).foregroundStyle(.secondary)
                 }
             } else {
                 Text("Join this group? Its members will see your name and photo.")
                     .fixedSize(horizontal: false, vertical: true)
-                Text(text).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
+                Text(text).font(TypeScale.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2).truncationMode(.middle)
                     .textSelection(.enabled)
             }
             if let error { InlineError(text: error) }
@@ -413,6 +413,6 @@ struct InlineError: View {
     let text: String
 
     var body: some View {
-        Text(text).font(.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
+        Text(text).font(TypeScale.caption).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
     }
 }
