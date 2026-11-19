@@ -13,3 +13,11 @@ A feature is not complete until its changes are verified, squash-merged into `ma
 Apply the reinstall requirement after every completed app change, including bug fixes: the installed app must match the latest verified, integrated source rather than an earlier release or task build.
 
 If review, permissions, integration conflicts, installation, or smoke verification blocks completion, finish all reachable work, retain the task branch and worktree, and report the exact blocker. Do not claim the feature is merged, installed, or cleaned up unless those steps actually succeeded.
+
+## Leak check (public repo)
+
+Run `tools/refresh-leak-patterns.sh` once per clone: it enables `.githooks/` (pre-commit,
+commit-msg, pre-push) and collects this Mac's Signal phone numbers and IDs into
+`.git/info/leak-patterns`, never committed. The hooks refuse app data files (databases, logs,
+backups), keys and tokens, home-directory paths and those identifiers. Use made-up test data
+(`+15550000001`, fixed fake UUIDs) in tests and docs.

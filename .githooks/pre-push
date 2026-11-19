@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# Checks every commit about to be published, including ones made with --no-verify.
+zero=0000000000000000000000000000000000000000
+while read -r _ local_sha _ remote_sha; do
+  [ "$local_sha" = "$zero" ] && continue # deleting a branch
+  if [ "$remote_sha" = "$zero" ]; then
+    # New branch: only the commits no remote has yet.
+    range="$local_sha --not --remotes"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+  # shellcheck disable=SC2086
+  "$(dirname "$0")/leak-check" range $range || exit 1
+done

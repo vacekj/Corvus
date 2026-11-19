@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Refuses commits and pushes that would publish private data: real phone numbers, Signal IDs,
+# emails, local paths, keys and tokens, or app data files (databases, logs, backups).
+#
+#   leak-check staged         check what is staged (pre-commit)
+#   leak-check range A..B     check the commits in a range (pre-push)
+#   leak-check message FILE   check a commit message (commit-msg)
+#
+# Generic rules live here. Personal identifiers live in .git/info/leak-patterns (never committed):
+# one fixed string per line, filled by tools/refresh-leak-patterns.sh.
+# Bypass for one false positive: LEAK_CHECK=off git commit ...
+set -euo pipefail
+[ "${LEAK_CHECK:-}" = off ] && exit 0
+
+root=$(git rev-parse --show-toplevel)
+info="$(git rev-parse --git-common-dir)/info"
+private=$(mktemp)
+trap 'rm -f "$private"' EXIT
+cat "$info/leak-patterns" "$info/leak-patterns.local" 2>/dev/null | grep -v '^#' | grep -v '^[[:space:]]*$' > "$private" || true
+
+# Paths that never belong in the repo.
+bad_paths='\.(db|db-wal|db-shm|sqlite3?|log|bak|bin|p12|pfx|key|mobileprovision|provisionprofile|jsonl|env)$|(^|/)\.env(\.|$)|(^|/)(roster-cache|launch-snapshot|call-history)\b|(^|/)history\.corvus'
+# Paths whose content is someone else's and may hold test fixtures that look like secrets.
+skip_paths='^(signal-backend/vendor/|signal-backend/call-tunnel/third-party/|macos/Sources/CSQLCipher/)'
+
+# Content that never belongs in the repo.
+generic=(
+  '-----BEGIN [A-Z ]*PRIVATE KEY-----'
+  '(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,}'
+  'sk-(ant-)?[A-Za-z0-9_-]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{35}'
+  '/Users/'"$(id -un)"'(/|\b)'
+)
+
+fail=0
+report() { echo "leak-check: $1" >&2; fail=1; }
+
+check_paths() { # file list on stdin
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if [[ "$f" =~ $skip_paths ]]; then continue; fi
+    if echo "$f" | grep -Eiq "$bad_paths"; then report "private-looking file: $f"; fi
+  done
+}
+
+check_text() { # $1 = label; text on stdin
+  local label=$1 text
+  text=$(cat)
+  for p in "${generic[@]}"; do
+    if m=$(grep -Eo -e "$p" <<<"$text" | head -1) && [ -n "$m" ]; then
+      report "$label: matches a secret pattern (${m:0:12}…)"
+    fi
+  done
+  if [ -s "$private" ]; then
+    if m=$(grep -oFf "$private" <<<"$text" | head -1) && [ -n "$m" ]; then
+      report "$label: contains a personal identifier (${m:0:5}…) from .git/info/leak-patterns"
+    fi
+  fi
+}
+
+added_lines() { # diff on stdin -> added lines of files outside skip_paths
+  awk -v skip="$skip_paths" '
+    /^\+\+\+ / { f = substr($0, 7); keep = (f !~ skip); next }
+    /^\+/ && keep { print substr($0, 2) }'
+}
+
+case "${1:-staged}" in
+  staged)
+    check_paths < <(git diff --cached --name-only --diff-filter=ACR)
+    check_text "staged change" < <(git diff --cached -U0 --no-color --diff-filter=ACMR | added_lines)
+    while IFS= read -r f; do
+      [ -f "$root/$f" ] || continue
+      size=$(git cat-file -s ":$f" 2>/dev/null || echo 0)
+      [ "$size" -gt 5000000 ] && report "large file (${size} bytes): $f"
+    done < <(git diff --cached --name-only --diff-filter=AC)
+    ;;
+  range)
+    shift
+    check_paths < <(git log --format= --name-only --diff-filter=ACR "$@" | sort -u)
+    check_text "a commit being pushed" < <(git log -p -U0 --no-color --format= "$@" | added_lines)
+    check_text "a commit message being pushed" < <(git log --format='%B' "$@")
+    ;;
+  message)
+    check_text "commit message" < <(grep -v '^#' "$2" || true)
+    ;;
+esac
+
+if [ $fail -ne 0 ]; then
+  echo "leak-check: blocked. Remove the data, or bypass a false positive with LEAK_CHECK=off." >&2
+  exit 1
+fi
