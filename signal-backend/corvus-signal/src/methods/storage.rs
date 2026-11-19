@@ -4,7 +4,10 @@
 use std::cell::Cell;
 
 use presage::libsignal_service::prelude::Uuid;
-use presage::libsignal_service::storage_service::{ContactPatch, ContactRecordExt, ContactTarget, StorageState};
+use presage::libsignal_service::storage_service::{
+    AccountPatch, ContactPatch, ContactRecordExt, ContactTarget, StorageState,
+};
+use presage::proto::account_record::{self, pinned_conversation::{self, Identifier}};
 
 use crate::ctx::{Account, Ctx, normalize_group_id};
 use crate::envelope::group_id_from_master_key;
@@ -16,6 +19,15 @@ pub const METHODS: &[Method] = &[];
 pub const ARCHIVED_GROUPS: &str = "archived-groups";
 /// Local value: group id → muted-until (ms) of the groups muted on the phone.
 pub const MUTED_GROUPS: &str = "muted-groups";
+/// Local value: ids of the groups marked unread on the phone.
+pub const UNREAD_GROUPS: &str = "unread-groups";
+/// Local value: ids of the muted groups whose @mentions should stay quiet too.
+pub const QUIET_MENTION_GROUPS: &str = "quiet-mention-groups";
+/// Local value: pinned chats in the phone's order, as contact ACIs and `g:<group id>`.
+pub const PINNED: &str = "pinned-chats";
+
+/// Signal shows at most this many pinned chats.
+pub const MAX_PINNED: usize = 4;
 
 /// Mute end as Corvus reads it: 0 = not muted, -1 = for good, else ms since 1970.
 pub fn mute_json(until: u64) -> i64 {
@@ -64,6 +76,7 @@ async fn apply(ctx: &Ctx, a: &Account, state: &StorageState) {
                 c.hidden = record.hidden;
                 c.archived = record.archived;
                 c.muted_until = record.muted_until_timestamp;
+                c.marked_unread = record.marked_unread;
                 c.nick_given_name = nickname.given.clone();
                 c.nick_family_name = nickname.family.clone();
                 c.note = record.note.clone();
@@ -77,10 +90,18 @@ async fn apply(ctx: &Ctx, a: &Account, state: &StorageState) {
     }
     let mut archived_groups = Vec::new();
     let mut muted_groups = std::collections::BTreeMap::<String, u64>::new();
+    let mut unread_groups = Vec::new();
+    let mut quiet_mention_groups = Vec::new();
     for record in state.groups_v2() {
         let Some(id) = group_id_from_master_key(&record.master_key) else { continue };
         if record.archived {
             archived_groups.push(normalize_group_id(&id));
+        }
+        if record.marked_unread {
+            unread_groups.push(normalize_group_id(&id));
+        }
+        if record.dont_notify_for_mentions_if_muted {
+            quiet_mention_groups.push(normalize_group_id(&id));
         }
         if record.muted_until_timestamp > 0 {
             muted_groups.insert(normalize_group_id(&id), record.muted_until_timestamp);
@@ -95,7 +116,16 @@ async fn apply(ctx: &Ctx, a: &Account, state: &StorageState) {
     if let Err(error) = local.set_value(MUTED_GROUPS, &muted_groups).await {
         tracing::warn!(%error, "cannot store the muted groups");
     }
+    let _ = local.set_value(UNREAD_GROUPS, &unread_groups).await;
+    let _ = local.set_value(QUIET_MENTION_GROUPS, &quiet_mention_groups).await;
     if let Some(account) = state.account() {
+        let mut pinned = Vec::new();
+        for pin in &account.pinned_conversations {
+            if let Some(key) = pin_key(a, pin).await {
+                pinned.push(key);
+            }
+        }
+        let _ = local.set_value(PINNED, &pinned).await;
         let username = (!account.username.is_empty()).then_some(account.username.as_str());
         let _ = local.set_own_username(username).await;
     }
@@ -109,6 +139,73 @@ async fn apply(ctx: &Ctx, a: &Account, state: &StorageState) {
         "storage service applied"
     );
     roster_changed(ctx);
+}
+
+/// The local key of a pinned chat: contact ACI string or `g:<group id>`.
+async fn pin_key(a: &Account, pin: &account_record::PinnedConversation) -> Option<String> {
+    match pin.identifier.as_ref()? {
+        Identifier::Contact(c) => pin_contact_uuid(a, c).await.map(|u| u.to_string()),
+        Identifier::GroupMasterKey(mk) => {
+            group_id_from_master_key(mk).map(|id| format!("g:{}", normalize_group_id(&id)))
+        }
+        _ => None,
+    }
+}
+
+async fn pin_contact_uuid(a: &Account, c: &pinned_conversation::Contact) -> Option<Uuid> {
+    if let Ok(u) = Uuid::from_slice(&c.service_id_binary) {
+        return Some(u);
+    }
+    if let Ok(u) = Uuid::parse_str(&c.service_id) {
+        return Some(u);
+    }
+    if !c.e164.is_empty() {
+        return a.resolve_aci(&c.e164).await.ok();
+    }
+    None
+}
+
+/// Pins or unpins a chat (`key` as in `PINNED`) in the AccountRecord's pinned list, keeping the
+/// other pins as they are. Pinning when the list is full fails (Signal shows only four).
+pub async fn set_pinned(a: &Account, key: &str, master_key: Option<[u8; 32]>, pinned: bool) -> Result<(), RpcError> {
+    let state = a.manager().storage_state().await.map_err(fail)?;
+    let mut pins: Vec<account_record::PinnedConversation> =
+        state.as_ref().and_then(|s| s.account()).map(|r| r.pinned_conversations.clone()).unwrap_or_default();
+    let mut kept = Vec::new();
+    for pin in pins.drain(..) {
+        if pin_key(a, &pin).await.as_deref() != Some(key) {
+            kept.push(pin);
+        }
+    }
+    if pinned {
+        if kept.len() >= MAX_PINNED {
+            return Err(RpcError::failed(format!("Signal allows only {MAX_PINNED} pinned chats")));
+        }
+        let identifier = match master_key {
+            Some(mk) => Identifier::GroupMasterKey(mk.to_vec()),
+            None => {
+                let uuid = Uuid::parse_str(key).map_err(|_| RpcError::invalid_params("bad contact"))?;
+                Identifier::Contact(pinned_conversation::Contact {
+                    service_id: uuid.to_string(),
+                    e164: String::new(),
+                    service_id_binary: uuid.as_bytes().to_vec(),
+                })
+            }
+        };
+        kept.push(account_record::PinnedConversation { identifier: Some(identifier) });
+    }
+    let mut local_keys = Vec::new();
+    for pin in &kept {
+        if let Some(k) = pin_key(a, pin).await {
+            local_keys.push(k);
+        }
+    }
+    a.local().set_value(PINNED, &local_keys).await.map_err(fail)?;
+    a.manager()
+        .update_account_record(AccountPatch { pinned_conversations: Some(kept), ..Default::default() })
+        .await
+        .map_err(fail)?;
+    Ok(())
 }
 
 /// Tells Corvus to list contacts and groups again (names, archive and block state changed).
@@ -128,6 +225,7 @@ pub async fn contact_changed(a: &Account, uuid: &Uuid) {
         nickname_family_name: Some(c.nick_family_name),
         note: Some(c.note),
         archived: Some(c.archived),
+        marked_unread: Some(c.marked_unread),
         hidden: Some(c.hidden),
         ..Default::default()
     };

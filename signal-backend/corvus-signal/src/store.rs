@@ -51,6 +51,8 @@ pub struct LocalContact {
     pub archived: bool,
     /// Muted until this time (ms since 1970; 0 = not muted, i64::MAX = for good), from the Storage Service.
     pub muted_until: u64,
+    /// "Mark as unread" (Storage Service `markedUnread`).
+    pub marked_unread: bool,
     pub nick_given_name: String,
     pub nick_family_name: String,
     pub note: String,

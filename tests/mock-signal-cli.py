@@ -572,6 +572,8 @@ for line in sys.stdin:
             res["timestamp"] = int(p["editTimestamp"]) + 1000
     elif m == "setMuted":  # mute written to the Storage Service
         res = {}
+    elif m in ("setChatState", "sendDeleteForMe"):  # Storage Service / sync to other devices
+        res = {}
     elif m == "sendSyncRead":  # read here, told to the other devices
         res = {}
     elif m == "sendReceipt":

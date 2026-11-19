@@ -26,6 +26,7 @@ pub const METHODS: &[Method] = &[
     method!("sendMessageRequestResponse", message_request_response),
     method!("getAvatar", get_avatar),
     method!("setMuted", set_muted),
+    method!("setChatState", set_chat_state),
 ];
 
 async fn list_contacts(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
@@ -84,6 +85,8 @@ pub async fn contact_json(a: &Account, uuid: &Uuid) -> Value {
         "isHidden": local.hidden,
         "isArchived": local.archived,
         "mutedUntil": storage::mute_json(local.muted_until),
+        "isMarkedUnread": local.marked_unread,
+        "isPinned": a.local().value::<Vec<String>>(storage::PINNED).await.contains(&uuid.to_string()),
         "messageExpirationTime": expiration,
     });
     if let Some(profile) = profile {
@@ -342,6 +345,57 @@ async fn set_muted(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
             .update_contact_record(presage::libsignal_service::storage_service::ContactTarget::aci(uuid), patch)
             .await
             .map_err(fail)?;
+    }
+    Ok(json!({}))
+}
+
+/// Archive, "mark as unread" and pin state of a chat, written to the Storage Service so the phone
+/// follows: `recipient` or `groupId`, plus any of `archived`, `markedUnread`, `pinned`.
+async fn set_chat_state(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
+    use presage::libsignal_service::storage_service::{ContactPatch, ContactTarget, GroupV2Patch};
+    let a = ctx.account()?;
+    let archived = p.get("archived").and_then(Value::as_bool);
+    let unread = p.get("markedUnread").and_then(Value::as_bool);
+    let pinned = p.get("pinned").and_then(Value::as_bool);
+    if let Some(group_id) = str_param(&p, "groupId") {
+        let (master_key, _) = a.group_by_id(&group_id).await?;
+        let id = crate::ctx::normalize_group_id(&group_id);
+        for (key, value) in [(storage::ARCHIVED_GROUPS, archived), (storage::UNREAD_GROUPS, unread)] {
+            let Some(on) = value else { continue };
+            let mut ids: Vec<String> = a.local().value(key).await;
+            ids.retain(|x| *x != id);
+            if on {
+                ids.push(id.clone());
+            }
+            a.local().set_value(key, &ids).await.map_err(fail)?;
+        }
+        if archived.is_some() || unread.is_some() {
+            let patch = GroupV2Patch { archived, marked_unread: unread, ..Default::default() };
+            a.manager().update_group_record(master_key, patch).await.map_err(fail)?;
+        }
+        if let Some(on) = pinned {
+            storage::set_pinned(a, &format!("g:{id}"), Some(master_key), on).await?;
+        }
+    } else {
+        let uuid = a.resolve_aci(&req_str(&p, "recipient")?).await?;
+        if archived.is_some() || unread.is_some() {
+            a.local()
+                .update_contact(&uuid, |c| {
+                    if let Some(v) = archived {
+                        c.archived = v;
+                    }
+                    if let Some(v) = unread {
+                        c.marked_unread = v;
+                    }
+                })
+                .await
+                .map_err(fail)?;
+            let patch = ContactPatch { archived, marked_unread: unread, ..Default::default() };
+            a.manager().update_contact_record(ContactTarget::aci(uuid), patch).await.map_err(fail)?;
+        }
+        if let Some(on) = pinned {
+            storage::set_pinned(a, &uuid.to_string(), None, on).await?;
+        }
     }
     Ok(json!({}))
 }

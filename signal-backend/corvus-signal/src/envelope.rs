@@ -642,6 +642,7 @@ fn sync_message_json(sm: &SyncMessage, lookup: &dyn Lookup) -> Option<Value> {
             }
             put(&mut m, "messageRequestResponse", Value::Object(rm));
         }
+        Some(SyncContent::DeleteForMe(d)) => put(&mut m, "deleteForMe", delete_for_me_json(d, lookup)),
         Some(SyncContent::Contacts(_)) => put(&mut m, "type", "CONTACTS_SYNC"),
         Some(SyncContent::Request(_)) => put(&mut m, "type", "REQUEST_SYNC"),
         _ => {}
@@ -661,6 +662,70 @@ fn sync_message_json(sm: &SyncMessage, lookup: &dyn Lookup) -> Option<Value> {
         put(&mut m, "viewedMessages", read_list_json(items, lookup));
     }
     (!m.is_empty()).then_some(Value::Object(m))
+}
+
+/// A chat as `DeleteForMe` names it: `{"groupId"}` or `{"recipient"}` (number when known, else ACI).
+fn conversation_json(c: Option<&proto::ConversationIdentifier>, lookup: &dyn Lookup) -> Option<Value> {
+    use proto::conversation_identifier::Identifier;
+    match c?.identifier.as_ref()? {
+        Identifier::ThreadGroupId(g) => Some(json!({ "groupId": B64.encode(g) })),
+        Identifier::ThreadE164(n) => Some(json!({ "recipient": n })),
+        Identifier::ThreadServiceId(s) => {
+            let uuid = Uuid::parse_str(s).ok()?;
+            Some(json!({ "recipient": address(lookup, &uuid).0 }))
+        }
+        Identifier::ThreadServiceIdBinary(b) => {
+            let uuid = Uuid::from_slice(b).ok()?;
+            Some(json!({ "recipient": address(lookup, &uuid).0 }))
+        }
+    }
+}
+
+fn addressable_json(msgs: &[proto::AddressableMessage], lookup: &dyn Lookup) -> Vec<Value> {
+    use proto::addressable_message::Author;
+    msgs.iter()
+        .filter_map(|m| {
+            let author = match m.author.as_ref()? {
+                Author::AuthorE164(n) => n.clone(),
+                Author::AuthorServiceId(s) => address(lookup, &Uuid::parse_str(s).ok()?).0,
+                Author::AuthorServiceIdBinary(b) => address(lookup, &Uuid::from_slice(b).ok()?).0,
+            };
+            Some(json!({ "author": author, "timestamp": m.sent_timestamp? }))
+        })
+        .collect()
+}
+
+/// Messages and chats deleted "for me" on another device.
+fn delete_for_me_json(d: &sync_message::DeleteForMe, lookup: &dyn Lookup) -> Value {
+    let messages: Vec<Value> = d
+        .message_deletes
+        .iter()
+        .filter_map(|x| {
+            Some(json!({
+                "conversation": conversation_json(x.conversation.as_ref(), lookup)?,
+                "messages": addressable_json(&x.messages, lookup),
+            }))
+        })
+        .collect();
+    let mut chats: Vec<Value> = d
+        .conversation_deletes
+        .iter()
+        .filter_map(|x| {
+            let mut recent = addressable_json(&x.most_recent_messages, lookup);
+            recent.extend(addressable_json(&x.most_recent_non_expiring_messages, lookup));
+            Some(json!({
+                "conversation": conversation_json(x.conversation.as_ref(), lookup)?,
+                "mostRecentMessages": recent,
+            }))
+        })
+        .collect();
+    chats.extend(d.local_only_conversation_deletes.iter().filter_map(|x| {
+        Some(json!({
+            "conversation": conversation_json(x.conversation.as_ref(), lookup)?,
+            "mostRecentMessages": [],
+        }))
+    }));
+    json!({ "messageDeletes": messages, "conversationDeletes": chats })
 }
 
 fn receipt_json(rm: &ReceiptMessage, when: u64) -> Value {
@@ -1289,6 +1354,32 @@ mod tests {
         let v = env(&content(ME, 1, ContentBody::SynchronizeMessage(vo)));
         assert_eq!(v["syncMessage"]["viewOnceOpen"]["senderNumber"], ALICE_NUMBER);
         assert_eq!(v["syncMessage"]["viewOnceOpen"]["timestamp"], 9);
+
+        let del = SyncMessage {
+            content: Some(SyncContent::DeleteForMe(sync_message::DeleteForMe {
+                message_deletes: vec![sync_message::delete_for_me::MessageDeletes {
+                    conversation: Some(proto::ConversationIdentifier {
+                        identifier: Some(proto::conversation_identifier::Identifier::ThreadServiceIdBinary(uuid_bytes(ALICE))),
+                    }),
+                    messages: vec![proto::AddressableMessage {
+                        author: Some(proto::addressable_message::Author::AuthorServiceId(ALICE.into())),
+                        sent_timestamp: Some(42),
+                    }],
+                }],
+                local_only_conversation_deletes: vec![sync_message::delete_for_me::LocalOnlyConversationDelete {
+                    conversation: Some(proto::ConversationIdentifier {
+                        identifier: Some(proto::conversation_identifier::Identifier::ThreadGroupId(vec![1, 2, 3])),
+                    }),
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let v = env(&content(ME, 1, ContentBody::SynchronizeMessage(del)));
+        let d = &v["syncMessage"]["deleteForMe"];
+        assert_eq!(d["messageDeletes"][0]["conversation"]["recipient"], ALICE_NUMBER);
+        assert_eq!(d["messageDeletes"][0]["messages"][0], json!({"author": ALICE_NUMBER, "timestamp": 42}));
+        assert_eq!(d["conversationDeletes"][0]["conversation"]["groupId"], "AQID");
 
         let mrr = SyncMessage {
             content: Some(SyncContent::MessageRequestResponse(sync_message::MessageRequestResponse {

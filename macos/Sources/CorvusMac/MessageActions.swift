@@ -178,11 +178,12 @@ extension AppModel {
     }
 
     /// Delete for me: all at once, with one rewrite of the history.
-    private func removeMessages(_ key: String, _ msgs: [Message]) {
+    func removeMessages(_ key: String, _ msgs: [Message], sync: Bool = true) {
         guard chats.convs[key] != nil else { return }
         let ids = Set(msgs.map(\.id))
         let removed = chats.convs[key]!.msgs.filter { ids.contains($0.id) }
         guard !removed.isEmpty else { return }
+        if sync { syncDeleteForMe(key, removed) }
         if editKey == key && removed.contains(where: { $0.ts == editTs }) { cancelEdit() }
         chats.convs[key]!.msgs.removeAll { ids.contains($0.id) }
         if removed.contains(where: { $0.pinnedAtMs > 0 }) { chats.rebuildPins() }

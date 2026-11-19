@@ -26,6 +26,7 @@ pub const METHODS: &[Method] = &[
     method!("sendTyping", send_typing),
     method!("sendReceipt", send_receipt),
     method!("sendSyncRead", send_sync_read),
+    method!("sendDeleteForMe", send_delete_for_me),
     method!("sendPinMessage", send_pin),
     method!("sendUnpinMessage", send_unpin),
     method!("sendPollCreate", poll_create),
@@ -335,6 +336,53 @@ async fn send_sync_read(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
         return Ok(json!({}));
     }
     let sync = SyncMessage { read, ..Default::default() };
+    let own = Target::Contacts(vec![a.own_service_id()]);
+    deliver(a, &own, ContentBody::SynchronizeMessage(sync), now_millis(), false).await
+}
+
+/// "Delete for me" done here, told to our other devices: `recipient` or `groupId`, and `messages`
+/// `[{author, timestamp}]`. With `wholeChat`, the chat was deleted and `messages` are its newest ones.
+async fn send_delete_for_me(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
+    use presage::proto::{AddressableMessage, ConversationIdentifier, addressable_message, conversation_identifier};
+    use sync_message::delete_for_me;
+    let a = ctx.account()?;
+    let conversation = if let Some(group_id) = str_param(&p, "groupId") {
+        conversation_identifier::Identifier::ThreadGroupId(decode_group_id(&group_id)?)
+    } else {
+        let uuid = a.resolve_aci(&req_str(&p, "recipient")?).await?;
+        conversation_identifier::Identifier::ThreadServiceIdBinary(uuid.as_bytes().to_vec())
+    };
+    let conversation = Some(ConversationIdentifier { identifier: Some(conversation) });
+    let mut messages = Vec::new();
+    for m in p.get("messages").and_then(Value::as_array).into_iter().flatten() {
+        let (Some(author), Some(ts)) = (str_param(m, "author"), i64_param(m, "timestamp")) else { continue };
+        let Ok(aci) = a.resolve_aci(&author).await else { continue };
+        if ts <= 0 {
+            continue;
+        }
+        messages.push(AddressableMessage {
+            author: Some(addressable_message::Author::AuthorServiceIdBinary(aci.as_bytes().to_vec())),
+            sent_timestamp: Some(ts as u64),
+        });
+    }
+    let mut delete = sync_message::DeleteForMe::default();
+    if bool_param(&p, "wholeChat") {
+        if messages.is_empty() {
+            delete.local_only_conversation_deletes.push(delete_for_me::LocalOnlyConversationDelete { conversation });
+        } else {
+            delete.conversation_deletes.push(delete_for_me::ConversationDelete {
+                conversation,
+                most_recent_messages: messages,
+                is_full_delete: Some(true),
+                most_recent_non_expiring_messages: Vec::new(),
+            });
+        }
+    } else if messages.is_empty() {
+        return Ok(json!({}));
+    } else {
+        delete.message_deletes.push(delete_for_me::MessageDeletes { conversation, messages });
+    }
+    let sync = SyncMessage { content: Some(sync_message::Content::DeleteForMe(delete)), ..Default::default() };
     let own = Target::Contacts(vec![a.own_service_id()]);
     deliver(a, &own, ContentBody::SynchronizeMessage(sync), now_millis(), false).await
 }

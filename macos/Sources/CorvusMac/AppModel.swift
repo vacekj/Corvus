@@ -667,6 +667,8 @@ final class AppModel {
                 persist(Records.archive(key, archived: sig, sigArchived: sig))
             }
             applyPhoneMute(key, jsonInt64(c["mutedUntil"]))
+            applyPhoneFlag("pin", key, jsonBool(c["isPinned"]))
+            applyPhoneFlag("unread", key, jsonBool(c["isMarkedUnread"]))
         }
     }
 
@@ -691,6 +693,13 @@ final class AppModel {
                 persist(Records.archive(key, archived: sig, sigArchived: sig))
             }
             applyPhoneMute(key, jsonInt64(g["mutedUntil"]))
+            applyPhoneFlag("pin", key, jsonBool(g["isPinned"]))
+            applyPhoneFlag("unread", key, jsonBool(g["isMarkedUnread"]))
+            if g["mentionsWhenMuted"] != nil && !jsonBool(g["mentionsWhenMuted"]) {
+                PhoneFlags.quietMentions.insert(key)
+            } else {
+                PhoneFlags.quietMentions.remove(key)
+            }
             let expiration = jsonInt(g["messageExpirationTime"])
             if chats.convs[key]!.expirationSeconds != expiration {
                 chats.convs[key]!.expirationSeconds = expiration
@@ -1030,18 +1039,26 @@ final class AppModel {
         nicknameFocusPending = true
     }
 
+    /// Archives or unarchives here and on the phone.
     func setArchived(_ key: String, _ archived: Bool) {
         guard let c = chats.convs[key], c.archived != archived else { return }
         chats.convs[key]!.archived = archived
-        persist(Records.archive(key, archived: archived, sigArchived: c.sigArchived))
+        // The phone's state becomes this one, so a later listing does not undo it.
+        chats.convs[key]!.sigArchived = archived
+        persist(Records.archive(key, archived: archived, sigArchived: archived))
         listChanged()
+        pushChatState(key, ["archived": archived])
     }
 
-    func setPinned(_ key: String, _ pinned: Bool) {
+    func setPinned(_ key: String, _ pinned: Bool, push: Bool = true) {
         guard let c = chats.convs[key], c.pinned != pinned else { return }
         chats.convs[key]!.pinned = pinned
         persist(Records.pin(key, pinned))
         listChanged()
+        if push {
+            PhoneFlags.seen["pin|" + key] = pinned
+            pushChatState(key, ["pinned": pinned])
+        }
     }
 
     /// The chat list line of a chat that is not open but has an unsent draft.
@@ -1059,11 +1076,15 @@ final class AppModel {
         listChanged()
     }
 
-    func setMarkedUnread(_ key: String, _ marked: Bool) {
+    func setMarkedUnread(_ key: String, _ marked: Bool, push: Bool = true) {
         guard let c = chats.convs[key], c.markedUnread != marked else { return }
         chats.convs[key]!.markedUnread = marked
         persist(Records.markedUnread(key, marked))
         listChanged()
+        if push {
+            PhoneFlags.seen["unread|" + key] = marked
+            pushChatState(key, ["markedUnread": marked])
+        }
     }
 
     /// Local per-chat mute (signal-cli does not report mute state): no notification, no sound.
@@ -1095,6 +1116,7 @@ final class AppModel {
         guard let c = chats.convs[key] else { return }
         guard await Dialogs.confirm("Delete conversation", "Delete “\(c.title)” and its stored messages from this computer?",
                                     ok: "Delete", destructive: true) else { return }
+        syncDeleteForMe(key, Array(c.msgs.filter { $0.notice.kind == .none }.suffix(5)), wholeChat: true)
         removeConversation(key)
     }
 
@@ -1341,6 +1363,7 @@ final class AppModel {
         }
         let readSync = parseReadSync(env)
         if !readSync.isEmpty { handleReadSync(readSync) }
+        handleDeleteForMe(env)
         var pe = parseEnvelope(env)
         if pe.kind == .none { return }
         if !pe.mentions.isEmpty {
@@ -1448,7 +1471,7 @@ final class AppModel {
         let quiet = !m.outgoing && isQuiet(key, author: m.authorKey) // blocked sender or unaccepted request
         if !m.outgoing && !quiet && !(key == current && userIsLooking()) { chats.convs[key]!.unread += 1 }
         else if !m.outgoing && !quiet { sendReadReceipts(key, [m]) } // read right away
-        if !m.outgoing && !quiet && !NSApp.isActive && !chats.convs[key]!.isMuted(at: nowMs()) && !alertSuppressed(key) {
+        if !m.outgoing && !quiet && !NSApp.isActive && !mutedFor(key, m) && !alertSuppressed(key) {
             NSApp.requestUserAttention(.informationalRequest)
         }
         if key == current { updateSearch() }
@@ -1457,7 +1480,7 @@ final class AppModel {
     }
 
     func alertIncoming(_ key: String, _ m: Message) {
-        guard let c = chats.convs[key], !c.isMuted(at: nowMs()), !isQuiet(key, author: m.authorKey) else { return }
+        guard let c = chats.convs[key], !mutedFor(key, m), !isQuiet(key, author: m.authorKey) else { return }
         // Nothing to announce while the user is looking at this very conversation.
         if key == current && userIsLooking() { return }
         if alertSuppressed(key) { return } // notifications muted, or the chat is open in its own window
@@ -1795,6 +1818,7 @@ final class AppModel {
     private func removeMessage(_ key: String, ts: Int64) -> Bool {
         guard let c = chats.convs[key], let i = chats.findMessage(c, ts: ts, authors: []) else { return false }
         let removed = chats.convs[key]!.msgs.remove(at: i)
+        syncDeleteForMe(key, [removed])
         if editKey == key && editTs == removed.ts { cancelEdit() }
         rewriteAll { [weak self] error in
             guard let error, let self else { return }

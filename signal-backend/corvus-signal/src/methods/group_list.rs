@@ -90,6 +90,21 @@ pub async fn group_json(a: &Account, id: &str, master_key: &[u8; 32], g: &Group)
                 .copied()
                 .unwrap_or(0),
         ),
+        "isMarkedUnread": a
+            .local()
+            .value::<Vec<String>>(super::storage::UNREAD_GROUPS)
+            .await
+            .contains(&normalize_group_id(id)),
+        "isPinned": a
+            .local()
+            .value::<Vec<String>>(super::storage::PINNED)
+            .await
+            .contains(&format!("g:{}", normalize_group_id(id))),
+        "mentionsWhenMuted": !a
+            .local()
+            .value::<Vec<String>>(super::storage::QUIET_MENTION_GROUPS)
+            .await
+            .contains(&normalize_group_id(id)),
         "isTerminated": g.terminated,
         "messageExpirationTime": g.disappearing_messages_timer.as_ref().map(|t| t.duration).unwrap_or(0),
         "members": members,
