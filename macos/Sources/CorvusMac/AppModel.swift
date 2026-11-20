@@ -94,7 +94,7 @@ final class AppModel {
     /// The state before the launch snapshot was shown: the full history is loaded onto it.
     private var snapshotBase: ChatState?
     /// `chats` holds the whole history (not the launch snapshot, not the empty state before unlocking).
-    private var historyLoaded = false
+    private(set) var historyLoaded = false
     /// Keychain protection: the history is already being decrypted while the window opens.
     private var earlyOpen: Task<Result<[String: Conversation], HistoryStoreError>, Never>?
     @ObservationIgnored private var earlySecret: String?
@@ -172,6 +172,10 @@ final class AppModel {
 
     // groups, blocking and message requests (Groups.swift, MessageRequests.swift)
     var roster = Roster() { didSet { chatListCache.removeAll(); peopleVersion &+= 1 } }
+    /// Which AI agents may read which chats (AgentAccess.swift).
+    var agentAccess = AgentAccessSettings.load() { didSet { if agentAccess != oldValue { agentAccessChanged(oldValue) } } }
+    @ObservationIgnored var agentServer: AgentServer?
+    @ObservationIgnored var agentPrompts = AgentPromptQueue()
     /// Changes with the contacts and avatars (part of the ⌘K switcher's cache key).
     @ObservationIgnored var peopleVersion = 0
     /// Chat list rows (per folder), rebuilt only after a change to what they show.
@@ -245,6 +249,7 @@ final class AppModel {
         guard !started else { return }
         started = true
         Perf.mark("start")
+        updateAgentServer()
         notifier.setUp()
         timers.append(Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.trimWarmChats() }
@@ -385,6 +390,7 @@ final class AppModel {
     }
 
     func shutdown() {
+        agentServer?.stop()
         saveLaunchSnapshot(wait: true)
         cli.stop(wait: 2)
         saveNow()

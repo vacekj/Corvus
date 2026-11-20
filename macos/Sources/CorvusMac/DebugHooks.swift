@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import CorvusCore
+import SwiftUI
 
 /// Debug builds only: a tiny command channel for unattended UI checks against tests/mock-signal-cli.py.
 /// Set SIGNAL_CLI_MAC_DEBUG_COMMANDS=<file>; every line appended to it is executed:
@@ -83,6 +84,29 @@ enum DebugHooks {
             let lines = (item?.types ?? []).map { "\($0.rawValue) \(item?.data(forType: $0)?.count ?? 0)" }
             try? (lines.joined(separator: "\n") + "\n").write(toFile: arg, atomically: true, encoding: .utf8)
         case "snapshot": snapshot(to: arg)
+        case "agents": model.agentAccess.enabled = arg != "off"
+        case "agent-panel":
+            // agent-panel allow | deny | all | select <key> | snapshot <png>
+            guard let p = AgentPanel.current else { break }
+            let a = arg.split(separator: " ", maxSplits: 1).map(String.init)
+            switch a.first ?? "" {
+            case "allow": p.state.decide(true)
+            case "deny": p.state.decide(false)
+            case "all": p.state.allChats = true
+            case "select": if a.count > 1 { p.state.selected.insert(a[1]) }
+            case "snapshot": if a.count > 1 { write(p.panel, a[1]) }
+            default: break
+            }
+        case "agent-settings":
+            // Renders Settings → Agents into a PNG.
+            let w = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
+            w.alphaValue = 0
+            w.contentView = NSHostingView(rootView: AgentSettings().environment(model).font(TypeScale.body))
+            w.orderFrontRegardless()
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+                write(w, arg)
+                w.orderOut(nil)
+            }
         case "quit": NSApp.terminate(nil)
         default: break
         }

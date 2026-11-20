@@ -55,6 +55,8 @@ echo "==> Assembling $APP"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Helpers"
 cp "$BIN/corvus" "$APP/Contents/MacOS/"
+# MCP server / CLI through which AI agents read the chats the user allows (Settings → Agents).
+cp "$BIN/corvus-agent" "$APP/Contents/MacOS/"
 # The backend (inside the app's executable) starts one tunnel per call from the executable's directory.
 cp "$TUNNEL_BIN" "$APP/Contents/MacOS/signal-call-tunnel"
 # SwiftPM resource bundle (sound) and the emoji data shared with the Qt app.
@@ -85,6 +87,7 @@ codesign --force --sign "$SIGN_ID" --timestamp=none "$APP/Contents/Helpers/corvu
 
 echo "==> Signing ($SIGN_ID)"
 codesign --force --options runtime --sign "$SIGN_ID" --timestamp=none "$APP/Contents/MacOS/signal-call-tunnel"
+codesign --force --options runtime --sign "$SIGN_ID" --timestamp=none --identifier io.github.corvus.agent "$APP/Contents/MacOS/corvus-agent"
 codesign --force --sign "$SIGN_ID" --timestamp=none "$APP"
 
 echo "Done: $APP"

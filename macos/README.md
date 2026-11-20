@@ -77,3 +77,17 @@ Debug builds (`swift build`) accept `SIGNAL_CLI_MAC_TEST_PASSPHRASE` and `SIGNAL
 for unattended runs against `tests/mock-signal-cli.py` (see `Sources/CorvusMac/DebugHooks.swift`). `scripts/run-hidden.sh` starts such a run in hidden mode (`CORVUS_HIDDEN=1`): no Dock or menu bar
 icon, never in front, an invisible window and a private clipboard, so it can run next to your work; check it with
 the `snapshot` command.
+
+## Agent access (MCP / CLI)
+
+AI agents can read chats through `Corvus.app/Contents/MacOS/corvus-agent`, which relays to the running app
+over a socket in the data folder (mode 0600, same user only). Turn it on in Settings → Agents. The first request
+from an agent opens a prompt naming the agent by its code signature (e.g. Claude Code, Anthropic) where the user
+picks the chats it may read and whether it may look up contacts; asking for another chat by name opens a smaller
+prompt. Grants are listed and edited in Settings → Agents. Access is read-only: nothing is marked read or sent.
+
+    claude mcp add --scope user corvus -- /Applications/Corvus.app/Contents/MacOS/corvus-agent mcp
+    corvus-agent chats | read <chat> | search <text> | contacts <query> | whoami
+
+MCP tools: `list_chats`, `read_chat`, `search_messages`, `search_contacts`. Incoming view-once messages are never
+returned. Hidden mode: `agents on`, `agent-panel allow|deny|all|select <key>|snapshot <png>`, `agent-settings <png>`.

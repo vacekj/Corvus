@@ -16,6 +16,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [
         .executable(name: "corvus", targets: ["CorvusMac"]),
+        .executable(name: "corvus-agent", targets: ["CorvusAgent"]),
     ],
     targets: [
         .systemLibrary(name: "CHistoryStore", path: "Sources/CHistoryStore"),
@@ -37,6 +38,8 @@ let package = Package(
             dependencies: ["CorvusCore"],
             resources: [.process("Resources")]
         ),
+        // MCP server / CLI for AI agents: relays to the running app (AgentServer.swift), links nothing else.
+        .executableTarget(name: "CorvusAgent"),
         .testTarget(
             name: "CorvusCoreTests",
             dependencies: ["CorvusCore"]

@@ -11,6 +11,7 @@ struct SettingsView: View {
             ChatFolderSettings().tabItem { Label("Chats", systemImage: "folder") }
             NotificationSettingsView().tabItem { Label("Notifications", systemImage: "bell.badge") }
             PrivacySettingsView().tabItem { Label("Privacy", systemImage: "hand.raised") }
+            AgentSettings().tabItem { Label("Agents", systemImage: "sparkles") }
             ProfileEditor().tabItem { Label("Profile", systemImage: "person.crop.circle") }
             AdvancedSettings().tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
         }
