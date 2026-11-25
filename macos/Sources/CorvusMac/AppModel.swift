@@ -684,6 +684,34 @@ final class AppModel {
             applyPhoneFlag("pin", key, jsonBool(c["isPinned"]))
             applyPhoneFlag("unread", key, jsonBool(c["isMarkedUnread"]))
         }
+        mergeAliasedChats()
+    }
+
+    /// The number of a UUID, learnt from a message that names both.
+    func learnAlias(uuid: String, number: String) {
+        guard !uuid.isEmpty, !number.isEmpty, uuid != number, chats.alias[uuid] != number else { return }
+        chats.alias[uuid] = number
+        mergeAliasedChats()
+    }
+
+    /// A chat filed under a UUID before the contact's number was known joins the chat under the number,
+    /// with its draft, selection and agent access.
+    func mergeAliasedChats() {
+        guard historyLoaded, chats.hasAliasedChats() else { return }
+        let merged = chats.mergeAliasedChats()
+        var access = agentAccess
+        for (from, to) in merged {
+            if let d = drafts.removeValue(forKey: from), drafts[to] == nil { drafts[to] = d }
+            if editKey == from { cancelEdit() }
+            if current == from { current = to } // the composer keeps what is typed
+            if UserDefaults.standard.string(forKey: Self.lastChatKey) == from {
+                UserDefaults.standard.set(to, forKey: Self.lastChatKey)
+            }
+            access.rekeyChat(from, to: to)
+        }
+        agentAccess = access
+        rewriteHistory("merge chats")
+        listChanged()
     }
 
     /// Group chats and names from a `listGroups` result (live, or the cached one at startup).
@@ -1378,6 +1406,11 @@ final class AppModel {
         let readSync = parseReadSync(env)
         if !readSync.isEmpty { handleReadSync(readSync) }
         handleDeleteForMe(env)
+        learnAlias(uuid: jsonString(env["sourceUuid"]), number: jsonString(env["sourceNumber"]))
+        let sent = jsonObject(jsonObject(env["syncMessage"])["sentMessage"])
+        if !sent.isEmpty {
+            learnAlias(uuid: jsonString(sent["destinationUuid"]), number: jsonString(sent["destinationNumber"]))
+        }
         var pe = parseEnvelope(env)
         if pe.kind == .none { return }
         if !pe.mentions.isEmpty {
