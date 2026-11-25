@@ -203,18 +203,18 @@ public struct Roster {
     /// signal-cli reported the contacts / groups (an unknown list would flag every chat).
     public func isRequest(_ c: Conversation, resolve: (String) -> String = { $0 }) -> Bool {
         if isBlocked(c.key, resolve: resolve) { return false }
-        let wroteHere = c.msgs.contains { $0.outgoing }
+        // Asked for every incoming message: the scans of the chat come last, after the cheap answers.
         if c.isGroup {
             guard groupsLoaded, let g = groups[c.key] else { return false }
             if g.isInvitation(for: account) { return true }
             guard g.isMember, groupsBaselined else { return false }
-            return !isAccepted(c.key, resolve: resolve) && !wroteHere
+            return !isAccepted(c.key, resolve: resolve) && !c.msgs.contains { $0.outgoing }
         }
         let key = resolve(c.key)
         if key == account || c.key == account { return false } // Note to Self
         guard contactsLoaded, contactsBaselined else { return false }
         if isAccepted(c.key, resolve: resolve) || isKnownContact(c.key) || isKnownContact(key) { return false }
-        return !wroteHere && c.msgs.contains { !$0.outgoing }
+        return !c.msgs.contains { $0.outgoing } && c.msgs.contains { !$0.outgoing }
     }
 
     /// First run after the upgrade: chats that already exist are the user's chats, not requests.

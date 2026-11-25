@@ -40,6 +40,21 @@ pub struct SqlContact {
     pub is_verified: Option<bool>,
 }
 
+/// Corvus patch: `phonenumber::parse` takes about a millisecond, and the whole contact list is read
+/// often (a thousand contacts held up message handling for a second each time): parsed numbers are kept.
+fn parse_phone_number(p: &str) -> Result<phonenumber::PhoneNumber, phonenumber::ParseError> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static PARSED: OnceLock<Mutex<HashMap<String, phonenumber::PhoneNumber>>> = OnceLock::new();
+    let cache = PARSED.get_or_init(Default::default);
+    if let Some(n) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(p) {
+        return Ok(n.clone());
+    }
+    let n = phonenumber::parse(None, p)?;
+    cache.lock().unwrap_or_else(|e| e.into_inner()).insert(p.to_owned(), n.clone());
+    Ok(n)
+}
+
 impl TryInto<Contact> for SqlContact {
     type Error = SqliteStoreError;
 
@@ -47,10 +62,7 @@ impl TryInto<Contact> for SqlContact {
     fn try_into(self) -> Result<Contact, Self::Error> {
         Ok(Contact {
             uuid: self.uuid,
-            phone_number: self
-                .phone_number
-                .map(|p| phonenumber::parse(None, &p))
-                .transpose()?,
+            phone_number: self.phone_number.map(|p| parse_phone_number(&p)).transpose()?,
             name: self.name,
             verified: Verified {
                 destination_aci_binary: self

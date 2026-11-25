@@ -10,6 +10,8 @@ import SwiftUI
 @MainActor
 enum DebugHooks {
     private static var offset: UInt64 = 0
+    /// Messages that got past the catch-up silence in alertIncoming (sound / notification attempts).
+    static var alertCount = 0
     private static var timer: Timer?
 
     static func start(_ model: AppModel) {
@@ -85,6 +87,11 @@ enum DebugHooks {
             try? (lines.joined(separator: "\n") + "\n").write(toFile: arg, atomically: true, encoding: .utf8)
         case "snapshot": snapshot(to: arg)
         case "agents": model.agentAccess.enabled = arg != "off"
+        case "counts":
+            // counts <file>: messages and unread per chat, alerts so far, catch-up state
+            var lines = model.chats.convs.values.sorted { $0.key < $1.key }.map { "\($0.key) msgs=\($0.msgs.count) unread=\($0.unread)" }
+            lines.append("alerts=\(alertCount) catchingUp=\(model.catchingUp) buffered=\(model.earlyEnvelopes.count)")
+            try? (lines.joined(separator: "\n") + "\n").write(toFile: arg, atomically: true, encoding: .utf8)
         case "agent-panel":
             // agent-panel allow | deny | all | select <key> | snapshot <png>
             guard let p = AgentPanel.current else { break }

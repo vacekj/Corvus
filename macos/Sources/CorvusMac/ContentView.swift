@@ -358,7 +358,7 @@ private struct Sidebar: View {
                 }
             }
 
-            if !model.connected { ConnectionFooter() } // only when there is something to say
+            if !model.connected || model.catchupText != nil { ConnectionFooter() } // only when there is something to say
             SidebarTabBar()
         }
         .background(KeepOpenChatListed())
@@ -704,10 +704,14 @@ private struct ConnectionFooter: View {
         VStack(alignment: .leading, spacing: 4) {
             Divider()
             HStack(spacing: 6) {
-                Circle()
-                    .fill(model.connected ? Color.green : Color.orange)
-                    .frame(width: 7, height: 7)
-                Text(model.statusText).lineLimit(1).truncationMode(.tail)
+                if model.catchupText != nil {
+                    ProgressView().controlSize(.mini)
+                } else {
+                    Circle()
+                        .fill(model.connected ? Color.green : Color.orange)
+                        .frame(width: 7, height: 7)
+                }
+                Text(model.catchupText ?? model.statusText).lineLimit(1).truncationMode(.tail)
                 Spacer()
                 if !model.connected && model.historyReady {
                     Button("Reconnect") { model.reconnect() }.buttonStyle(.link)

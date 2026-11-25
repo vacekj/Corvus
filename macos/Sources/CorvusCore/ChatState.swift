@@ -68,12 +68,17 @@ public struct ChatState {
     /// Authors empty => match by timestamp only. Matches the original or the latest edit timestamp.
     public func findMessage(_ c: Conversation, ts: Int64, authors: [String]) -> Int? {
         let nonEmpty = authors.filter { !$0.isEmpty }
-        for i in c.msgs.indices.reversed() {
-            let m = c.msgs[i]
-            if m.ts != ts && !(m.editTs > 0 && m.editTs == ts) { continue }
-            if nonEmpty.isEmpty || authorMatches(c, m, nonEmpty) { return i }
+        // Runs over the whole chat for every new message (the duplicate check): fields are read in
+        // place, without copying each message.
+        return c.msgs.withUnsafeBufferPointer { buf in
+            var i = buf.count
+            while i > 0 {
+                i -= 1
+                if buf[i].ts != ts && !(buf[i].hasExtras && buf[i].editTs > 0 && buf[i].editTs == ts) { continue }
+                if nonEmpty.isEmpty || authorMatches(c, buf[i], nonEmpty) { return i }
+            }
+            return nil
         }
-        return nil
     }
 
     public func pendingTimestamps(_ key: String) -> Set<Int64> {
@@ -211,12 +216,16 @@ public struct ChatState {
     /// Adds a message unless it is a duplicate. Returns nil for a duplicate.
     public mutating func addMessage(_ key: String, _ m: Message, title: String = "", group: Bool = false) -> (index: Int, records: [JSON])? {
         ensure(key, title: title, group: group)
-        let c = convs[key]!
-        if findMessage(c, ts: m.ts, authors: [effectiveAuthor(c, m)]) != nil { return nil }
+        // In a closure so no second reference to the messages is alive during the insert (that would
+        // copy the whole array for every message).
+        let (duplicate, previousOrder): (Bool, Int64) = {
+            let c = convs[key]!
+            return (findMessage(c, ts: m.ts, authors: [effectiveAuthor(c, m)]) != nil, c.msgs.last?.sortTs ?? 0)
+        }()
+        if duplicate { return nil }
         var message = m
         // Always append new arrivals in local receive order. The original Signal timestamp
         // remains untouched because quotes, edits and reactions use it as the message ID.
-        let previousOrder = c.msgs.last?.sortTs ?? 0
         message.orderTs = max(message.orderTs, max(nowMs(), previousOrder + 1))
         let at = convs[key]!.insertSorted(message)
         var recs = [Records.message(key, message)]

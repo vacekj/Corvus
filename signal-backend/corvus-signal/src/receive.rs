@@ -28,6 +28,49 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// A connection that stayed up this long resets the backoff.
 const HEALTHY: Duration = Duration::from_secs(60);
 
+/// Attachments of this many messages are downloaded at the same time; the messages still go out in
+/// the order the server sent them.
+const PARALLEL_DOWNLOADS: usize = 8;
+
+/// The messages the server kept while we were away, from connecting until "queue empty". The app
+/// is told when it starts and ends ("syncState"), so it can show them all at once and quietly;
+/// delivery receipts and the Storage Service fetch wait for its end.
+#[derive(Default)]
+pub struct Catchup {
+    pub active: bool,
+    receipts: Vec<(ServiceId, u64)>,
+    storage: bool,
+}
+
+impl Catchup {
+    fn start(&mut self, ctx: &Ctx) {
+        self.active = true;
+        ctx.out.send(notification("syncState", json!({"syncing": true})));
+    }
+
+    /// Sends what waited for the end of the queue: one delivery receipt per sender, one storage fetch.
+    fn finish(&mut self, ctx: &Rc<Ctx>, account: &Account) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+        let mut by_sender: Vec<(ServiceId, Vec<u64>)> = Vec::new();
+        for (sender, ts) in self.receipts.drain(..) {
+            match by_sender.iter_mut().find(|(s, _)| *s == sender) {
+                Some((_, list)) => list.push(ts),
+                None => by_sender.push((sender, vec![ts])),
+            }
+        }
+        for (sender, timestamps) in by_sender {
+            send_delivery_receipt(account, sender, timestamps);
+        }
+        if std::mem::take(&mut self.storage) {
+            spawn_storage_sync(ctx);
+        }
+        ctx.out.send(notification("syncState", json!({"syncing": false})));
+    }
+}
+
 /// Runs forever (until the process exits).
 pub async fn run(ctx: Rc<Ctx>) {
     let Ok(account) = ctx.account() else { return };
@@ -39,23 +82,44 @@ pub async fn run(ctx: Rc<Ctx>) {
         match manager.receive_messages().await {
             Ok(stream) => {
                 tracing::info!("receiving");
+                let mut catchup = Catchup::default();
+                catchup.start(&ctx);
+                let mut count = 0usize;
+                let ctx_ref = &ctx;
+                // Attachments are fetched ahead while earlier messages are handed on.
+                let stream = stream
+                    .map(move |item| async move {
+                        if let Received::Content(content, _) = &item {
+                            download_attachments(ctx_ref, account, content).await;
+                        }
+                        item
+                    })
+                    .buffered(PARALLEL_DOWNLOADS);
                 let mut stream = std::pin::pin!(stream);
                 while let Some(item) = stream.next().await {
                     match item {
-                        Received::Content(content, ack) => handle(&ctx, account, *content, ack).await,
+                        Received::Content(content, ack) => {
+                            count += 1;
+                            handle(&ctx, account, *content, ack, &mut catchup).await
+                        }
                         Received::QueueEmpty => {
-                            tracing::info!("queue empty");
+                            tracing::info!(
+                                messages = count,
+                                ms = started.elapsed().as_millis() as u64,
+                                "queue empty"
+                            );
                             backoff = Duration::from_secs(1);
                             if !startup_done {
                                 startup_done = true;
+                                catchup.storage = true;
                                 let ctx = ctx.clone();
                                 tokio::task::spawn_local(async move {
-                                    crate::methods::storage::sync(&ctx).await;
                                     if let Ok(account) = ctx.account() {
                                         crate::avatars::sync_missing(account, &ctx.dir).await;
                                     }
                                 });
                             }
+                            catchup.finish(&ctx, account);
                         }
                         Received::DecryptionError(_) => {
                             tracing::warn!("a message could not be decrypted");
@@ -63,6 +127,7 @@ pub async fn run(ctx: Rc<Ctx>) {
                         Received::Contacts => {}
                     }
                 }
+                catchup.finish(&ctx, account);
                 tracing::info!(secs = started.elapsed().as_secs(), "receive stream ended");
             }
             Err(error) => {
@@ -91,11 +156,10 @@ fn is_unauthorized<E: std::error::Error>(error: &presage::Error<E>) -> bool {
     matches!(error, presage::Error::ServiceError(ServiceError::Unauthorized))
 }
 
-/// Handles one message: side effects, attachment downloads, the notification, the ack, and the
-/// delivery receipt.
-pub async fn handle(ctx: &Rc<Ctx>, account: &Account, content: Content, ack: AckHandle) {
-    apply_side_effects(ctx, account, &content).await;
-    download_attachments(ctx, account, &content).await;
+/// Handles one message (its attachments are already downloaded): side effects, the notification,
+/// the ack, and the delivery receipt.
+pub async fn handle(ctx: &Rc<Ctx>, account: &Account, content: Content, ack: AckHandle, catchup: &mut Catchup) {
+    apply_side_effects(ctx, account, &content, catchup).await;
 
     let directory = account.directory().await;
     let source_name = match &content.metadata.sender {
@@ -135,20 +199,28 @@ pub async fn handle(ctx: &Rc<Ctx>, account: &Account, content: Content, ack: Ack
             _ => content.metadata.client_timestamp.timestamp_millis() as u64,
         };
         let sender = content.metadata.sender;
-        let mut manager = account.manager();
-        tokio::task::spawn_local(async move {
-            let receipt = ReceiptMessage {
-                r#type: Some(receipt_message::Type::Delivery as i32),
-                timestamp: vec![timestamp],
-            };
-            if let Err(error) = manager.send_message_ext(sender, receipt, now_millis(), false).await {
-                tracing::info!(%error, "delivery receipt not sent");
-            }
-        });
+        if catchup.active {
+            catchup.receipts.push((sender, timestamp));
+        } else {
+            send_delivery_receipt(account, sender, vec![timestamp]);
+        }
     }
 }
 
-async fn apply_side_effects(ctx: &Rc<Ctx>, account: &Account, content: &Content) {
+fn send_delivery_receipt(account: &Account, sender: ServiceId, timestamps: Vec<u64>) {
+    let mut manager = account.manager();
+    tokio::task::spawn_local(async move {
+        let receipt = ReceiptMessage {
+            r#type: Some(receipt_message::Type::Delivery as i32),
+            timestamp: timestamps,
+        };
+        if let Err(error) = manager.send_message_ext(sender, receipt, now_millis(), false).await {
+            tracing::info!(%error, "delivery receipt not sent");
+        }
+    });
+}
+
+async fn apply_side_effects(ctx: &Rc<Ctx>, account: &Account, content: &Content, catchup: &mut Catchup) {
     match &content.body {
         ContentBody::SynchronizeMessage(SyncMessage { content: Some(sync), .. }) => match sync {
             SyncContent::Contacts(_) => {
@@ -158,11 +230,16 @@ async fn apply_side_effects(ctx: &Rc<Ctx>, account: &Account, content: &Content)
                 crate::methods::storage::roster_changed(ctx);
             }
             SyncContent::Blocked(blocked) => apply_blocked(account, blocked).await,
-            // Another device changed the Storage Service, or we just got the key to read it.
+            // Another device changed the Storage Service (the phone sends one per change): fetched
+            // once after the queued messages, else right away.
             SyncContent::FetchLatest(sync_message::FetchLatest { r#type: Some(t) })
                 if *t == sync_message::fetch_latest::Type::StorageManifest as i32 =>
             {
-                crate::methods::storage::apply_stored(ctx).await;
+                if catchup.active {
+                    catchup.storage = true;
+                } else {
+                    spawn_storage_sync(ctx);
+                }
             }
             SyncContent::Keys(_) => spawn_storage_sync(ctx),
             SyncContent::MessageRequestResponse(r) => apply_message_request(account, r).await,

@@ -76,8 +76,14 @@ impl SqliteStore {
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full);
         // Each connection carries its own page cache; sqlx's default of 10 is more than we need.
+        // Corvus patch: connections are kept open. Opening one runs SQLCipher's key derivation (about
+        // a second); with sqlx's idle timeout and lifetime every request after a quiet spell (and
+        // every message after the Mac wakes) waited for that.
         let db = SqlitePoolOptions::new()
             .max_connections(3)
+            .min_connections(3)
+            .idle_timeout(None)
+            .max_lifetime(None)
             .connect_with(options)
             .await?;
 
@@ -102,6 +108,61 @@ impl SqliteStore {
     pub fn without_message_history(mut self) -> Self {
         self.persist_messages = false;
         self
+    }
+
+    /// Corvus patch: the installed sticker packs as (id, title, author, `[[sticker id, emoji], …]` as
+    /// JSON), read in SQLite. The manifests also hold every sticker image (as JSON number arrays):
+    /// reading them whole took a second and more.
+    pub async fn sticker_pack_summaries(
+        &self,
+    ) -> Result<Vec<(Vec<u8>, String, String, String)>, SqliteStoreError> {
+        let rows: Vec<(Vec<u8>, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT sticker_packs.id, json_extract(manifest, '$.title'), json_extract(manifest, '$.author'), \
+             (SELECT json_group_array(json_array(json_extract(s.value, '$.id'), json_extract(s.value, '$.emoji'))) \
+              FROM json_each(manifest, '$.stickers') AS s) \
+             FROM sticker_packs",
+        )
+        .fetch_all(&self.db)
+        .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(id, title, author, stickers)| {
+                (id, title.unwrap_or_default(), author.unwrap_or_default(), stickers.unwrap_or_else(|| "[]".into()))
+            })
+            .collect())
+    }
+
+    /// Corvus patch: the ids of the installed sticker packs (cheap: no manifest is read).
+    pub async fn sticker_pack_ids(&self) -> Result<Vec<Vec<u8>>, SqliteStoreError> {
+        Ok(query_scalar("SELECT id FROM sticker_packs ORDER BY id").fetch_all(&self.db).await?)
+    }
+
+    /// Corvus patch: the key of an installed sticker pack, without reading its manifest.
+    pub async fn sticker_pack_key(&self, id: &[u8]) -> Result<Option<Vec<u8>>, SqliteStoreError> {
+        Ok(query_scalar("SELECT key FROM sticker_packs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(&self.db)
+            .await?)
+    }
+
+    /// Corvus patch: the emoji of one sticker of an installed pack (outer None: no such pack).
+    pub async fn sticker_emoji(
+        &self,
+        pack: &[u8],
+        sticker: u32,
+    ) -> Result<Option<Option<String>>, SqliteStoreError> {
+        if self.sticker_pack_key(pack).await?.is_none() {
+            return Ok(None);
+        }
+        let emoji: Option<Option<String>> = query_scalar(
+            "SELECT json_extract(s.value, '$.emoji') FROM sticker_packs, json_each(manifest, '$.stickers') AS s \
+             WHERE sticker_packs.id = ? AND json_extract(s.value, '$.id') = ?",
+        )
+        .bind(pack)
+        .bind(sticker as i64)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(Some(emoji.flatten()))
     }
 
     /// Corvus patch: reads a value from the `corvus_kv` table.
@@ -381,5 +442,50 @@ mod tests {
         store.close().await;
 
         assert!(clone.db.is_closed());
+    }
+}
+
+#[cfg(test)]
+mod sticker_summary_tests {
+    use presage::store::{ContentsStore, StickerPack, StickerPackManifest};
+    use presage::model::identity::OnNewIdentity;
+
+    use super::SqliteStore;
+
+    #[tokio::test]
+    async fn summaries_leave_the_images_out() -> Result<(), Box<dyn std::error::Error>> {
+        let path = std::env::temp_dir().join(format!("presage-sticker-test-{}.db", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut store = SqliteStore::open(path.to_str().unwrap(), OnNewIdentity::Trust).await?;
+        let sticker = |id, emoji: Option<&str>| presage::store::Sticker {
+            id,
+            emoji: emoji.map(str::to_owned),
+            content_type: Some("image/webp".into()),
+            bytes: Some(vec![7; 1000]),
+        };
+        store
+            .add_sticker_pack(&StickerPack {
+                id: vec![1, 2, 3],
+                key: vec![9; 32],
+                manifest: StickerPackManifest {
+                    title: "Cats".into(),
+                    author: "Ann".into(),
+                    cover: None,
+                    stickers: vec![sticker(0, Some("🐱")), sticker(1, None)],
+                },
+            })
+            .await?;
+        let list = store.sticker_pack_summaries().await?;
+        assert_eq!(list.len(), 1);
+        let (id, title, author, stickers) = &list[0];
+        assert_eq!((id.as_slice(), title.as_str(), author.as_str()), (&[1u8, 2, 3][..], "Cats", "Ann"));
+        assert_eq!(stickers, r#"[[0,"🐱"],[1,null]]"#);
+        assert_eq!(store.sticker_pack_key(&[1, 2, 3]).await?, Some(vec![9; 32]));
+        assert_eq!(store.sticker_pack_key(&[4]).await?, None);
+        assert_eq!(store.sticker_emoji(&[1, 2, 3], 0).await?, Some(Some("🐱".into())));
+        assert_eq!(store.sticker_emoji(&[1, 2, 3], 1).await?, Some(None));
+        assert_eq!(store.sticker_emoji(&[4], 0).await?, None);
+        let _ = std::fs::remove_file(&path);
+        Ok(())
     }
 }

@@ -612,6 +612,7 @@ impl<S: Store> Manager<S, Registered> {
             service_cipher_aci: ServiceCipher<AciStore>,
             service_cipher_pni: ServiceCipher<PniStore>,
             groups_manager: GroupsManager<InMemoryCredentialsCache>,
+            #[allow(dead_code)] // Corvus patch: was only used for the storage fetch on FetchLatest
             identified_push_service: PushService,
             service_ids: ServiceIds,
             message_sender: MessageSender<AciStore>,
@@ -624,7 +625,9 @@ impl<S: Store> Manager<S, Registered> {
 
         let identified_push_service = self.identified_push_service();
         // NB: here, we initialise a *fresh* Signal websocket, which means any other use of the previous one will go into nirvana
-        let identified_websocket = self.identified_websocket(true).await?;
+        // Corvus patch: both websockets are opened at the same time.
+        let (identified_websocket, unidentified_websocket) =
+            futures::try_join!(self.identified_websocket(true), self.unidentified_websocket())?;
 
         let mut account_manager = AccountManager::new(
             identified_push_service.clone(),
@@ -661,7 +664,7 @@ impl<S: Store> Manager<S, Registered> {
         let init = StreamState {
             store: self.store.clone(),
             identified_websocket,
-            unidentified_websocket: self.unidentified_websocket().await?,
+            unidentified_websocket,
             encrypted_messages: Box::pin(encrypted_messages.stream()),
             message_receiver: MessageReceiver::new(identified_push_service.clone()),
             service_cipher_aci: self.new_service_cipher_aci(),
@@ -966,19 +969,10 @@ impl<S: Store> Manager<S, Registered> {
                                         ..
                                     }) = &content.body
                                     {
-                                        if fetch_latest.r#type()
-                                            == sync_message::fetch_latest::Type::StorageManifest
-                                        {
-                                            if let Err(error) = storage::sync_storage_service(
-                                                &state.store,
-                                                state.identified_push_service.clone(),
-                                                &mut state.groups_manager,
-                                            )
-                                            .await
-                                            {
-                                                warn!(%error, "failed to sync the storage service");
-                                            }
-                                        }
+                                        // Corvus patch: not fetched here. A fetch takes a second or more and
+                                        // held up every message behind it (the phone sends one per change);
+                                        // corvus-signal fetches once, after the queued messages.
+                                        let _ = fetch_latest;
                                     }
 
                                     // group update

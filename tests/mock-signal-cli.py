@@ -13,7 +13,7 @@ starting with "corvus-signal", `--version` prints "corvus-signal <version>"; it 
 
 Environment:
   MOCK_LOG     file: every JSON-RPC request is appended (one JSON per line)
-  MOCK_INJECT  file: JSON lines appended here are emitted as `receive` envelopes
+  MOCK_INJECT  file: JSON lines appended here are emitted as `receive` envelopes ({"_syncState": bool}: syncState)
   MOCK_IDENTITY_FILE  file: JSON list replacing the identities of listIdentities (key changes)
   MOCK_EXTRA_GROUPS   set: also lists a group where we are no admin (permissions only for admins)
 
@@ -237,7 +237,11 @@ def injector(path):
             continue
         for line in data.splitlines():
             if line.strip():
-                emit({"jsonrpc": "2.0", "method": "receive", "params": {"envelope": json.loads(line)}})
+                obj = json.loads(line)
+                if "_syncState" in obj:  # {"_syncState": true|false}: the backend catching up on queued messages
+                    emit({"jsonrpc": "2.0", "method": "syncState", "params": {"syncing": obj["_syncState"]}})
+                else:
+                    emit({"jsonrpc": "2.0", "method": "receive", "params": {"envelope": obj}})
 
 
 inject = os.environ.get("MOCK_INJECT")

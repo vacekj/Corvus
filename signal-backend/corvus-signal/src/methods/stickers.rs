@@ -4,7 +4,6 @@ use std::rc::Rc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
-use presage::store::ContentsStore;
 use serde_json::{Value, json};
 
 use super::common::*;
@@ -22,23 +21,34 @@ pub const METHODS: &[Method] = &[
 
 async fn list_packs(ctx: Rc<Ctx>, _p: Value) -> Result<Value, RpcError> {
     let a = ctx.account()?;
+    // Reading the list takes a second (the manifests hold the images): kept until the packs change.
+    let ids = a.store.sticker_pack_ids().await.map_err(fail)?;
+    if let Some(list) = PACKS.with(|c| c.borrow().as_ref().filter(|(k, _)| *k == ids).map(|(_, v)| v.clone())) {
+        return Ok(list);
+    }
     let mut out = Vec::new();
-    for pack in a.store.sticker_packs().await.map_err(fail)?.filter_map(Result::ok) {
-        let stickers: Vec<Value> = pack
-            .manifest
-            .stickers
-            .iter()
-            .map(|s| json!({"id": s.id, "emoji": s.emoji.clone().unwrap_or_default()}))
+    for (id, title, author, stickers) in a.store.sticker_pack_summaries().await.map_err(fail)? {
+        let stickers: Vec<Value> = serde_json::from_str::<Vec<(u32, Option<String>)>>(&stickers)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(id, emoji)| json!({"id": id, "emoji": emoji.unwrap_or_default()}))
             .collect();
         out.push(json!({
-            "packId": hex::encode(&pack.id),
-            "title": pack.manifest.title,
-            "author": pack.manifest.author,
+            "packId": hex::encode(&id),
+            "title": title,
+            "author": author,
             "installed": true,
             "stickers": stickers,
         }));
     }
-    Ok(Value::Array(out))
+    let list = Value::Array(out);
+    PACKS.with(|c| *c.borrow_mut() = Some((ids, list.clone())));
+    Ok(list)
+}
+
+thread_local! {
+    /// The last sticker pack list and the pack ids it was made for.
+    static PACKS: std::cell::RefCell<Option<(Vec<Vec<u8>>, Value)>> = const { std::cell::RefCell::new(None) };
 }
 
 async fn get_sticker(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
@@ -52,8 +62,8 @@ async fn get_sticker(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
         return Ok(json!({"data": B64.encode(bytes)}));
     }
     let pack_id = hex::decode(&pack_hex).map_err(|_| RpcError::invalid_params("bad packId"))?;
-    let key = match a.store.sticker_pack(&pack_id).await.map_err(fail)? {
-        Some(pack) => pack.key,
+    let key = match a.store.sticker_pack_key(&pack_id).await.map_err(fail)? {
+        Some(key) => key,
         None => a
             .local()
             .sticker_key(&pack_hex)

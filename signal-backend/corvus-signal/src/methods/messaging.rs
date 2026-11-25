@@ -10,7 +10,6 @@ use presage::proto::{
     AttachmentPointer, BodyRange, DataMessage, EditMessage, Preview, ReceiptMessage, SyncMessage, TypingMessage,
     body_range, data_message, receipt_message, sync_message, typing_message,
 };
-use presage::store::ContentsStore;
 use serde_json::{Value, json};
 
 use super::common::*;
@@ -173,23 +172,23 @@ async fn sticker_message(ctx: &Ctx, a: &Account, spec: &str) -> Result<data_mess
         .ok_or_else(|| RpcError::invalid_params("sticker must be packId:stickerId"))?;
     let sticker_id: u32 = id.parse().map_err(|_| RpcError::invalid_params("bad sticker id"))?;
     let pack_id = hex::decode(pack_hex).map_err(|_| RpcError::invalid_params("bad sticker pack id"))?;
-    let pack = a
+    let emoji = a
         .store
-        .sticker_pack(&pack_id)
+        .sticker_emoji(&pack_id, sticker_id)
         .await
         .map_err(fail)?
         .ok_or_else(|| RpcError::failed("Sticker pack is not installed"))?;
-    let emoji = pack
-        .manifest
-        .stickers
-        .iter()
-        .find(|s| s.id == sticker_id)
-        .and_then(|s| s.emoji.clone());
+    let pack_key = a
+        .store
+        .sticker_pack_key(&pack_id)
+        .await
+        .map_err(fail)?
+        .ok_or_else(|| RpcError::failed("Sticker pack is not installed"))?;
     let bytes = match ctx.dir.sticker(pack_hex, sticker_id).and_then(|p| std::fs::read(p).ok()) {
         Some(b) => b,
         None => a
             .manager()
-            .fetch_sticker(&pack_id, &pack.key, sticker_id)
+            .fetch_sticker(&pack_id, &pack_key, sticker_id)
             .await
             .map_err(fail)?,
     };
@@ -215,7 +214,7 @@ async fn sticker_message(ctx: &Ctx, a: &Account, spec: &str) -> Result<data_mess
         .map_err(|e| RpcError::failed(format!("Sticker upload failed: {e}")))?;
     Ok(data_message::Sticker {
         pack_id: Some(pack_id),
-        pack_key: Some(pack.key.clone()),
+        pack_key: Some(pack_key.clone()),
         sticker_id: Some(sticker_id),
         data: Some(data),
         emoji,

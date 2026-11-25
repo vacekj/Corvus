@@ -36,31 +36,29 @@ pub fn mute_json(until: u64) -> i64 {
 
 thread_local! {
     static SYNCING: Cell<bool> = const { Cell::new(false) };
+    static AGAIN: Cell<bool> = const { Cell::new(false) };
 }
 
 /// Fetches what changed in the Storage Service and applies it to the local state. One at a time;
-/// a call while a sync runs is dropped (the running one fetches the latest manifest anyway).
+/// a call while a sync runs makes that sync run once more when it is done (its manifest may be older
+/// than the change that was announced).
 pub async fn sync(ctx: &Ctx) {
     let Ok(a) = ctx.account() else { return };
     if SYNCING.with(|s| s.replace(true)) {
+        AGAIN.with(|s| s.set(true));
         return;
     }
-    match a.manager().sync_storage_service().await {
-        Ok(state) => apply(ctx, a, &state).await,
-        Err(error) => tracing::info!(%error, "storage service sync failed"),
+    loop {
+        AGAIN.with(|s| s.set(false));
+        match a.manager().sync_storage_service().await {
+            Ok(state) => apply(ctx, a, &state).await,
+            Err(error) => tracing::info!(%error, "storage service sync failed"),
+        }
+        if !AGAIN.with(|s| s.get()) {
+            break;
+        }
     }
     SYNCING.with(|s| s.set(false));
-}
-
-/// presage already fetched the latest manifest (it does on a fetch-latest sync message): apply
-/// the stored snapshot without going to the network again.
-pub async fn apply_stored(ctx: &Ctx) {
-    let Ok(a) = ctx.account() else { return };
-    match a.manager().storage_state().await {
-        Ok(Some(state)) => apply(ctx, a, &state).await,
-        Ok(None) => {}
-        Err(error) => tracing::info!(%error, "cannot read the storage service snapshot"),
-    }
 }
 
 /// Mirrors the Storage Service records into the local contact and group state.

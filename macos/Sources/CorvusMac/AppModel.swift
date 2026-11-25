@@ -227,15 +227,18 @@ final class AppModel {
     init() {
         cli.onEnvelope = { [weak self] env in
             guard let self else { return }
-            // The backend may start while the history is still being unlocked: keep messages until it is loaded.
-            if self.historyReady { self.onEnvelope(env) } else { self.earlyEnvelopes.append(env) }
+            // Kept while the history is still being unlocked, and while the backend catches up on what the
+            // server kept for us (Catchup.swift): those are shown all at once, without alerts.
+            if self.historyReady && !self.catchingUp { self.onEnvelope(env) } else { self.bufferEnvelope(env) }
         }
+        cli.onSyncState = { [weak self] syncing in self?.setCatchingUp(syncing) }
         cli.onCallEvent = { [weak self] ev in self?.onCallEvent(ev) }
         cli.onRosterChanged = { [weak self] in self?.rosterChanged() }
         cli.onStopped = { [weak self] reason in
             // A quick start that did not hold: check the backend and the account properly next time.
             if let t = self?.fastStartAt, Date().timeIntervalSince(t) < 30 { self?.fullCheckNext = true }
             if self?.earlyStarted == true { self?.earlyStarted = false; self?.fullCheckNext = true }
+            self?.setCatchingUp(false)
             self?.setConnected(false, info: reason)
             self?.scheduleAutoReconnect()
         }
@@ -289,9 +292,7 @@ final class AppModel {
             prewarmTopChats()
             KeyboardNavigation.shared.prewarm(self)
             saveLaunchSnapshot()
-            let early = earlyEnvelopes
-            earlyEnvelopes = []
-            early.forEach(onEnvelope)
+            if !catchingUp { flushBacklog() }
             guard await ensureBackend() else { return }
             await connectAccount()
         }
@@ -428,6 +429,13 @@ final class AppModel {
     /// once a connection stayed up for two minutes, so a crash loop does not spin forever.
     @ObservationIgnored var fastStartAt: Date?
     @ObservationIgnored var earlyEnvelopes: [JSON] = []
+    /// Catching up on messages kept by the server (Catchup.swift).
+    var catchingUp = false
+    var catchupCount = 0
+    @ObservationIgnored var catchupCountScheduled = false
+    @ObservationIgnored var catchupGen = 0
+    /// Applying a backlog: no sound, notification or dock bounce, one chat list update at the end.
+    @ObservationIgnored var quietBatch = false
     @ObservationIgnored var earlyStarted = false
     @ObservationIgnored var fullCheckNext = false
 
@@ -1358,13 +1366,13 @@ final class AppModel {
 
     // MARK: - Receiving
 
-    private func onEnvelope(_ env: JSON) {
+    func onEnvelope(_ env: JSON) {
         if let receipt = parseReceipt(env) {
             handleReceipt(receipt)
             return
         }
         if let typing = parseTyping(env) {
-            handleTyping(typing)
+            if !quietBatch { handleTyping(typing) } // long over by now
             return
         }
         let readSync = parseReadSync(env)
@@ -1477,6 +1485,7 @@ final class AppModel {
         let quiet = !m.outgoing && isQuiet(key, author: m.authorKey) // blocked sender or unaccepted request
         if !m.outgoing && !quiet && !(key == current && userIsLooking()) { chats.convs[key]!.unread += 1 }
         else if !m.outgoing && !quiet { sendReadReceipts(key, [m]) } // read right away
+        if quietBatch { return true } // flushBacklog updates the list once
         if !m.outgoing && !quiet && !NSApp.isActive && !mutedFor(key, m) && !alertSuppressed(key) {
             NSApp.requestUserAttention(.informationalRequest)
         }
@@ -1486,6 +1495,10 @@ final class AppModel {
     }
 
     func alertIncoming(_ key: String, _ m: Message) {
+        if quietBatch { return } // messages from while Corvus was away
+        #if DEBUG
+        DebugHooks.alertCount += 1
+        #endif
         guard let c = chats.convs[key], !mutedFor(key, m), !isQuiet(key, author: m.authorKey) else { return }
         // Nothing to announce while the user is looking at this very conversation.
         if key == current && userIsLooking() { return }

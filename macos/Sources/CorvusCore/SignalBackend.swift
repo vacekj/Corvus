@@ -56,6 +56,8 @@ public final class SignalBackend {
     public var onCallEvent: ((JSON) -> Void)?
     /// Contacts or groups changed outside a message (sync from the phone): list them again.
     public var onRosterChanged: (() -> Void)?
+    /// The backend is catching up on messages kept by the server (true) or has caught up (false).
+    public var onSyncState: ((Bool) -> Void)?
     public var onStopped: ((String) -> Void)?
     public var onLogLine: ((String) -> Void)?
 
@@ -511,6 +513,8 @@ public final class SignalBackend {
             if !ev.isEmpty { onCallEvent?(ev) }
         } else if jsonString(o["method"]) == "rosterChanged" {
             onRosterChanged?()
+        } else if jsonString(o["method"]) == "syncState" {
+            onSyncState?(jsonBool(jsonObject(o["params"])["syncing"]))
         }
     }
 
