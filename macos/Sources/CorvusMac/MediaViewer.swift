@@ -390,7 +390,7 @@ struct ImageViewerOverlay: View {
             .padding(EdgeInsets(top: 0, leading: 24, bottom: 24, trailing: 24))
             .allowsHitTesting(false)
         } else if let player = item.player {
-            VideoPlayer(player: player)
+            PlayerView(player: player)
                 .padding(EdgeInsets(top: 0, leading: 64, bottom: 24, trailing: 64))
         } else if item.blocked || item.failed {
             VStack(spacing: 10) {

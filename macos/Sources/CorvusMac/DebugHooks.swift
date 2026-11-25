@@ -6,7 +6,7 @@ import SwiftUI
 /// Debug builds only: a tiny command channel for unattended UI checks against tests/mock-signal-cli.py.
 /// Set SIGNAL_CLI_MAC_DEBUG_COMMANDS=<file>; every line appended to it is executed:
 ///   open <conversation key> | type <text> | send | reply-last | react-last <emoji> | edit-last <text>
-///   search <text> | archived on|off | view-image | copy-image | clipboard <file> | snapshot <png path> | quit
+///   search <text> | archived on|off | view-image | play-video [viewer] | copy-image | clipboard <file> | snapshot <png path> | quit
 @MainActor
 enum DebugHooks {
     private static var offset: UInt64 = 0
@@ -79,6 +79,12 @@ enum DebugHooks {
         case "view-image":
             if let m = model.currentConversation?.msgs.last(where: { $0.attachments.contains(where: \.isImage) }),
                let i = m.attachments.firstIndex(where: \.isImage) { model.openMediaViewer(m, i) }
+        case "play-video":
+            // play-video [viewer]: the last video of the open chat, inline or in the media viewer
+            if let m = model.currentConversation?.msgs.last(where: { $0.attachments.contains(where: \.isVideo) }),
+               let i = m.attachments.firstIndex(where: \.isVideo) {
+                if arg == "viewer" { model.openMediaViewer(m, i) } else { model.openAttachment(m, i) }
+            }
         case "copy-image": ImageViewerWindow.shared.copyCurrent()
         case "clipboard":
             // One line per pasteboard type: "<type> <byte count>".

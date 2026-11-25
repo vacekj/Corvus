@@ -593,6 +593,8 @@ for line in sys.stdin:
             continue
         if p.get("id") == "voice1":
             payload = wav()
+        elif p.get("id") == "video1" and os.environ.get("MOCK_VIDEO"):
+            payload = open(os.environ["MOCK_VIDEO"], "rb").read()  # a real (silent) movie for player checks
         elif p.get("id") == "chatgif":
             payload = base64.b64decode(
                 "R0lGODlhEAAQAPAAAP8AAAAAACH/C05FVFNDQVBFMi4wAwEAAAAh+QQACgAAACwAAAAAEAAQAAACDoSP"

@@ -1,5 +1,6 @@
 import AppKit
 import AVFoundation
+import AVKit
 import CorvusCore
 import SwiftUI
 
@@ -528,6 +529,30 @@ extension AppModel {
         panel.allowedContentTypes = [.image, .movie]
         panel.allowsMultipleSelection = false
         return panel.runModal() == .OK ? panel.url?.path : nil
+    }
+}
+
+/// A video with playback controls: AppKit's AVPlayerView. SwiftUI's `VideoPlayer` aborts on macOS 27 when
+/// AVKit is not loaded yet ("failed to demangle superclass of VideoPlayerView"), and referencing AVPlayerView
+/// here also links AVKit.
+struct PlayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let v = AVPlayerView()
+        v.controlsStyle = .floating
+        v.showsFullScreenToggleButton = false
+        v.player = player
+        return v
+    }
+
+    func updateNSView(_ v: AVPlayerView, context: Context) {
+        if v.player !== player { v.player = player }
+    }
+
+    static func dismantleNSView(_ v: AVPlayerView, coordinator: ()) {
+        v.player?.pause()
+        v.player = nil
     }
 }
 

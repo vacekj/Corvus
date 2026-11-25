@@ -123,7 +123,7 @@ private struct StoryViewer: View {
                 Color.black
                 if let a = story.attachment {
                     if a.isVideo, let player {
-                        VideoPlayer(player: player)
+                        PlayerView(player: player)
                     } else if let data, let img = NSImage(data: data) {
                         Image(nsImage: img).resizable().aspectRatio(contentMode: .fit)
                     } else if !error.isEmpty {

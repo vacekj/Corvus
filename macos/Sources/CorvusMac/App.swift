@@ -31,7 +31,11 @@ enum AppResources {
 enum SingleInstance {
     private static var fd: Int32 = -1
 
-    static func acquire() -> Bool {
+    /// Whether this process owns the history. Taken once, before anything reads the history: a second
+    /// instance must not start reading it and then exit in the middle of the read.
+    static let owned: Bool = acquire()
+
+    private static func acquire() -> Bool {
         _ = AppPaths.dataDir // runs the one-time data migration first
         if LegacyMigration.olderInstanceRunning { return false } // an older version still uses the history
         fd = open(AppPaths.lockPath, O_RDWR | O_CREAT, 0o600)
@@ -64,7 +68,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Fonts.register()
         LegacyMigration.migrateDefaults() // before anything reads the preferences
         let m = AppModel()
-        m.beginEarlyUnlock()
+        if SingleInstance.owned { m.beginEarlyUnlock() }
         Perf.mark("model created")
         return m
     }()
@@ -73,8 +77,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillFinishLaunching(_ notification: Notification) {
         Perf.mark("will finish launching")
         if HiddenMode.on { NSApp.setActivationPolicy(.prohibited) }
-        guard SingleInstance.acquire() else {
-            if !SingleInstance.activateOther() {
+        guard SingleInstance.owned else {
+            if !SingleInstance.activateOther() && !HiddenMode.on {
                 let alert = NSAlert()
                 alert.messageText = "Corvus is already running"
                 alert.informativeText = "Close the other instance first. Two instances would damage the chat history."

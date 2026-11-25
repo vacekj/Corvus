@@ -115,7 +115,7 @@ private struct VideoAttachment: View {
                                        height: poster.map { Int($0.size.height) } ?? attachment.height, maxSide: maxSide)
         Group {
             if let player {
-                VideoPlayer(player: player)
+                PlayerView(player: player)
             } else {
                 Button(action: load) {
                     ZStack {
