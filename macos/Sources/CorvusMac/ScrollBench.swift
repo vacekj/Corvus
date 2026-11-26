@@ -17,6 +17,8 @@ final class ScrollBench: NSObject {
     private var phase = 0
     private var frames = 0
     private var poll: Timer?
+    /// Where the window was before the run moved it to the fastest screen (put back when done).
+    private var originalFrame: (NSWindow, NSRect)?
 
     static let framesPerLeg = Int(ProcessInfo.processInfo.environment["CORVUS_SCROLL_BENCH_FRAMES"] ?? "") ?? 600
     static var enabled: Bool { ProcessInfo.processInfo.environment["CORVUS_SCROLL_BENCH"] != nil }
@@ -38,6 +40,7 @@ final class ScrollBench: NSObject {
            let best = NSScreen.screens.max(by: { $0.maximumFramesPerSecond < $1.maximumFramesPerSecond }),
            (window.screen?.maximumFramesPerSecond ?? 0) < best.maximumFramesPerSecond {
             Perf.mark("scroll bench: moving the window to the \(best.maximumFramesPerSecond) Hz screen")
+            if originalFrame == nil { originalFrame = (window, window.frame) }
             window.setFrame(best.visibleFrame, display: true)
             return
         }
@@ -97,8 +100,12 @@ final class ScrollBench: NSObject {
         l.invalidate()
         link = nil
         ScrollHold.shared.ended()
+        let screen = scroll?.window?.screen
+        if let (window, frame) = originalFrame { window.setFrame(frame, display: true) } // after reading its screen
         let d = deltas.sorted()
-        guard !d.isEmpty, let period = scroll?.window?.screen.map({ 1000 / Double($0.maximumFramesPerSecond) }) else { return }
+        guard !d.isEmpty, let screen else { return }
+        let period = 1000 / Double(screen.maximumFramesPerSecond)
+        Perf.mark("scroll bench: ran on \(screen.localizedName) at \(screen.maximumFramesPerSecond) Hz")
         let dropped = deltas.reduce(0) { $0 + max(0, Int(($1 / period).rounded()) - 1) }
         let p = { (q: Double) in d[min(d.count - 1, Int(Double(d.count) * q))] }
         Self.logHitches(hitches)
