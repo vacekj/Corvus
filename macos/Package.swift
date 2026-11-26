@@ -11,6 +11,12 @@ let cargoTarget = ProcessInfo.processInfo.environment["CARGO_TARGET_DIR"]
     ?? packageDir.appendingPathComponent("../signal-backend/target").standardized.path
 let rustLibDir = cargoTarget + "/release"
 
+// Local release builds compile file by file (incremental) instead of the whole module at once: a change to
+// one file took a minute to build, and now takes seconds. CI and CORVUS_WMO=1 builds optimize the whole module.
+let env = ProcessInfo.processInfo.environment
+let wholeModule = env["CI"] != nil || env["CORVUS_WMO"] == "1"
+let appSwiftSettings: [SwiftSetting] = wholeModule ? [] : [.unsafeFlags(["-no-whole-module-optimization"], .when(configuration: .release))]
+
 let package = Package(
     name: "CorvusMac",
     platforms: [.macOS(.v14)],
@@ -25,6 +31,7 @@ let package = Package(
         .target(
             name: "CorvusCore",
             dependencies: ["CHistoryStore", "CSQLCipher"],
+            swiftSettings: appSwiftSettings,
             linkerSettings: [
                 .unsafeFlags(["-L", rustLibDir]),
                 // What the Rust library needs of the system (cargo rustc -- --print native-static-libs, and
@@ -36,7 +43,8 @@ let package = Package(
         .executableTarget(
             name: "CorvusMac",
             dependencies: ["CorvusCore"],
-            resources: [.process("Resources")]
+            resources: [.process("Resources")],
+            swiftSettings: appSwiftSettings
         ),
         // MCP server / CLI for AI agents: relays to the running app (AgentServer.swift), links nothing else.
         .executableTarget(name: "CorvusAgent"),

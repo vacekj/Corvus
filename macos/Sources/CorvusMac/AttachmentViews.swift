@@ -17,17 +17,18 @@ struct AttachmentView: View {
     var body: some View {
         let att = attachment
         let token = model.attachmentToken(message, index)
+        let side: CGFloat = edgeToEdge ? 340 : 300, corner: CGFloat = edgeToEdge ? 0 : 10
         Group {
             if att.isSticker {
                 StickerView(attachment: att)
             } else if att.isVideo {
                 VideoAttachment(message: message, index: index, token: token, attachment: att, foreground: foreground,
-                                maxSide: edgeToEdge ? 340 : 300) { model.openAttachment(message, index) }
+                                maxSide: side) { model.openAttachment(message, index) }
             } else if att.isAudio {
                 VoiceNoteView(message: message, index: index, attachment: att, foreground: foreground)
             } else if att.isImage {
                 FullImageView(conversation: conversationKey, message: message, index: index,
-                              maxSide: edgeToEdge ? 340 : 300, cornerRadius: edgeToEdge ? 0 : 10)
+                              maxSide: side, cornerRadius: corner)
             } else {
                 FileRow(attachment: att, foreground: foreground) { model.openAttachment(message, index) }
             }

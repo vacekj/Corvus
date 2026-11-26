@@ -18,41 +18,45 @@ struct ChatPane: View {
             // Recently used chats keep their message list alive, hidden: building a list is the slow part of
             // opening a chat, and switching to a kept chat only flips which list is visible. They share the
             // window's view graph (see `WarmListsContainer.hosted` for why not a hosting view each).
-            Color.clear.overlay {
-                if WarmListsContainer.hosted {
-                    // The chat background (not the window's) shows while a list is being built.
-                    WarmMessageLists(model: model, keys: model.warmChats, current: conversation.key)
-                        .background(ChatBackground(key: conversation.key))
-                } else {
-                    ZStack {
-                        ForEach(model.warmChats, id: \.self) { key in
-                            let on = key == conversation.key
-                            MessageListHost(key: key)
-                                .opacity(on ? 1 : 0)
-                                .allowsHitTesting(on)
-                                .accessibilityHidden(!on)
-                        }
-                    }
-                }
-            }
-                .overlay {
-                    if dropTargeted {
-                        ZStack {
-                            RoundedRectangle(cornerRadius: 16).fill(Theme.signalBlue.opacity(0.08))
-                            RoundedRectangle(cornerRadius: 16)
-                                .strokeBorder(Theme.signalBlue, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
-                            Label("Drop to attach", systemImage: "paperclip")
-                                .font(TypeScale.title3.weight(.medium))
-                                .foregroundStyle(Theme.signalBlue)
-                        }
-                        .padding(12)
-                    }
-                }
+            Color.clear.overlay { messageLists }.overlay { dropHint }
             RequestBanner(conversation: conversation)
             ComposerOrSelectionBar(conversation: conversation) { ComposerArea().disabled(model.isSendLocked(conversation.key)) }
         }
         .onDrop(of: [.fileURL, .image], isTargeted: $dropTargeted) { providers in
             handleDrop(providers)
+        }
+    }
+
+    // Separate properties: in one body these builders took half a second to type-check.
+    @ViewBuilder private var messageLists: some View {
+        if WarmListsContainer.hosted {
+            // The chat background (not the window's) shows while a list is being built.
+            WarmMessageLists(model: model, keys: model.warmChats, current: conversation.key)
+                .background(ChatBackground(key: conversation.key))
+        } else {
+            ZStack {
+                ForEach(model.warmChats, id: \.self) { (key: String) in
+                    let on: Bool = key == conversation.key
+                    MessageListHost(key: key)
+                        .opacity(on ? 1 : 0)
+                        .allowsHitTesting(on)
+                        .accessibilityHidden(!on)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder private var dropHint: some View {
+        if dropTargeted {
+            ZStack {
+                RoundedRectangle(cornerRadius: 16).fill(Theme.signalBlue.opacity(0.08))
+                RoundedRectangle(cornerRadius: 16)
+                    .strokeBorder(Theme.signalBlue, style: StrokeStyle(lineWidth: 2, dash: [8, 6]))
+                Label("Drop to attach", systemImage: "paperclip")
+                    .font(TypeScale.title3.weight(.medium))
+                    .foregroundStyle(Theme.signalBlue)
+            }
+            .padding(12)
         }
     }
 
@@ -903,9 +907,20 @@ private struct ReactionsView: View {
     let message: Message
     @State private var whoShown = false
 
+    /// (emoji, who reacted with it), most used first. Spelled out: as one closure chain in `body` it took two
+    /// seconds to type-check.
+    static func counts(_ reactions: [String: String]) -> [(String, [String])] {
+        var byEmoji: [String: [String]] = [:]
+        for (who, emoji) in reactions { byEmoji[emoji, default: []].append(who) }
+        var list: [(String, [String])] = byEmoji.map { (e: String, w: [String]) -> (String, [String]) in (e, w) }
+        list.sort { (a: (String, [String]), b: (String, [String])) -> Bool in
+            a.1.count != b.1.count ? a.1.count > b.1.count : a.0 < b.0
+        }
+        return list
+    }
+
     var body: some View {
-        let counts = Dictionary(grouping: message.reactions, by: \.value).map { ($0.key, $0.value.map(\.key)) }
-            .sorted { $0.1.count != $1.1.count ? $0.1.count > $1.1.count : $0.0 < $1.0 }
+        let counts = Self.counts(message.reactions)
         HStack(spacing: 4) {
             ForEach(counts, id: \.0) { emoji, who in
                 let mine = who.contains(model.account)

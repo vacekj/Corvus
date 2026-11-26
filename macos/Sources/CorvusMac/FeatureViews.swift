@@ -21,13 +21,17 @@ struct StickerView: View {
             } else if !attachment.thumb.isEmpty, StickerView.decodes(attachment.thumb, "thumb:" + k) {
                 AnimatedImage(data: attachment.thumb) // imported from Signal Desktop: the sticker itself
             } else {
-                RoundedRectangle(cornerRadius: 12).fill(Theme.field)
-                    .overlay(Image(systemName: "face.smiling").font(.system(size: 30)).foregroundStyle(.secondary))
+                placeholder
             }
         }
         .frame(width: size, height: size)
         .onAppear { model.loadSticker(packId: attachment.stickerPackId, stickerId: attachment.stickerId) }
         .help("Sticker")
+    }
+
+    private var placeholder: some View {
+        RoundedRectangle(cornerRadius: 12).fill(Theme.field)
+            .overlay(Image(systemName: "face.smiling").font(.system(size: 30)).foregroundStyle(.secondary))
     }
 
     /// Whether the data is an image, checked once per sticker (AnimatedImage decodes it for display).
