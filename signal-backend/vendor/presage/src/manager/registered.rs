@@ -1434,6 +1434,61 @@ impl<S: Store> Manager<S, Registered> {
         timestamp: u64,
         online_only: bool,
     ) -> Result<Vec<libsignal_service::sender::SendMessageResult>, Error<S::Error>> {
+        self.send_message_to_group_sender_key(master_key_bytes, message, timestamp, online_only, None)
+            .await
+    }
+
+    /// Corvus patch: sends our sender key for the group to the members that do not have it yet (the
+    /// user started typing there), so that the message that follows goes out in one request.
+    /// Returns how many members could not be reached.
+    pub async fn prepare_group_sender_key(
+        &mut self,
+        master_key_bytes: &[u8],
+        state: &mut libsignal_service::sender::SenderKeyState,
+    ) -> Result<usize, Error<S::Error>> {
+        let master_key_bytes: [u8; 32] = master_key_bytes
+            .try_into()
+            .map_err(|_| Error::UnknownGroup)?;
+        let mut sender = self.new_message_sender().await?;
+        let mut groups_manager = Box::pin(self.groups_manager()).await?;
+        let Some(group) =
+            upsert_group(&self.store, &mut groups_manager, &master_key_bytes, &0).await?
+        else {
+            return Err(Error::UnknownGroup);
+        };
+        let sender_certificate = self.sender_certificate().await?;
+        let mut accesses = Vec::new();
+        for member in group
+            .members
+            .into_iter()
+            .filter(|m| m.aci != self.state.data.service_ids.aci())
+        {
+            if let Some(profile_key) = self.store.profile_key(&member.aci.into()).await? {
+                accesses.push((
+                    ServiceId::from(member.aci),
+                    UnidentifiedAccess {
+                        key: profile_key.derive_access_key().to_vec(),
+                        certificate: sender_certificate.clone(),
+                    },
+                ));
+            }
+        }
+        let recipients: Vec<(ServiceId, &UnidentifiedAccess)> =
+            accesses.iter().map(|(r, a)| (*r, a)).collect();
+        Ok(sender.distribute_sender_key(&recipients, state).await?.len())
+    }
+
+    /// Corvus patch: [Self::send_message_to_group_ext] that sends with our sender key for the group
+    /// (one encryption, one request for the members that allow it) when `sender_key` is given; the
+    /// state is updated with the members that got the key.
+    pub async fn send_message_to_group_sender_key(
+        &mut self,
+        master_key_bytes: &[u8],
+        message: impl Into<ContentBody>,
+        timestamp: u64,
+        online_only: bool,
+        sender_key: Option<&mut libsignal_service::sender::SenderKeyState>,
+    ) -> Result<Vec<libsignal_service::sender::SendMessageResult>, Error<S::Error>> {
         let mut content_body = message.into();
         let master_key_bytes = master_key_bytes
             .try_into()
@@ -1484,8 +1539,15 @@ impl<S: Store> Manager<S, Registered> {
             ));
         }
 
+        let sender_key = sender_key.map(|state| (groups::group_identifier(master_key_bytes).to_vec(), state));
         let results = sender
-            .send_message_to_group(recipients, content_body.clone(), timestamp, online_only)
+            .send_message_to_group_with_sender_key(
+                recipients,
+                content_body.clone(),
+                timestamp,
+                online_only,
+                sender_key,
+            )
             .await;
         if online_only {
             return Ok(results);

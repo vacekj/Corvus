@@ -3,6 +3,7 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use presage::libsignal_service::content::ContentBody;
+use presage::libsignal_service::sender::SenderKeyState;
 use presage::proto::{DataMessage, EditMessage};
 use prost::Message as _;
 use presage::libsignal_service::protocol::ServiceId;
@@ -162,10 +163,13 @@ pub async fn deliver(
         }
         Target::Group { master_key, .. } => {
             let started = std::time::Instant::now();
+            // With our sender key (typing indicators too): one request for the members that allow it.
+            let (mut state, members) = sender_key_state(a, master_key).await;
             let rs = mgr
-                .send_message_to_group_ext(master_key, body, timestamp, online_only)
+                .send_message_to_group_sender_key(master_key, body, timestamp, online_only, Some(&mut state))
                 .await
                 .map_err(fail)?;
+            keep_sender_key_state(a, master_key, state, members).await;
             if !online_only {
                 tracing::info!(recipients = rs.len(), ms = started.elapsed().as_millis() as u64, "group message sent");
             }
@@ -203,6 +207,56 @@ pub async fn deliver(
     Ok(json!({"timestamp": timestamp, "results": results}))
 }
 
+/// Our sender key state for a group and its current members. Someone who left must not be able to
+/// read what follows: then a new key (a new distribution id) that only the current members get.
+async fn sender_key_state(a: &Account, master_key: &[u8; 32]) -> (SenderKeyState, Vec<String>) {
+    let members: Vec<String> = a
+        .groups()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .find(|(k, _)| k == master_key)
+        .map(|(_, g)| g.members.iter().map(|m| ServiceId::from(m.aci).service_id_string()).collect())
+        .unwrap_or_default();
+    let record = a.local().sender_key(&B64.encode(master_key)).await;
+    let state = record.and_then(|r| {
+        let kept = r.members.iter().all(|m| members.contains(m));
+        let id = r.distribution_id.parse().ok()?;
+        kept.then(|| SenderKeyState { distribution_id: id, shared: r.shared.into_iter().collect() })
+    });
+    let state = state.unwrap_or_else(|| SenderKeyState {
+        distribution_id: uuid::Builder::from_random_bytes(rand::random()).into_uuid(),
+        shared: Default::default(),
+    });
+    (state, members)
+}
+
+async fn keep_sender_key_state(a: &Account, master_key: &[u8; 32], state: SenderKeyState, members: Vec<String>) {
+    let record = crate::store::SenderKeyRecord {
+        distribution_id: state.distribution_id.to_string(),
+        shared: state.shared.into_iter().collect(),
+        members,
+    };
+    if let Err(error) = a.local().set_sender_key(&B64.encode(master_key), &record).await {
+        tracing::warn!(%error, "could not keep the group's sender key state");
+    }
+}
+
+/// The user started typing in a group: the members that lack our sender key get it now, so the
+/// message goes out in one request. At most every few minutes per group.
+pub async fn prepare_group_send(a: &Account, master_key: &[u8; 32]) {
+    if !a.first_prepare(master_key) {
+        return;
+    }
+    let (mut state, members) = sender_key_state(a, master_key).await;
+    match a.manager().prepare_group_sender_key(master_key, &mut state).await {
+        Ok(missed) if missed > 0 => tracing::info!(missed, "sender key not delivered to every member"),
+        Ok(_) => {}
+        Err(error) => tracing::info!(%error, "sender key not prepared"),
+    }
+    keep_sender_key_state(a, master_key, state, members).await;
+}
+
 /// What the send log keeps of a message: messages people see (not receipts, typing and the like).
 fn sent_log_entry(target: &Target, body: &ContentBody) -> Option<crate::store::SentLogEntry> {
     let (kind, bytes) = match body {
@@ -221,6 +275,8 @@ fn sent_log_entry(target: &Target, body: &ContentBody) -> Option<crate::store::S
 /// was already replaced): sends it again to them, once per run, if the send log still has it and they
 /// were one of its recipients.
 pub async fn resend_logged(a: &Account, requester: ServiceId, timestamp: u64) {
+    // They may be missing our sender key: it goes to them again with the next group message.
+    a.local().forget_sender_key_member(&requester.service_id_string()).await;
     if !a.first_resend(&requester, timestamp) {
         return;
     }

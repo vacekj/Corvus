@@ -41,7 +41,7 @@ enum DebugHooks {
         FileHandle.standardError.write(Data("debug: \(line)\n".utf8))
         switch parts.first ?? "" {
         case "open": model.openConversation(arg)
-        case "type": model.composerText = arg
+        case "type": model.composerText = arg; model.composerEdited() // as if typed
         case "send": model.sendMessage()
         case "reply-last": if let last { model.startReply(last.id) }
         case "react-last": if let last { model.sendReaction(last.id, arg) }

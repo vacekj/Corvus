@@ -408,6 +408,11 @@ files are 512×512 PNG/APNG ≤300 KB. Result: either a **String** containing th
 does not know it). Sent when the Mac wakes up or the network comes back: a receive loop waiting out its reconnect backoff
 tries again at once. A connection that is up is left alone.
 
+**`prepareGroupSend`** — `Sources/CorvusMac/TypingIndicators.swift` (`prepareGroupSend`) — `{"groupId": String}`, result
+and errors ignored (signal-cli does not know it). Sent when the user starts typing in a group, at most every 10 minutes per
+group: the backend hands its sender key for the group to members that lack it, so the message itself goes out in one
+multi-recipient request.
+
 ### 3.6 Voice calls
 
 **`subscribeCallEvents`** — `Sources/CorvusMac/Calls.swift:262` — no params. Result ignored; **success means "calls supported"**,
@@ -434,7 +439,7 @@ listGroups, updateGroup, quitGroup, joinGroup,
 send, sendReaction, remoteDelete, sendTyping, sendReceipt, sendPinMessage, sendUnpinMessage, sendPollCreate, sendPollVote,
 sendPollTerminate, sendStory, getAttachment,
 listStickerPacks, getSticker, addStickerPack, uploadStickerPack,
-updateProfile, updateAccount, reconnect,
+updateProfile, updateAccount, reconnect, prepareGroupSend,
 subscribeCallEvents, startCall, acceptCall, rejectCall, hangupCall.
 
 Plus non-RPC CLI: `--version`, `-o json listAccounts`, `-a X jsonRpc`, `link -n NAME`, `-a X deleteLocalAccountData --ignore-registered`.

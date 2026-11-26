@@ -136,7 +136,12 @@ async fn apply(ctx: &Ctx, a: &Account, state: &StorageState) {
         archived_groups = state.groups_v2().filter(|g| g.archived).count(),
         "storage service applied"
     );
-    roster_changed(ctx);
+    // The same version as last time: nothing changed, and Corvus need not list everything again.
+    let version = state.version();
+    if local.value::<Option<u64>>("storage-version").await != Some(version) {
+        let _ = local.set_value("storage-version", &Some(version)).await;
+        roster_changed(ctx);
+    }
 }
 
 /// The local key of a pinned chat: contact ACI string or `g:<group id>`.

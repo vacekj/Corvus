@@ -19,6 +19,7 @@ use crate::method;
 use crate::rpc::{Method, RpcError, fail};
 
 pub const METHODS: &[Method] = &[
+    method!("prepareGroupSend", prepare_group_send),
     method!("send", send),
     method!("sendReaction", send_reaction),
     method!("remoteDelete", remote_delete),
@@ -37,6 +38,21 @@ pub const METHODS: &[Method] = &[
 
 /// Protocol version that carries polls (as Signal's clients set it).
 const POLL_PROTOCOL_VERSION: u32 = 8;
+
+/// `{groupId}`: the user started typing in the group (see `common::prepare_group_send`). Answers at
+/// once; the work goes on in the background.
+async fn prepare_group_send(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
+    let a = ctx.account()?;
+    if let Target::Group { master_key, .. } = Target::from_params(a, &p).await? {
+        let ctx = ctx.clone();
+        tokio::task::spawn_local(async move {
+            if let Ok(a) = ctx.account() {
+                super::common::prepare_group_send(a, &master_key).await;
+            }
+        });
+    }
+    Ok(json!({}))
+}
 
 async fn send(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
     let a = ctx.account()?;

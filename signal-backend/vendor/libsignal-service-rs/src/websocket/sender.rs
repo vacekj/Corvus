@@ -27,7 +27,6 @@ error_mapper! {
 // Signal-Server: controllers/MessageController.java:466
 // (PUT /v1/messages/multi_recipient)
 error_mapper! {
-    #[allow(dead_code)]
     put_multi_recipient_messages_errors:
         // 409: mismatched devices, MessageController.java:670
         CONFLICT => MultiRecipientMismatchedDevices(Vec<crate::push_service::AccountMismatchedDevices>),
@@ -37,6 +36,41 @@ error_mapper! {
         PAYLOAD_TOO_LARGE => MessageTooLarge,
         // 428: proof required, MessageController.java:638
         PRECONDITION_REQUIRED => ProofRequiredError(crate::push_service::ProofRequired),
+}
+
+/// Corvus: the answer to a multi-recipient send.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct SendMultiRecipientResponse {
+    /// Recipients that are not registered (any more); nothing was delivered to them.
+    #[serde(default)]
+    pub uuids404: Vec<String>,
+}
+
+impl SignalWebSocket<Unidentified> {
+    /// Corvus: sends one sealed-sender multi-recipient message (as made by libsignal's
+    /// `sealed_sender_multi_recipient_encrypt`) to all its recipients, authorized with the XOR
+    /// of their unidentified access keys.
+    pub async fn send_multi_recipient_message(
+        &mut self,
+        payload: Vec<u8>,
+        combined_access_key: &[u8],
+        timestamp: u64,
+        online: bool,
+    ) -> Result<SendMultiRecipientResponse, ServiceError> {
+        let mut request = WebSocketRequestMessage::new(Method::PUT)
+            .path(format!(
+                "/v1/messages/multi_recipient?ts={timestamp}&online={online}&urgent=true&story=false"
+            ))
+            .header(
+                "Unidentified-Access-Key",
+                BASE64_RELAXED.encode(combined_access_key),
+            )
+            .header("content-type", "application/vnd.signal-messenger.mrm")
+            .build();
+        request.body = Some(payload);
+        self.request_json_with(request, put_multi_recipient_messages_errors)
+            .await
+    }
 }
 
 impl<C: WebSocketType> SignalWebSocket<C> {

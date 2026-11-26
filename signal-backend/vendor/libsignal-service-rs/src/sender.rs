@@ -38,6 +38,8 @@ pub use crate::proto::ContactDetails;
 
 // Corvus: retry receipts, resends and null messages (session repair).
 mod repair;
+mod sender_key;
+pub use sender_key::{SenderKeySend, SenderKeyState};
 
 #[derive(serde::Serialize, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -91,8 +93,12 @@ pub struct AttachmentSpec {
     pub blur_hash: Option<String>,
 }
 
-/// Group members a message is sent to at the same time (see `send_message_to_group`).
-const GROUP_SEND_CONCURRENCY: usize = 8;
+/// Group members a message (or our sender key) is sent to at the same time.
+pub(crate) const GROUP_SEND_CONCURRENCY: usize = 16;
+
+/// Groups with fewer members (with an access key) than this are sent to member by member: the
+/// sender key saves little there.
+const SENDER_KEY_MIN_MEMBERS: usize = 3;
 
 #[derive(Clone)]
 pub struct MessageSender<S> {
@@ -471,14 +477,75 @@ where
         timestamp: u64,
         online: bool,
     ) -> Vec<SendMessageResult> {
+        self.send_message_to_group_with_sender_key(
+            recipients, message, timestamp, online, None,
+        )
+        .await
+    }
+
+    /// Corvus: [Self::send_message_to_group], with `sender_key` (the group identifier and the
+    /// group's sender key state) the members with an unidentified access key get the message with
+    /// our sender key in one request (`sender/sender_key.rs`); the others, and everyone when that
+    /// does not work out, one by one.
+    pub async fn send_message_to_group_with_sender_key(
+        &mut self,
+        recipients: impl AsRef<[(ServiceId, Option<UnidentifiedAccess>, bool)]>,
+        message: impl Into<ContentBody>,
+        timestamp: u64,
+        online: bool,
+        sender_key: Option<(Vec<u8>, &mut SenderKeyState)>,
+    ) -> Vec<SendMessageResult> {
         let content_body: ContentBody = message.into();
+        let recipients = recipients.as_ref();
+        let mut results: Vec<SendMessageResult> = Vec::new();
+        let mut per_member: Vec<&(ServiceId, Option<UnidentifiedAccess>, bool)> =
+            recipients.iter().collect();
+
+        if let Some((group_id, state)) = sender_key {
+            let eligible: Vec<(ServiceId, &UnidentifiedAccess)> = recipients
+                .iter()
+                .filter(|(r, _, pni_signature)| {
+                    !pni_signature && matches!(r, ServiceId::Aci(_))
+                })
+                .filter_map(|(r, access, _)| access.as_ref().map(|a| (*r, a)))
+                .collect();
+            if eligible.len() >= SENDER_KEY_MIN_MEMBERS {
+                match self
+                    .send_sender_key_group_message(
+                        &eligible,
+                        &content_body,
+                        timestamp,
+                        online,
+                        group_id,
+                        state,
+                    )
+                    .await
+                {
+                    Ok(SenderKeySend {
+                        results: done,
+                        left_over,
+                    }) => {
+                        let handled: Vec<ServiceId> = eligible
+                            .iter()
+                            .map(|(r, _)| *r)
+                            .filter(|r| !left_over.contains(r))
+                            .collect();
+                        per_member.retain(|(r, _, _)| !handled.contains(r));
+                        results.extend(done);
+                    },
+                    Err(error) => {
+                        warn!(%error, "no sender key send; sending to each member");
+                    },
+                }
+            }
+        }
 
         // Corvus patch: several members at a time (each on its own clone of the sender; the websockets
         // multiplex requests). One after the other, a group of a few hundred took minutes whenever
         // sessions had to be set up first (a prekey fetch per device); the official clients fetch keys
-        // in parallel too. Results stay in the order of `recipients`.
+        // in parallel too.
         let content = &content_body;
-        let results: Vec<SendMessageResult> = stream::iter(recipients.as_ref())
+        let one_by_one: Vec<SendMessageResult> = stream::iter(per_member)
             .map(|(recipient, unidentified_access, include_pni_signature)| {
                 let mut sender = self.clone();
                 async move {
@@ -497,6 +564,7 @@ where
             .buffered(GROUP_SEND_CONCURRENCY)
             .collect()
             .await;
+        results.extend(one_by_one);
 
         let needs_sync_in_results = results
             .iter()
@@ -600,7 +668,7 @@ where
     async fn try_send_message(
         &mut self,
         recipient: ServiceId,
-        mut unidentified_access: Option<&UnidentifiedAccess>,
+        unidentified_access: Option<&UnidentifiedAccess>,
         content_body: &ContentBody,
         timestamp: u64,
         include_pni_signature: bool,
@@ -616,7 +684,26 @@ where
         }
 
         let content_bytes = content.encode_to_vec();
+        self.try_send_content(
+            recipient,
+            unidentified_access,
+            &content_bytes,
+            timestamp,
+            online,
+        )
+        .await
+    }
 
+    /// Corvus: [Self::try_send_message] for an already encoded `Content` (a sender key distribution
+    /// message has no body that `ContentBody` could carry).
+    pub(crate) async fn try_send_content(
+        &mut self,
+        recipient: ServiceId,
+        mut unidentified_access: Option<&UnidentifiedAccess>,
+        content_bytes: &[u8],
+        timestamp: u64,
+        online: bool,
+    ) -> SendMessageResult {
         let mut rng = rng();
 
         for _ in 0..4u8 {
@@ -627,7 +714,7 @@ where
                 .create_encrypted_messages(
                     &recipient,
                     unidentified_access.map(|x| &x.certificate),
-                    &content_bytes,
+                    content_bytes,
                 )
                 .await?
             else {

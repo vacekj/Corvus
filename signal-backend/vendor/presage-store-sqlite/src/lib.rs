@@ -75,6 +75,13 @@ impl SqliteStore {
         let options = options
             .journal_mode(SqliteJournalMode::Wal)
             .synchronous(SqliteSynchronous::Full);
+        // Corvus patch: a new file is switched to WAL on one connection first. The pool below opens
+        // three at once, and connections switching the journal mode together fail with "database is
+        // locked" (SQLite does not wait for that lock).
+        if !options.get_filename().exists() {
+            use sqlx::{ConnectOptions as _, Connection as _};
+            options.connect().await?.close().await?;
+        }
         // Each connection carries its own page cache; sqlx's default of 10 is more than we need.
         // Corvus patch: connections are kept open. Opening one runs SQLCipher's key derivation (about
         // a second); with sqlx's idle timeout and lifetime every request after a quiet spell (and

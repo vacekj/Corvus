@@ -10,6 +10,16 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 /// How long a sent message is kept for resending (as long as the official clients keep theirs).
 const SENT_LOG_MS: u64 = 24 * 60 * 60 * 1000;
 
+/// Our sender key for a group, as far as sending goes ([Local::sender_key]).
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq, Clone)]
+pub struct SenderKeyRecord {
+    pub distribution_id: String,
+    /// Member devices ("<service id>.<device id>") that were sent the key.
+    pub shared: Vec<String>,
+    /// The members (ACIs) when it was last used: someone gone means a new key.
+    pub members: Vec<String>,
+}
+
 /// A sent message in the send log ([Local::log_sent]).
 #[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
 pub struct SentLogEntry {
@@ -219,6 +229,29 @@ impl<'a> Local<'a> {
     pub async fn sent(&self, timestamp: u64) -> Option<SentLogEntry> {
         let bytes = self.store.kv_get(&format!("sent:{timestamp:020}")).await.ok().flatten()?;
         serde_json::from_slice(&bytes).ok()
+    }
+
+    pub async fn sender_key(&self, group: &str) -> Option<SenderKeyRecord> {
+        let bytes = self.store.kv_get(&format!("sender-key:{group}")).await.ok().flatten()?;
+        serde_json::from_slice(&bytes).ok()
+    }
+
+    pub async fn set_sender_key(&self, group: &str, r: &SenderKeyRecord) -> Result<(), SqliteStoreError> {
+        self.set(&format!("sender-key:{group}"), r).await
+    }
+
+    /// `member` asked for a message again (they may lack our sender key): every group sends them
+    /// the key again with its next message.
+    pub async fn forget_sender_key_member(&self, member: &str) {
+        let prefix = format!("{member}.");
+        for (key, bytes) in self.store.kv_list("sender-key:").await.unwrap_or_default() {
+            let Ok(mut r) = serde_json::from_slice::<SenderKeyRecord>(&bytes) else { continue };
+            let before = r.shared.len();
+            r.shared.retain(|d| !d.starts_with(&prefix));
+            if r.shared.len() != before {
+                let _ = self.set(&key, &r).await;
+            }
+        }
     }
 
     /// Small JSON values without their own accessor (settings mirrors and the like).

@@ -13,6 +13,8 @@ final class TypingIndicators {
     }
     @ObservationIgnored private var outbox = TypingOutbox()
     @ObservationIgnored private var timer: Timer?
+    /// When each group was last prepared for a send (`AppModel.prepareGroupSend`).
+    @ObservationIgnored var prepared: [String: Int64] = [:]
 
     func typers(in key: String) -> [String] { tracker.typers(in: key) }
 
@@ -90,6 +92,20 @@ extension AppModel {
         let allowed = privacy.typingIndicators && connected && mayAcknowledge(key) && !isSendLocked(key) && editKey.isEmpty
         let empty = composerText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         sendTyping(TypingIndicators.shared.outgoing { $0.edited(conversation: key, empty: empty, allowed: allowed, now: nowMs()) })
+        if !empty { prepareGroupSend(key) }
+    }
+
+    /// Typing in a group: the backend hands our sender key to the members that lack it, so the message
+    /// goes out in one request when sent. Asked at most every few minutes per group (whether or not
+    /// typing indicators are on).
+    private func prepareGroupSend(_ key: String) {
+        guard connected, let c = chats.convs[key], c.isGroup, mayAcknowledge(key), !isSendLocked(key) else { return }
+        let now = nowMs()
+        if let last = TypingIndicators.shared.prepared[key], now - last < 10 * 60 * 1000 { return }
+        TypingIndicators.shared.prepared[key] = now
+        var p: JSON = [:]
+        addRecipient(&p, c)
+        Task { [p] in _ = try? await cli.call("prepareGroupSend", p) } // signal-cli does not know it: no harm
     }
 
     /// The message was sent or the chat closed: "stopped" if "started" was sent.

@@ -80,6 +80,8 @@ pub struct Account {
     profiles_fetched: RefCell<HashSet<Uuid>>,
     /// (requester, timestamp) of messages sent again after a retry request, this run.
     resent: RefCell<HashSet<(String, u64)>>,
+    /// When each group's sender key was last handed out ahead of a message (`prepareGroupSend`).
+    prepared: RefCell<HashMap<[u8; 32], Instant>>,
 }
 
 /// Number and group-name lookups for the envelope mapping, cached briefly.
@@ -104,6 +106,7 @@ const DIRECTORY_TTL: Duration = Duration::from_secs(60);
 const DISCOVERED_KEY: &str = "discovered_numbers";
 const DISCOVERY_MISS_TTL: Duration = Duration::from_secs(10 * 60);
 const PROFILE_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
+const PREPARE_INTERVAL: Duration = Duration::from_secs(10 * 60);
 
 impl Account {
     pub fn new(store: SqliteStore, manager: Mgr) -> Self {
@@ -123,6 +126,7 @@ impl Account {
             discovery_misses: RefCell::new(HashMap::new()),
             profiles_fetched: RefCell::new(HashSet::new()),
             resent: RefCell::new(HashSet::new()),
+            prepared: RefCell::new(HashMap::new()),
         }
     }
 
@@ -327,6 +331,16 @@ impl Account {
                 None
             }
         }
+    }
+
+    /// Whether the group's sender key was not handed out ahead of a message in the last minutes.
+    pub fn first_prepare(&self, master_key: &[u8; 32]) -> bool {
+        let mut prepared = self.prepared.borrow_mut();
+        if prepared.get(master_key).is_some_and(|t| t.elapsed() < PREPARE_INTERVAL) {
+            return false;
+        }
+        prepared.insert(*master_key, Instant::now());
+        true
     }
 
     /// Whether the message sent at `timestamp` was not sent again to `requester` yet this run (each of
