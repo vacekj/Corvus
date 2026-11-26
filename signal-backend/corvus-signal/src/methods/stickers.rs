@@ -19,24 +19,47 @@ pub const METHODS: &[Method] = &[
     method!("uploadStickerPack", upload_pack),
 ];
 
+/// Title, author and stickers of an installed pack, kept in the store: reading them from the manifest
+/// (which holds every sticker image) took seconds at each start and held a database connection.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
+struct PackSummary {
+    title: String,
+    author: String,
+    stickers: Vec<(u32, Option<String>)>,
+}
+
+async fn pack_summary(a: &crate::ctx::Account, id: &[u8]) -> Result<Option<PackSummary>, RpcError> {
+    let key = format!("sticker-summary:{}", hex::encode(id));
+    if let Some(s) = a.local().value::<Option<PackSummary>>(&key).await {
+        return Ok(Some(s));
+    }
+    let Some((title, author, stickers)) = a.store.sticker_pack_summary(id).await.map_err(fail)? else {
+        return Ok(None);
+    };
+    let stickers = serde_json::from_str::<Vec<(u32, Option<String>)>>(&stickers).unwrap_or_default();
+    let s = PackSummary { title, author, stickers };
+    let _ = a.local().set_value(&key, &Some(s.clone())).await; // a pack's manifest never changes
+    Ok(Some(s))
+}
+
 async fn list_packs(ctx: Rc<Ctx>, _p: Value) -> Result<Value, RpcError> {
     let a = ctx.account()?;
-    // Reading the list takes a second (the manifests hold the images): kept until the packs change.
     let ids = a.store.sticker_pack_ids().await.map_err(fail)?;
     if let Some(list) = PACKS.with(|c| c.borrow().as_ref().filter(|(k, _)| *k == ids).map(|(_, v)| v.clone())) {
         return Ok(list);
     }
     let mut out = Vec::new();
-    for (id, title, author, stickers) in a.store.sticker_pack_summaries().await.map_err(fail)? {
-        let stickers: Vec<Value> = serde_json::from_str::<Vec<(u32, Option<String>)>>(&stickers)
-            .unwrap_or_default()
+    for id in &ids {
+        let Some(s) = pack_summary(a, id).await? else { continue };
+        let stickers: Vec<Value> = s
+            .stickers
             .into_iter()
             .map(|(id, emoji)| json!({"id": id, "emoji": emoji.unwrap_or_default()}))
             .collect();
         out.push(json!({
-            "packId": hex::encode(&id),
-            "title": title,
-            "author": author,
+            "packId": hex::encode(id),
+            "title": s.title,
+            "author": s.author,
             "installed": true,
             "stickers": stickers,
         }));

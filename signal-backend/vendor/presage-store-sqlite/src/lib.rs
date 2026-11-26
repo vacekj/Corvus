@@ -132,6 +132,25 @@ impl SqliteStore {
             .collect())
     }
 
+    /// Corvus patch: [Self::sticker_pack_summaries] for one pack (None: not installed).
+    pub async fn sticker_pack_summary(
+        &self,
+        id: &[u8],
+    ) -> Result<Option<(String, String, String)>, SqliteStoreError> {
+        let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT json_extract(manifest, '$.title'), json_extract(manifest, '$.author'), \
+             (SELECT json_group_array(json_array(json_extract(s.value, '$.id'), json_extract(s.value, '$.emoji'))) \
+              FROM json_each(manifest, '$.stickers') AS s) \
+             FROM sticker_packs WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(&self.db)
+        .await?;
+        Ok(row.map(|(title, author, stickers)| {
+            (title.unwrap_or_default(), author.unwrap_or_default(), stickers.unwrap_or_else(|| "[]".into()))
+        }))
+    }
+
     /// Corvus patch: the ids of the installed sticker packs (cheap: no manifest is read).
     pub async fn sticker_pack_ids(&self) -> Result<Vec<Vec<u8>>, SqliteStoreError> {
         Ok(query_scalar("SELECT id FROM sticker_packs ORDER BY id").fetch_all(&self.db).await?)

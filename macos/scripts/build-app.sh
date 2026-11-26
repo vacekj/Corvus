@@ -33,6 +33,11 @@ if [ ! -f "$BACKEND_MANIFEST" ]; then
 fi
 
 echo "==> Building the Rust library (Signal backend, history key wrapping, SQLCipher)"
+# The C and C++ parts (BoringSSL, SQLCipher, …) for the app's minimum macOS, like the Swift code: built for
+# the SDK's version instead, they may call functions older systems do not have. Through the compiler flags,
+# not MACOSX_DEPLOYMENT_TARGET: that also applies to the proc-macro libraries, which the macOS 27 linker
+# then writes so that rustc cannot load them ("mis-aligned LINKEDIT string pool").
+export CFLAGS="${CFLAGS:-} -mmacosx-version-min=14.0" CXXFLAGS="${CXXFLAGS:-} -mmacosx-version-min=14.0"
 # One static library, linked into the app by the Swift package (Package.swift).
 cargo build --release --locked --manifest-path "$BACKEND_MANIFEST" -p corvus-core
 CORE_LIB="${CARGO_TARGET_DIR:-$REPO_DIR/signal-backend/target}/release/libcorvus_core.a"

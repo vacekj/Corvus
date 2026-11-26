@@ -124,6 +124,15 @@ pub async fn run(ctx: Rc<Ctx>) {
                         Received::DecryptionError(_) => {
                             tracing::warn!("a message could not be decrypted");
                         }
+                        Received::RetryRequest { requester, timestamp } => {
+                            tracing::info!("a recipient could not decrypt our message and asked for it again");
+                            let ctx = ctx.clone();
+                            tokio::task::spawn_local(async move {
+                                if let Ok(account) = ctx.account() {
+                                    crate::methods::common::resend_logged(account, requester, timestamp).await;
+                                }
+                            });
+                        }
                         Received::Contacts => {}
                     }
                 }
@@ -146,8 +155,13 @@ pub async fn run(ctx: Rc<Ctx>) {
             backoff = Duration::from_secs(1);
         }
         tracing::info!(secs = backoff.as_secs(), "reconnecting");
-        tokio::time::sleep(backoff).await;
-        backoff = (backoff * 2).min(MAX_BACKOFF);
+        tokio::select! {
+            _ = tokio::time::sleep(backoff) => backoff = (backoff * 2).min(MAX_BACKOFF),
+            _ = ctx.wake.notified() => {
+                tracing::info!("reconnecting now: the network is back");
+                backoff = Duration::from_secs(1);
+            }
+        }
     }
 }
 

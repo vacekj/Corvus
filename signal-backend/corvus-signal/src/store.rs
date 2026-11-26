@@ -7,6 +7,23 @@ use presage::libsignal_service::prelude::Uuid;
 use presage_store_sqlite::{OnNewIdentity, SqliteConnectOptions, SqliteStore, SqliteStoreError};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+/// How long a sent message is kept for resending (as long as the official clients keep theirs).
+const SENT_LOG_MS: u64 = 24 * 60 * 60 * 1000;
+
+/// A sent message in the send log ([Local::log_sent]).
+#[derive(Serialize, Deserialize, Default, Debug, PartialEq)]
+pub struct SentLogEntry {
+    /// "data" (a DataMessage) or "edit" (an EditMessage); `body` is its protobuf, base64.
+    pub kind: String,
+    pub body: String,
+    /// The group's master key (base64) for a group message.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// The recipients (service ids) of a message to contacts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recipients: Vec<String>,
+}
+
 /// A 64 hex character SQLCipher key (32 raw bytes).
 #[derive(Clone)]
 pub struct StoreKey(String);
@@ -182,6 +199,26 @@ impl<'a> Local<'a> {
             Some(u) => self.set("own-username", &u).await,
             None => self.store.kv_delete("own-username").await,
         }
+    }
+
+    /// Remembers a message we sent, for a day (the official clients' message send log): a recipient
+    /// who cannot decrypt it asks for it again, and gets it again only if it is still here.
+    pub async fn log_sent(&self, timestamp: u64, m: &SentLogEntry) {
+        if let Err(error) = self.set(&format!("sent:{timestamp:020}"), m).await {
+            tracing::warn!(%error, "could not keep a sent message for resending");
+        }
+        let cutoff = crate::ctx::now_millis().saturating_sub(SENT_LOG_MS);
+        for (key, _) in self.store.kv_list("sent:").await.unwrap_or_default() {
+            let old = key.strip_prefix("sent:").and_then(|t| t.parse::<u64>().ok()).is_some_and(|t| t < cutoff);
+            if old {
+                let _ = self.store.kv_delete(&key).await;
+            }
+        }
+    }
+
+    pub async fn sent(&self, timestamp: u64) -> Option<SentLogEntry> {
+        let bytes = self.store.kv_get(&format!("sent:{timestamp:020}")).await.ok().flatten()?;
+        serde_json::from_slice(&bytes).ok()
     }
 
     /// Small JSON values without their own accessor (settings mirrors and the like).

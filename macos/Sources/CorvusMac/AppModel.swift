@@ -214,6 +214,7 @@ final class AppModel {
     @ObservationIgnored var lastAutoReconnect: Date?
     @ObservationIgnored let notifier = Notifier()
     @ObservationIgnored let sound = SoundPlayer()
+    @ObservationIgnored private let networkWatch = NetworkWatch()
     @ObservationIgnored private var connectGen = 0
     @ObservationIgnored private var lastSoundMs: Int64 = 0
     @ObservationIgnored var lastInputMs: Int64 = 0
@@ -257,6 +258,10 @@ final class AppModel {
         Perf.mark("start")
         updateAgentServer()
         notifier.setUp()
+        networkWatch.start { [weak self] in
+            guard let self else { return }
+            Task { _ = try? await self.cli.call("reconnect") } // signal-cli does not know it: no harm
+        }
         timers.append(Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.trimWarmChats() }
         })

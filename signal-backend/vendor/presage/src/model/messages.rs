@@ -17,6 +17,11 @@ pub enum Received {
     // A session reset with the contact may fix this.
     DecryptionError(ServiceId),
 
+    /// Corvus patch: `requester` could not decrypt our message sent at `timestamp` and asked for it
+    /// again. The broken session was already replaced; the client sends the message again if it
+    /// still has it ([crate::Manager::resend_message]).
+    RetryRequest { requester: ServiceId, timestamp: u64 },
+
     /// Incoming decrypted message with metadata and content.
     ///
     /// Corvus patch: the envelope is acknowledged to the server when the [AckHandle] is dropped,

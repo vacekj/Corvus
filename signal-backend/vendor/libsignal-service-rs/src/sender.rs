@@ -1,6 +1,7 @@
 use std::{collections::HashSet, time::SystemTime};
 
 use chrono::prelude::*;
+use futures::{stream, StreamExt};
 use libsignal_core::{curve::CurveError, InvalidDeviceId};
 use libsignal_protocol::{
     process_prekey_bundle, Aci, DeviceId, IdentityKey, IdentityKeyPair, Pni,
@@ -89,6 +90,9 @@ pub struct AttachmentSpec {
     pub caption: Option<String>,
     pub blur_hash: Option<String>,
 }
+
+/// Group members a message is sent to at the same time (see `send_message_to_group`).
+const GROUP_SEND_CONCURRENCY: usize = 8;
 
 #[derive(Clone)]
 pub struct MessageSender<S> {
@@ -468,33 +472,35 @@ where
         online: bool,
     ) -> Vec<SendMessageResult> {
         let content_body: ContentBody = message.into();
-        let mut results = vec![];
 
-        let mut needs_sync_in_results = false;
+        // Corvus patch: several members at a time (each on its own clone of the sender; the websockets
+        // multiplex requests). One after the other, a group of a few hundred took minutes whenever
+        // sessions had to be set up first (a prekey fetch per device); the official clients fetch keys
+        // in parallel too. Results stay in the order of `recipients`.
+        let content = &content_body;
+        let results: Vec<SendMessageResult> = stream::iter(recipients.as_ref())
+            .map(|(recipient, unidentified_access, include_pni_signature)| {
+                let mut sender = self.clone();
+                async move {
+                    sender
+                        .try_send_message(
+                            *recipient,
+                            unidentified_access.as_ref(),
+                            content,
+                            timestamp,
+                            *include_pni_signature,
+                            online,
+                        )
+                        .await
+                }
+            })
+            .buffered(GROUP_SEND_CONCURRENCY)
+            .collect()
+            .await;
 
-        for (recipient, unidentified_access, include_pni_signature) in
-            recipients.as_ref()
-        {
-            let result = self
-                .try_send_message(
-                    *recipient,
-                    unidentified_access.as_ref(),
-                    &content_body,
-                    timestamp,
-                    *include_pni_signature,
-                    online,
-                )
-                .await;
-
-            match result {
-                Ok(SentMessage { needs_sync, .. }) if needs_sync => {
-                    needs_sync_in_results = true;
-                },
-                _ => (),
-            };
-
-            results.push(result);
-        }
+        let needs_sync_in_results = results
+            .iter()
+            .any(|r| matches!(r, Ok(SentMessage { needs_sync: true, .. })));
 
         // we only need to send a synchronization message once
         if needs_sync_in_results || self.is_multi_device().await {

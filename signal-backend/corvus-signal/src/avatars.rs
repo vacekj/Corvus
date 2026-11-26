@@ -109,8 +109,13 @@ pub async fn write_contact_avatars(account: &Account, dir: &DataDir) {
     }
 }
 
+/// How long a contact found without a profile picture (or without a profile) is not asked again by
+/// [sync_missing]; a picture they add later still comes with their next message.
+const NO_AVATAR_RECHECK_MS: u64 = 3 * 24 * 60 * 60 * 1000;
+
 /// Fills in missing picture files after start-up: own profile, groups, contacts' profiles.
-/// Only files that do not exist yet are fetched, slowly, one at a time.
+/// Only files that do not exist yet are fetched, slowly, one at a time; contacts who had none are
+/// skipped for a few days (they were asked for again at every start).
 pub async fn sync_missing(account: &Account, dir: &DataDir) {
     let started = now_millis();
     if let Err(error) = profile_avatar(account, dir, &account.aci.clone(), true).await {
@@ -143,9 +148,23 @@ pub async fn sync_missing(account: &Account, dir: &DataDir) {
         if dir.profile_avatar(&key).is_none_or(|p| p.exists()) {
             continue;
         }
-        match profile_avatar(account, dir, &contact.uuid, true).await {
-            Ok(_) => fetched += 1,
-            Err(error) => tracing::info!(%error, "profile avatar not fetched"),
+        let checked = format!("no-avatar:{}", contact.uuid);
+        if now_millis().saturating_sub(account.local().value::<u64>(&checked).await) < NO_AVATAR_RECHECK_MS {
+            continue;
+        }
+        let none = match profile_avatar(account, dir, &contact.uuid, true).await {
+            Ok(Some(_)) => {
+                fetched += 1;
+                false
+            }
+            Ok(None) => true,
+            Err(error) => {
+                tracing::info!(%error, "profile avatar not fetched");
+                error.message.contains("Not found") // no profile (a deleted account)
+            }
+        };
+        if none {
+            let _ = account.local().set_value(&checked, &now_millis()).await;
         }
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }

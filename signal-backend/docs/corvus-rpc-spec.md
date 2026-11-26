@@ -404,6 +404,10 @@ files are 512×512 PNG/APNG ≤300 KB. Result: either a **String** containing th
 - `Sources/CorvusMac/PrivacyAccount.swift:72` — `{"numberSharing": Bool, "discoverableByNumber"?: Bool}` or
   `{"discoverableByNumber": Bool}` (result ignored). Current values are never read back.
 
+**`reconnect`** — `Sources/CorvusMac/AppModel.swift` (`NetworkWatch`) — no params, result and errors ignored (signal-cli
+does not know it). Sent when the Mac wakes up or the network comes back: a receive loop waiting out its reconnect backoff
+tries again at once. A connection that is up is left alone.
+
 ### 3.6 Voice calls
 
 **`subscribeCallEvents`** — `Sources/CorvusMac/Calls.swift:262` — no params. Result ignored; **success means "calls supported"**,
@@ -430,7 +434,7 @@ listGroups, updateGroup, quitGroup, joinGroup,
 send, sendReaction, remoteDelete, sendTyping, sendReceipt, sendPinMessage, sendUnpinMessage, sendPollCreate, sendPollVote,
 sendPollTerminate, sendStory, getAttachment,
 listStickerPacks, getSticker, addStickerPack, uploadStickerPack,
-updateProfile, updateAccount,
+updateProfile, updateAccount, reconnect,
 subscribeCallEvents, startCall, acceptCall, rejectCall, hangupCall.
 
 Plus non-RPC CLI: `--version`, `-o json listAccounts`, `-a X jsonRpc`, `link -n NAME`, `-a X deleteLocalAccountData --ignore-registered`.

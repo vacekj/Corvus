@@ -3,6 +3,8 @@
 use base64::Engine as _;
 use base64::engine::general_purpose::STANDARD as B64;
 use presage::libsignal_service::content::ContentBody;
+use presage::proto::{DataMessage, EditMessage};
+use prost::Message as _;
 use presage::libsignal_service::protocol::ServiceId;
 use presage::proto::GroupContextV2;
 use serde_json::{Value, json};
@@ -135,6 +137,7 @@ pub async fn deliver(
     let mut results = Vec::new();
     let mut first_error: Option<String> = None;
     let mut delivered = 0usize;
+    let logged = if online_only { None } else { sent_log_entry(target, &body) };
     match target {
         Target::Contacts(ids) => {
             for id in ids {
@@ -158,10 +161,14 @@ pub async fn deliver(
             }
         }
         Target::Group { master_key, .. } => {
+            let started = std::time::Instant::now();
             let rs = mgr
                 .send_message_to_group_ext(master_key, body, timestamp, online_only)
                 .await
                 .map_err(fail)?;
+            if !online_only {
+                tracing::info!(recipients = rs.len(), ms = started.elapsed().as_millis() as u64, "group message sent");
+            }
             for r in rs {
                 match r {
                     Ok(sent) => {
@@ -190,7 +197,61 @@ pub async fn deliver(
     if delivered == 0 {
         return Err(RpcError::failed(first_error.unwrap_or_else(|| "Failed to send message".into())));
     }
+    if let Some(entry) = logged {
+        a.local().log_sent(timestamp, &entry).await;
+    }
     Ok(json!({"timestamp": timestamp, "results": results}))
+}
+
+/// What the send log keeps of a message: messages people see (not receipts, typing and the like).
+fn sent_log_entry(target: &Target, body: &ContentBody) -> Option<crate::store::SentLogEntry> {
+    let (kind, bytes) = match body {
+        ContentBody::DataMessage(dm) => ("data", dm.encode_to_vec()),
+        ContentBody::EditMessage(em) => ("edit", em.encode_to_vec()),
+        _ => return None,
+    };
+    let (group, recipients) = match target {
+        Target::Contacts(ids) => (None, ids.iter().map(|id| id.service_id_string()).collect()),
+        Target::Group { master_key, .. } => (Some(B64.encode(master_key)), Vec::new()),
+    };
+    Some(crate::store::SentLogEntry { kind: kind.into(), body: B64.encode(bytes), group, recipients })
+}
+
+/// `requester` could not decrypt our message sent at `timestamp` and asked for it again (the session
+/// was already replaced): sends it again to them, once per run, if the send log still has it and they
+/// were one of its recipients.
+pub async fn resend_logged(a: &Account, requester: ServiceId, timestamp: u64) {
+    if !a.first_resend(&requester, timestamp) {
+        return;
+    }
+    let Some(entry) = a.local().sent(timestamp).await else {
+        tracing::info!("asked again for a message that is no longer kept");
+        return;
+    };
+    let recipient = match &entry.group {
+        Some(key) => {
+            let key: Option<[u8; 32]> = B64.decode(key).ok().and_then(|k| k.try_into().ok());
+            let groups = a.groups().await.unwrap_or_default();
+            key.and_then(|key| groups.into_iter().find(|(k, _)| *k == key))
+                .is_some_and(|(_, g)| g.members.iter().any(|m| ServiceId::from(m.aci) == requester))
+        }
+        None => entry.recipients.contains(&requester.service_id_string()),
+    };
+    if !recipient {
+        tracing::warn!("asked again for a message by someone it was not sent to");
+        return;
+    }
+    let Ok(bytes) = B64.decode(&entry.body) else { return };
+    let body = match entry.kind.as_str() {
+        "data" => DataMessage::decode(bytes.as_slice()).ok().map(ContentBody::DataMessage),
+        "edit" => EditMessage::decode(bytes.as_slice()).ok().map(ContentBody::EditMessage),
+        _ => None,
+    };
+    let Some(body) = body else { return };
+    match a.manager().resend_message(requester, body, timestamp).await {
+        Ok(()) => tracing::info!("message sent again after a retry request"),
+        Err(error) => tracing::warn!(%error, "could not send a message again after a retry request"),
+    }
 }
 
 fn failure_type(msg: &str) -> &'static str {
@@ -224,5 +285,25 @@ mod tests {
         assert_eq!(i64s_param(&p, "list"), vec![1, 2]);
         assert!(bool_param(&p, "b"));
         assert!(!bool_param(&p, "missing"));
+    }
+
+    #[test]
+    fn send_log_keeps_what_people_see() {
+        let id = ServiceId::parse_from_service_id_string("00000000-0000-4000-8000-000000000001").unwrap();
+        let dm = DataMessage { body: Some("hi".into()), timestamp: Some(5), ..Default::default() };
+        let entry = sent_log_entry(&Target::Contacts(vec![id]), &ContentBody::DataMessage(dm.clone())).unwrap();
+        assert_eq!(entry.kind, "data");
+        assert_eq!(entry.recipients, vec![id.service_id_string()]);
+        assert_eq!(DataMessage::decode(B64.decode(&entry.body).unwrap().as_slice()).unwrap(), dm);
+        let json = serde_json::to_vec(&entry).unwrap();
+        assert_eq!(serde_json::from_slice::<crate::store::SentLogEntry>(&json).unwrap(), entry);
+
+        let group = Target::Group { master_key: [7; 32], revision: 0 };
+        let entry = sent_log_entry(&group, &ContentBody::DataMessage(dm)).unwrap();
+        assert_eq!(entry.group.as_deref(), Some(B64.encode([7u8; 32]).as_str()));
+        assert!(entry.recipients.is_empty());
+
+        let typing = ContentBody::TypingMessage(Default::default());
+        assert!(sent_log_entry(&group, &typing).is_none());
     }
 }

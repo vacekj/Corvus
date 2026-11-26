@@ -1,4 +1,4 @@
-//! updateAccount: device name, username, phone number privacy.
+//! updateAccount: device name, username, phone number privacy. reconnect: the network is back.
 
 use std::rc::Rc;
 
@@ -9,7 +9,14 @@ use crate::ctx::Ctx;
 use crate::method;
 use crate::rpc::{Method, RpcError, fail};
 
-pub const METHODS: &[Method] = &[method!("updateAccount", update_account)];
+pub const METHODS: &[Method] = &[method!("updateAccount", update_account), method!("reconnect", reconnect)];
+
+/// The Mac woke up or the network came back: a receive loop waiting out its backoff (up to a
+/// minute) reconnects at once. A connection that is up is left alone.
+async fn reconnect(ctx: Rc<Ctx>, _p: Value) -> Result<Value, RpcError> {
+    ctx.wake.notify_one();
+    Ok(json!({}))
+}
 
 async fn update_account(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
     let a = ctx.account()?;

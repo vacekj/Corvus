@@ -27,6 +27,9 @@ pub struct Ctx {
     pub out: Output,
     account: Option<Account>,
     unavailable: String,
+    /// Set by `reconnect` (the Mac woke up, the network came back): a receive loop waiting to
+    /// reconnect tries again at once instead of after its backoff.
+    pub wake: tokio::sync::Notify,
 }
 
 impl Ctx {
@@ -36,6 +39,7 @@ impl Ctx {
             out,
             account: Some(account),
             unavailable: String::new(),
+            wake: tokio::sync::Notify::new(),
         }
     }
 
@@ -46,6 +50,7 @@ impl Ctx {
             out,
             account: None,
             unavailable: reason.into(),
+            wake: tokio::sync::Notify::new(),
         }
     }
 
@@ -73,6 +78,8 @@ pub struct Account {
     discovery_misses: RefCell<HashMap<String, Instant>>,
     /// Accounts whose profile was fetched (or tried) this run because nothing else named them.
     profiles_fetched: RefCell<HashSet<Uuid>>,
+    /// (requester, timestamp) of messages sent again after a retry request, this run.
+    resent: RefCell<HashSet<(String, u64)>>,
 }
 
 /// Number and group-name lookups for the envelope mapping, cached briefly.
@@ -115,6 +122,7 @@ impl Account {
             directory: RefCell::new(None),
             discovery_misses: RefCell::new(HashMap::new()),
             profiles_fetched: RefCell::new(HashSet::new()),
+            resent: RefCell::new(HashSet::new()),
         }
     }
 
@@ -319,6 +327,12 @@ impl Account {
                 None
             }
         }
+    }
+
+    /// Whether the message sent at `timestamp` was not sent again to `requester` yet this run (each of
+    /// their devices may ask; one resend reaches them all).
+    pub fn first_resend(&self, requester: &ServiceId, timestamp: u64) -> bool {
+        self.resent.borrow_mut().insert((requester.service_id_string(), timestamp))
     }
 
     /// The file-name key Corvus uses for a person: number if known, else UUID.

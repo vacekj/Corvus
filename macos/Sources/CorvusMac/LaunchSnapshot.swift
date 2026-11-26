@@ -26,10 +26,10 @@ enum LaunchSnapshot {
     /// Written off the main thread from a copy of the state.
     static func save(_ state: ChatState, account: String, wait: Bool = false) {
         guard !account.isEmpty, let key = key() else { return }
-        let box = UncheckedBox(state), url = url
-        let write = {
+        let box = UncheckedBox(state), url = url, recent = recentChats, perChat = messagesPerChat
+        let write: @Sendable () -> Void = {
             let o: [String: Any] = ["account": account,
-                                    "records": box.value.snapshotRecords(recentChats: recentChats, messages: messagesPerChat)]
+                                    "records": box.value.snapshotRecords(recentChats: recent, messages: perChat)]
             guard let plain = try? JSONSerialization.data(withJSONObject: o),
                   let sealed = try? AES.GCM.seal(plain, using: key).combined else { return }
             let tmp = url.appendingPathExtension("tmp")

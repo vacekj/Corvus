@@ -726,7 +726,7 @@ impl<S: Store> Manager<S, Registered> {
                                             "got error decrypting a message"
                                         );
                                         // Corvus patch: they could not decrypt ours; start a new session.
-                                        answer_retry_request(
+                                        let ours = answer_retry_request(
                                             &state.store,
                                             &state.message_sender,
                                             state.device_id,
@@ -735,6 +735,15 @@ impl<S: Store> Manager<S, Registered> {
                                             e,
                                         )
                                         .await;
+                                        if let (true, Some(timestamp)) = (ours, e.timestamp) {
+                                            return Some((
+                                                Received::RetryRequest {
+                                                    requester: content.metadata.sender,
+                                                    timestamp,
+                                                },
+                                                state,
+                                            ));
+                                        }
                                         return Some((
                                             Received::DecryptionError(content.metadata.sender),
                                             state,
@@ -1157,6 +1166,53 @@ impl<S: Store> Manager<S, Registered> {
 
     /// Corvus patch: like [Self::send_message], but can send online-only messages (typing) and
     /// returns the send result.
+    /// Corvus patch: sends a message again to one recipient who could not decrypt it (a retry
+    /// request), as it was sent: same timestamp, our profile key, the chat's disappearing-message
+    /// timer; no sync transcript to our own devices.
+    pub async fn resend_message(
+        &mut self,
+        recipient: ServiceId,
+        message: impl Into<ContentBody>,
+        timestamp: u64,
+    ) -> Result<(), Error<S::Error>> {
+        let mut sender = self.new_message_sender().await?;
+        let mut content_body: ContentBody = message.into();
+        let group_key = match &content_body {
+            ContentBody::DataMessage(DataMessage { group_v2: Some(g), .. }) => g.master_key.clone(),
+            ContentBody::EditMessage(e) => e
+                .data_message
+                .as_ref()
+                .and_then(|d| d.group_v2.as_ref())
+                .and_then(|g| g.master_key.clone()),
+            _ => None,
+        };
+        let thread = match group_key.as_deref().and_then(|k| <[u8; 32]>::try_from(k).ok()) {
+            Some(key) => Thread::Group(key),
+            None => Thread::Contact(recipient),
+        };
+        self.restore_thread_timer(&thread, &mut content_body).await;
+        if let ContentBody::DataMessage(message) = &mut content_body {
+            message
+                .profile_key
+                .get_or_insert(self.state.data.profile_key().get_bytes().to_vec());
+            message.required_protocol_version.get_or_insert(0);
+        }
+        ensure_data_message_timestamp(&mut content_body, timestamp);
+        let sender_certificate = self.sender_certificate().await?;
+        let unidentified_access = self
+            .store
+            .profile_key(&recipient)
+            .await?
+            .map(|profile_key| UnidentifiedAccess {
+                key: profile_key.derive_access_key().to_vec(),
+                certificate: sender_certificate.clone(),
+            });
+        sender
+            .resend_message(&recipient, unidentified_access.as_ref(), &content_body, timestamp, false)
+            .await?;
+        Ok(())
+    }
+
     pub async fn send_message_ext(
         &mut self,
         recipient: impl Into<ServiceId>,
@@ -2067,13 +2123,13 @@ async fn answer_retry_request<S: Store>(
     requester: ServiceId,
     requester_device: libsignal_service::protocol::DeviceId,
     message: &libsignal_service::proto::DecryptionErrorMessage,
-) {
+) -> bool {
     use libsignal_service::session_repair::{archive_session_for_retry_request, RetryRequest};
     let Some(request) = RetryRequest::from_proto(message) else {
-        return;
+        return false;
     };
     if request.device_id != u32::from(own_device) {
-        return;
+        return false;
     }
     let address = ProtocolAddress::new(requester.service_id_string(), requester_device);
     let mut protocol_store = store.aci_protocol_store();
@@ -2091,6 +2147,7 @@ async fn answer_retry_request<S: Store>(
     if let Err(error) = sender.send_null_message(&requester, None).await {
         warn!(%error, "failed to send a null message after a retry request");
     }
+    true
 }
 
 /// Incoming messages keep known groups current, so only unknown ones are fetched.

@@ -165,7 +165,7 @@ final class WarmListsContainer: NSView {
     /// that switches chats: that pass only shows the new header, composer and selection (on screen in the
     /// next frame), and the list is built in a following run loop pass, one list per pass.
     private func reconcile() {
-        guard let model, bounds.width > 0, bounds.height > 0 else { return }
+        guard model != nil, bounds.width > 0, bounds.height > 0 else { return }
         for k in hosts.keys where !keys.contains(k) {
             hosts[k]?.removeFromSuperview()
             hosts[k] = nil
