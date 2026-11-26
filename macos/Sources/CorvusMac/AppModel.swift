@@ -1022,7 +1022,7 @@ final class AppModel {
 
     var currentConversation: Conversation? { current.flatMap { chats.convs[$0] } }
 
-    var totalUnread: Int { chats.convs.values.reduce(0) { $0 + $1.unread } }
+    var totalUnread: Int { chats.unreadTotal(now: nowMs()) } // muted chats do not count
 
     func displayName(_ key: String) -> String { chats.displayName(key) }
     func senderName(_ m: Message) -> String { chats.senderName(m) }
@@ -1087,7 +1087,7 @@ final class AppModel {
         fetchMissingAvatars()
     }
 
-    private func updateBadge() {
+    func updateBadge() {
         let unread = totalUnread
         NSApp.dockTile.badgeLabel = unread > 0 ? "\(unread)" : nil
     }

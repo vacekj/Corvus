@@ -40,6 +40,7 @@ extension AppModel {
         guard c.muted != (until != nil) || c.muteUntilMs != (until ?? 0) else { return }
         if let rec = chats.setMute(key, until: until) { persist(rec) }
         MuteExpiry.shared.schedule(self)
+        updateBadge() // muted chats do not count
         // The phone and other devices mute it too (Storage Service).
         let phone: Int64 = until.map { $0 == 0 ? -1 : $0 } ?? 0
         PhoneMutes.seen[key] = phone
@@ -59,6 +60,7 @@ extension AppModel {
         if until == nil && previous == nil { return } // never muted there: keep the local state
         if let rec = chats.setMute(key, until: until) { persist(rec) }
         MuteExpiry.shared.schedule(self)
+        updateBadge()
     }
 
     /// Unmutes chats whose timed mute ran out and sets the timer for the next one.
@@ -67,6 +69,7 @@ extension AppModel {
             if let rec = chats.setMute(key, until: nil) { persist(rec) }
         }
         MuteExpiry.shared.schedule(self)
+        updateBadge() // a chat whose mute ran out counts again
     }
 }
 

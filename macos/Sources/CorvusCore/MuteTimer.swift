@@ -37,6 +37,11 @@ extension Conversation {
 }
 
 extension ChatState {
+    /// Unread messages for the Dock badge, window title and menu bar: muted chats do not count.
+    public func unreadTotal(now: Int64) -> Int {
+        convs.values.reduce(0) { $1.isMuted(at: now) ? $0 : $0 + $1.unread }
+    }
+
     /// Mutes until `until` (0 = until unmuted) or unmutes (nil). Returns the record to persist, nil when
     /// nothing changed.
     public mutating func setMute(_ key: String, until: Int64?) -> JSON? {
