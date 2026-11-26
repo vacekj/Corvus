@@ -233,8 +233,21 @@ final class AppModel {
             guard let self else { return }
             // Kept while the history is still being unlocked, and while the backend catches up on what the
             // server kept for us (Catchup.swift): those are shown all at once, without alerts.
-            if self.historyReady && !self.catchingUp { self.onEnvelope(env) } else { self.bufferEnvelope(env) }
+            if !self.historyReady || self.catchingUp {
+                self.bufferEnvelope(env)
+            } else if ScrollHold.shared.scrolling {
+                ScrollHold.shared.hold(env) // applied when the scroll ends (ScrollHold.swift)
+            } else {
+                self.onEnvelope(env)
+            }
         }
+        ScrollHold.shared.apply = { [weak self] items in
+            guard let self else { return }
+            for env in items {
+                if self.historyReady && !self.catchingUp { self.onEnvelope(env) } else { self.bufferEnvelope(env) }
+            }
+        }
+        ScrollHold.shared.start()
         cli.onSyncState = { [weak self] syncing in self?.setCatchingUp(syncing) }
         cli.onCallEvent = { [weak self] ev in self?.onCallEvent(ev) }
         cli.onRosterChanged = { [weak self] in self?.rosterChanged() }
@@ -1025,7 +1038,12 @@ final class AppModel {
     var totalUnread: Int { chats.unreadTotal(now: nowMs()) } // muted chats do not count
 
     func displayName(_ key: String) -> String { chats.displayName(key) }
-    func senderName(_ m: Message) -> String { chats.senderName(m) }
+    /// `chats.senderName`, reading `chats` only when the message came without a name: a message row that
+    /// reads it is drawn again whenever any chat changes (a message elsewhere while scrolling).
+    func senderName(_ m: Message) -> String {
+        if !m.sender.isEmpty && !People.isServiceId(m.sender) { return m.sender }
+        return chats.displayName(m.authorKey)
+    }
 
     /// Group members the backend could not name when their messages came (a member who is not a contact,
     /// while catching up or with a slow profile server): asked for in one request, once per run each.
@@ -1089,7 +1107,8 @@ final class AppModel {
 
     func updateBadge() {
         let unread = totalUnread
-        NSApp.dockTile.badgeLabel = unread > 0 ? "\(unread)" : nil
+        let label = unread > 0 ? "\(unread)" : nil
+        if NSApp.dockTile.badgeLabel != label { NSApp.dockTile.badgeLabel = label } // the Dock redraws on every set
     }
 
     func learnName(_ key: String, _ name: String) {
@@ -2194,7 +2213,7 @@ final class AppModel {
         }
     }
 
-    nonisolated static var avatarDir: URL { SignalDataDir.avatars() }
+    nonisolated static let avatarDir: URL = SignalDataDir.avatars() // looked up once: asked on every list change
 
     /// The backend's file names (as signal-cli's): "contact-<number|uuid>" (address book), "profile-<number|uuid>" (own picture)
     /// and "group-<group id, URL-safe base64>".

@@ -62,6 +62,7 @@ final class ScrollBench: NSObject {
         let l = sv.displayLink(target: self, selector: #selector(tick(_:)))
         l.add(to: .main, forMode: .common)
         link = l
+        ScrollHold.shared.began() // as a live scroll with the trackpad
     }
 
     @objc private func tick(_ l: CADisplayLink) {
@@ -94,6 +95,7 @@ final class ScrollBench: NSObject {
     private func finish(_ l: CADisplayLink) {
         l.invalidate()
         link = nil
+        ScrollHold.shared.ended()
         let d = deltas.sorted()
         guard !d.isEmpty, let period = scroll?.window?.screen.map({ 1000 / Double($0.maximumFramesPerSecond) }) else { return }
         let dropped = deltas.reduce(0) { $0 + max(0, Int(($1 / period).rounded()) - 1) }

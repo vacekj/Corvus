@@ -333,10 +333,14 @@ public struct ChatState {
     /// When the next disappearing message is due (ms since 1970), nil if no timer is running.
     public func nextExpiryMs() -> Int64? {
         var due: Int64?
+        // Runs after every history write over the whole history: fields are read in place, without copying
+        // each message (a copy retains all its strings and arrays).
         for c in convs.values {
-            for m in c.msgs where m.expiresInSeconds > 0 && m.expirationStartMs > 0 {
-                let at = m.expirationStartMs + Int64(m.expiresInSeconds) * 1000
-                if due == nil || at < due! { due = at }
+            c.msgs.withUnsafeBufferPointer { buf in
+                for i in buf.indices where buf[i].expiresInSeconds > 0 && buf[i].expirationStartMs > 0 {
+                    let at = buf[i].expirationStartMs + Int64(buf[i].expiresInSeconds) * 1000
+                    if due == nil || at < due! { due = at }
+                }
             }
         }
         return due
