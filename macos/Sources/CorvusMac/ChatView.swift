@@ -133,7 +133,7 @@ private struct SearchBar: View {
 // MARK: - Messages
 
 /// Position of a message inside a run of messages from the same author.
-struct MessageGrouping {
+struct MessageGrouping: Equatable {
     var joinedAbove = false
     var joinedBelow = false
 }
@@ -293,77 +293,48 @@ private struct MessageList: View, Equatable {
             && ca.msgs.withUnsafeBufferPointer { pa in cb.msgs.withUnsafeBufferPointer { pa.baseAddress == $0.baseAddress } }
     }
 
-    private func sameRun(_ a: Message, _ b: Message) -> Bool {
-        !a.isNotice && !b.isNotice && a.outgoing == b.outgoing && a.authorKey == b.authorKey && abs(a.ts - b.ts) <= Theme.groupGapMs
-            && LocalDay.of(a.ts) == LocalDay.of(b.ts)
-    }
+
+    @State private var table = MessageTableController()
+    @Environment(\.searchHighlightId) private var searchHighlightId
+    @Environment(\.searchHighlightQuery) private var searchHighlightQuery
+    @Environment(\.groupMemberLabels) private var memberLabels
+    @Environment(\.displayScale) private var displayScale
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         let msgs = conversation.msgs
         let scrollState = ChatScrollState.of(conversation.key)
-        let divider = scrollState.divider
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    if msgs.isEmpty {
-                        EmptyChat(conversation: conversation).padding(.top, 60)
-                    }
-                    // The whole history: the lazy stack builds only what is on screen. (Adding older messages in
-                    // pages made every page stall scrolling while the stack re-measured to keep the position.)
-                    ForEach(IndexedMessages(base: msgs)) { row in
-                        let i = row.index, m = row.message
-                        let newDay = i == 0 || LocalDay.of(msgs[i - 1].ts) != LocalDay.of(m.ts)
-                        let g = MessageGrouping(joinedAbove: i > 0 && sameRun(msgs[i - 1], m),
-                                                joinedBelow: i + 1 < msgs.count && sameRun(m, msgs[i + 1]))
-                        VStack(spacing: 0) {
-                            if newDay { DateSeparator(date: m.time) }
-                            if let divider, m.ts == divider.ts && m.authorKey == divider.authorKey { UnreadDivider() }
-                            if m.isNotice {
-                                ChatNoticeRow(message: m).padding(.top, newDay ? 2 : 10)
-                            } else {
-                                MessageRow(message: m, isGroup: conversation.isGroup, grouping: g,
-                                           pending: pendingTs.contains(m.ts),
-                                           avatar: conversation.isGroup && !m.outgoing && !g.joinedBelow ? authorAvatar(m) : nil)
-                                    .padding(.top, g.joinedAbove ? 2 : (newDay ? 2 : 10))
-                            }
-                        }
-                        .id(m.id)
-                    }
-                    TypingBubbleRow(key: conversation.key, isGroup: conversation.isGroup)
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(ScrollPositionObserver(key: conversation.key))
+        // The rows are an AppKit table (MessageTable.swift): SwiftUI's lazy stack rebuilt and measured rows on
+        // every scrolled frame.
+        MessageTable(controller: table, key: conversation.key, msgs: msgs, isGroup: conversation.isGroup,
+                     divider: scrollState.divider, pendingTs: pendingTs,
+                     typing: !TypingIndicators.shared.typers(in: conversation.key).isEmpty,
+                     environment: .init(searchHighlightId: searchHighlightId, searchHighlightQuery: searchHighlightQuery,
+                                        memberLabels: memberLabels, avatarsVersion: model.avatars.count,
+                                        displayScale: displayScale, colorScheme: colorScheme),
+                     model: model)
+            .overlay {
+                if msgs.isEmpty { EmptyChat(conversation: conversation).padding(.top, 60).frame(maxHeight: .infinity, alignment: .top) }
             }
-            .defaultScrollAnchor(.bottom)
             .overlay(alignment: .bottomTrailing) {
-                JumpToBottomButton(state: scrollState) {
-                    guard let id = conversation.msgs.last?.id else { return }
-                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
-                }
+                JumpToBottomButton(state: scrollState) { table.scrollToBottom(animated: true) }
             }
             .environment(\.conversationKey, conversation.key)
             .background(ChatBackground(key: conversation.key))
             // New messages scroll into view only while the end of the list is in view (own messages always);
             // otherwise "↓ N new" counts them.
             .onChange(of: LastMessageMark(msgs.last)) { old, new in
-                guard scrollState.lastMessageChanged(from: old, to: new) == .scrollToBottom,
-                      let id = conversation.msgs.last?.id else { return }
-                withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .bottom) }
+                guard scrollState.lastMessageChanged(from: old, to: new) == .scrollToBottom else { return }
+                DispatchQueue.main.async { table.scrollToBottom(animated: true) }
             }
             .onChange(of: model.scrollRequest?.serial) { _, _ in
                 // only the visible one of the kept lists (read here, not in `body`, so switching chats does
                 // not rebuild the lists)
                 guard model.current == conversation.key, let id = model.scrollRequest?.id else { return }
-                withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(id, anchor: .center) }
+                table.scrollTo(id: id, center: true, animated: true)
             }
-        }
     }
 
-    /// Not via `model.chats`: a list reading it is rebuilt whenever any chat changes.
-    private func authorAvatar(_ m: Message) -> NSImage {
-        model.avatars[m.authorKey] ?? Media.placeholderAvatar(key: m.authorKey, title: m.sender.isEmpty ? m.authorKey : m.sender)
-    }
 }
 
 /// Calendar day of a timestamp in the local time zone, as a number. `Calendar.isDate(_:inSameDayAs:)`
@@ -434,7 +405,7 @@ private struct EmptyChat: View {
     }
 }
 
-private struct DateSeparator: View {
+struct DateSeparator: View {
     let date: Date
 
     var body: some View {
@@ -459,7 +430,7 @@ private struct DateSeparator: View {
     }
 }
 
-private struct MessageRow: View {
+struct MessageRow: View {
     @Environment(AppModel.self) private var model
     let message: Message
     let isGroup: Bool

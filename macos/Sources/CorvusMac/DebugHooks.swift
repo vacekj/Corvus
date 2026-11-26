@@ -99,6 +99,15 @@ enum DebugHooks {
             let lines = (item?.types ?? []).map { "\($0.rawValue) \(item?.data(forType: $0)?.count ?? 0)" }
             try? (lines.joined(separator: "\n") + "\n").write(toFile: arg, atomically: true, encoding: .utf8)
         case "snapshot": snapshot(to: arg)
+        case "window-size":
+            // window-size <width>x<height>: resizes the main window (keeps its top left corner)
+            let wh = arg.split(separator: "x").compactMap { Double($0) }
+            if wh.count == 2, let w = MainWindowTracker.shared.window {
+                var f = w.frame
+                f.origin.y += f.height - wh[1]
+                f.size = NSSize(width: wh[0], height: wh[1])
+                w.setFrame(f, display: true)
+            }
         case "agents": model.agentAccess.enabled = arg != "off"
         case "counts":
             // counts <file>: messages and unread per chat, alerts so far, catch-up state

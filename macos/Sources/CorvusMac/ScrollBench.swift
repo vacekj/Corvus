@@ -19,6 +19,7 @@ final class ScrollBench: NSObject {
     private var poll: Timer?
     /// Where the window was before the run moved it to the fastest screen (put back when done).
     private var originalFrame: (NSWindow, NSRect)?
+    private var cellCounts = (0, 0)
 
     static let framesPerLeg = Int(ProcessInfo.processInfo.environment["CORVUS_SCROLL_BENCH_FRAMES"] ?? "") ?? 600
     static var enabled: Bool { ProcessInfo.processInfo.environment["CORVUS_SCROLL_BENCH"] != nil }
@@ -62,6 +63,8 @@ final class ScrollBench: NSObject {
         scroll = sv
         let speed = Double(ProcessInfo.processInfo.environment["CORVUS_SCROLL_BENCH"] ?? "") ?? 3000 // points per second
         step = CGFloat(speed / Double(window.screen?.maximumFramesPerSecond ?? 120))
+        cellCounts = (MessageCellView.layouts, MessageCellView.configured)
+        MessageCellView.stats = [[Double]](repeating: [0, 0], count: 4)
         Perf.mark("scroll bench: start, \(Int(speed)) pt/s, screen \(window.screen?.maximumFramesPerSecond ?? 0) Hz")
         let l = sv.displayLink(target: self, selector: #selector(tick(_:)))
         l.add(to: .main, forMode: .common)
@@ -111,6 +114,7 @@ final class ScrollBench: NSObject {
         Self.logHitches(hitches)
         Perf.mark(String(format: "scroll bench: %d frames, %d dropped (%.1f%%), p50 %.1f ms, p95 %.1f ms, p99 %.1f ms, max %.1f ms",
                          deltas.count, dropped, 100 * Double(dropped) / Double(deltas.count + dropped), p(0.5), p(0.95), p(0.99), d.last!))
+        Perf.mark("scroll bench: \(MessageCellView.layouts - cellCounts.0) row layouts, \(MessageCellView.configured - cellCounts.1) rows configured; row layouts (count, ms) new/entered window/resized/other: \(MessageCellView.stats.map { "\(Int($0[0])) \(Int($0[1]))" }.joined(separator: " / "))")
     }
 
     /// CORVUS_OPEN_BENCH=n: opens the largest chats in turn, n times, and logs how long each open takes until
