@@ -15,9 +15,9 @@ struct ChatPane: View {
             if !conversation.pins.isEmpty { PinnedMessagesBar(conversation: conversation) }
             // In an overlay the list's changing content size never re-runs the layout of the window around it
             // (composer, toolbar): a VStack measures its children, and a scroll view measures its content.
-            // Recently used chats keep their message list alive, hidden, each in its own hosting view: building
-            // a list is the slow part of opening a chat, and in one shared view graph every switch would make
-            // SwiftUI revisit all kept lists. Switching to a kept chat only flips which list is visible.
+            // Recently used chats keep their message list alive, hidden: building a list is the slow part of
+            // opening a chat, and switching to a kept chat only flips which list is visible. They share the
+            // window's view graph (see `WarmListsContainer.hosted` for why not a hosting view each).
             Color.clear.overlay {
                 if WarmListsContainer.hosted {
                     // The chat background (not the window's) shows while a list is being built.
@@ -144,7 +144,10 @@ private struct WarmMessageLists: NSViewRepresentable {
 }
 
 final class WarmListsContainer: NSView {
-    static let hosted = ProcessInfo.processInfo.environment["CORVUS_WARM_HOSTS"] != "0"
+    /// Off by default: on macOS 27 a list in a hosting view of its own made every scrolled frame lay out the
+    /// whole window (60% of frames dropped in a real chat at 120 Hz, against 6% in the window's own view
+    /// graph). CORVUS_WARM_HOSTS=1 turns it back on for comparison.
+    static let hosted = ProcessInfo.processInfo.environment["CORVUS_WARM_HOSTS"] == "1"
     // SwiftUI's hover tracking in the hosted lists expects flipped coordinates; unflipped, the row mirrored
     // vertically from the pointer was treated as hovered.
     override var isFlipped: Bool { true }
@@ -491,7 +494,12 @@ private struct MessageRow: View {
             hoverActions
         }
         .modifier(SelectableRow(id: m.id))
-        .onHover { hovering = $0 }
+        // Not while scrolling: rows pass under a still pointer, and a hovered message swaps in a selectable
+        // AppKit text view (and its hover buttons) for every row it passes, which cost most of a frame.
+        .onHover { inside in
+            if inside && ScrollHold.shared.scrolling { return }
+            if hovering != inside { hovering = inside }
+        }
     }
 
     /// Quick actions that appear next to the bubble under the pointer (like the Signal desktop client).

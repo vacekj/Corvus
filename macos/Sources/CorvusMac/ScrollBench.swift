@@ -51,7 +51,8 @@ final class ScrollBench: NSObject {
         }
         if model?.current == nil { Perf.mark("scroll bench: waiting for an open chat") }
         guard link == nil, let window = NSApp.windows.first(where: { $0.isVisible && $0.contentView != nil }),
-              let sv = Self.scrollViews(window.contentView!).filter({ $0.convert($0.bounds, to: nil).minX > 200 })
+              let sv = Self.scrollViews(window.contentView!)
+                  .filter({ !$0.isHiddenOrHasHiddenAncestor && $0.convert($0.bounds, to: nil).minX > 200 }) // not a kept, hidden list
                   .max(by: { ($0.documentView?.frame.height ?? 0) < ($1.documentView?.frame.height ?? 0) }),
               (sv.documentView?.frame.height ?? 0) > sv.contentView.bounds.height * 3 else { return }
         poll?.invalidate()
@@ -163,3 +164,4 @@ final class ScrollBench: NSObject {
         return out
     }
 }
+
