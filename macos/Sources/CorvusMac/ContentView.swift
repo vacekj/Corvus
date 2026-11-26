@@ -461,7 +461,7 @@ struct ChatListItem: Equatable {
             t = a.isSticker ? "Sticker" : a.isGif ? "GIF" : a.isImage ? "📷 Photo" : a.isVideo ? "🎬 Video"
                 : a.isAudio ? "🎤 Voice message" : "📎 " + a.filename
         }
-        return (m.outgoing ? "You: " : (isGroup && !m.sender.isEmpty ? m.sender + ": " : "")) + t
+        return (m.outgoing ? "You: " : (isGroup && !m.sender.isEmpty && !People.isServiceId(m.sender) ? m.sender + ": " : "")) + t
     }
 
     /// Time for today, weekday within a week, else the date.

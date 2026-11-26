@@ -334,7 +334,7 @@ struct SenderNameLabel: View {
     let message: Message
 
     var body: some View {
-        let name = message.sender.isEmpty ? model.displayName(message.authorKey) : message.sender
+        let name = model.senderName(message)
         let label = labels[message.authorKey] ?? labels[model.chats.resolveKey(message.authorKey)]
         HStack(spacing: 5) {
             Text(name)

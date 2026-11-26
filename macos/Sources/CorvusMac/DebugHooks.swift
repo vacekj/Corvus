@@ -85,6 +85,13 @@ enum DebugHooks {
                let i = m.attachments.firstIndex(where: \.isVideo) {
                 if arg == "viewer" { model.openMediaViewer(m, i) } else { model.openAttachment(m, i) }
             }
+        case "player-state":
+            // player-state <file>: the media viewer's player: item status (1 ready, 2 failed), seconds, rate
+            let p = ImageViewerWindow.shared.item?.player, item = p?.currentItem
+            let line = "status=\(item?.status.rawValue ?? -1) time=\(String(format: "%.2f", p?.currentTime().seconds ?? -1)) "
+                + "duration=\(String(format: "%.2f", item?.duration.seconds ?? -1)) rate=\(p?.rate ?? -1) "
+                + "error=\(item?.error?.localizedDescription ?? "none")\n"
+            try? line.write(toFile: arg, atomically: true, encoding: .utf8)
         case "copy-image": ImageViewerWindow.shared.copyCurrent()
         case "clipboard":
             // One line per pasteboard type: "<type> <byte count>".

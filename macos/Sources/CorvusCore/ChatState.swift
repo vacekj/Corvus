@@ -54,6 +54,13 @@ public struct ChatState {
         return convs[r]?.title ?? key
     }
 
+    /// Who wrote an incoming message, as shown: the name it came with, else the person's current name. A
+    /// message from someone the backend could not name yet came with the UUID as the name.
+    public func senderName(_ m: Message) -> String {
+        if !m.sender.isEmpty && !People.isServiceId(m.sender) { return m.sender }
+        return displayName(m.authorKey)
+    }
+
     public func effectiveAuthor(_ c: Conversation, _ m: Message) -> String {
         if !m.authorKey.isEmpty { return m.authorKey }
         if m.outgoing { return account }

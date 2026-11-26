@@ -426,6 +426,10 @@ for line in sys.stdin:
         if self_account in p.get("recipients", []):
             res = [{"number": self_account, "uuid": "self-uuid", "username": current_username,
                     "profile": {"givenName": own_given, "familyName": own_family}}]
+        elif p.get("recipients"):
+            # people asked for by id who are not contacts (group members): named from their profiles
+            res = [{"uuid": r, "number": None, "name": "", "profileName": "Member " + r[:4]}
+                   for r in p["recipients"] if not any(c.get("uuid") == r for c in CONTACTS)]
         else:
             res = CONTACTS
     elif m == "getAvatar":

@@ -47,6 +47,14 @@ async fn list_contacts(ctx: Rc<Ctx>, p: Value) -> Result<Value, RpcError> {
         uuids.push(uuid);
     }
     uuids.push(a.aci);
+    // Asked for by id (a group member who is not a contact): listed as well, with the profile fetched
+    // when it is not cached, so that Corvus can show a name instead of the UUID.
+    for uuid in &wanted {
+        if !uuids.contains(uuid) {
+            a.profile_name_fetching(uuid).await;
+            uuids.push(*uuid);
+        }
+    }
     uuids.sort();
     uuids.dedup();
     for uuid in uuids {

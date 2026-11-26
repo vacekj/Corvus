@@ -115,7 +115,7 @@ private struct VideoAttachment: View {
                                        height: poster.map { Int($0.size.height) } ?? attachment.height, maxSide: maxSide)
         Group {
             if let player {
-                PlayerView(player: player)
+                PlayerView(player: player, controls: .inline)
             } else {
                 Button(action: load) {
                     ZStack {
@@ -146,12 +146,12 @@ private struct VideoAttachment: View {
         }
         .onChange(of: model.videoURLs[token]) { _, url in
             guard let url else { return }
-            let p = AVPlayer(url: url)
+            let p = MediaDecode.videoPlayer(url, contentType: attachment.contentType)
             player = p
             p.play()
         }
         .onAppear {
-            if player == nil, let url = model.videoURLs[token] { player = AVPlayer(url: url) }
+            if player == nil, let url = model.videoURLs[token] { player = MediaDecode.videoPlayer(url, contentType: attachment.contentType) }
         }
         .onDisappear { player?.pause() }
     }

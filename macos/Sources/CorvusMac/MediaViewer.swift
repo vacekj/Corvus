@@ -222,7 +222,7 @@ extension AppModel {
         var it = ImageViewerWindow.Item()
         it.ref = ref
         it.title = (att.filename as NSString).lastPathComponent
-        it.sender = m.outgoing ? "You" : (m.sender.isEmpty ? displayName(m.authorKey) : m.sender)
+        it.sender = m.outgoing ? "You" : senderName(m)
         it.date = m.time
         it.isVideo = att.isVideo
         if att.width > 0 && att.height > 0 { it.pixelSize = CGSize(width: att.width, height: att.height) }
@@ -256,7 +256,7 @@ extension AppModel {
             do {
                 let url = try await videoFile(key, att, token: attachmentToken(m, ref.index))
                 it.videoFile = url
-                it.player = AVPlayer(url: url)
+                it.player = MediaDecode.videoPlayer(url, contentType: att.contentType)
             } catch {
                 it.failed = true
                 it.image = anyCachedImage(att)

@@ -28,7 +28,7 @@ struct ChatNoticeRow: View {
         switch message.notice.kind {
         case .timer:
             let mine = message.authorKey.isEmpty || message.authorKey == model.account
-            let name = mine ? nil : (message.sender.isEmpty ? model.displayName(message.authorKey) : message.sender)
+            let name = mine ? nil : model.senderName(message)
             return DisappearingTimer.noticeText(message.notice.seconds, actor: name)
         case .none:
             return message.text
@@ -200,7 +200,7 @@ private struct PaymentCard: View {
 
     private var title: String {
         if message.outgoing { return "You sent a payment" }
-        let name = message.sender.isEmpty ? model.displayName(message.authorKey) : message.sender
+        let name = model.senderName(message)
         return "\(name) sent you a payment"
     }
 }

@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import UserNotifications
 
 /// Desktop notifications through the macOS notification centre. One notification per
@@ -47,13 +48,24 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         return ok
     }
 
-    func notify(key: String, title: String, body: String, icon: NSImage?, kind: Kind = .plain) {
-        guard let center else { return }
+    /// `sound` plays with the notification, so macOS silences it like the banner (Do Not Disturb, Sleep and
+    /// other Focus modes, the per-app sound switch). `soundFallback` runs instead when no notification can be
+    /// shown (not allowed in System Settings).
+    func notify(key: String, title: String, body: String, icon: NSImage?, kind: Kind = .plain,
+                sound: UNNotificationSound? = nil, soundFallback: (() -> Void)? = nil) {
+        guard let center else {
+            soundFallback?()
+            return
+        }
         Task {
-            guard await requestAuthorization() else { return }
+            guard await requestAuthorization() else {
+                soundFallback?()
+                return
+            }
             let content = UNMutableNotificationContent()
             content.title = title
             content.body = body
+            content.sound = sound
             content.threadIdentifier = key
             content.userInfo = ["key": key]
             content.categoryIdentifier = kind.rawValue
@@ -91,7 +103,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     /// The app decides itself when to alert (not while the user looks at the chat), so show banners in the foreground too.
     nonisolated func userNotificationCenter(_ center: UNUserNotificationCenter,
                                             willPresent notification: UNNotification) async -> UNNotificationPresentationOptions {
-        [.banner, .list]
+        [.banner, .list, .sound]
     }
 }
 
@@ -103,6 +115,7 @@ final class SoundPlayer {
     ]
 
     private var current: NSSound?
+    private var prepared: (source: String, sound: UNNotificationSound)?
 
     /// Plays the configured sound; returns an error text if that was not possible.
     @discardableResult
@@ -120,6 +133,66 @@ final class SoundPlayer {
         current = sound
         sound.play()
         return nil
+    }
+
+    /// The configured sound for a notification. macOS plays notification sounds only from ~/Library/Sounds
+    /// (or the app bundle) and only as AIFF, WAV or CAF: the file is copied there as "Corvus …", converted
+    /// when it is another format. Nil when that is not possible.
+    func notificationSound(_ s: NotificationSettings) -> UNNotificationSound? {
+        if HiddenMode.on { return nil }
+        guard let src = resolve(s) else { return nil }
+        let stamp = (try? FileManager.default.attributesOfItem(atPath: src.path)[.modificationDate] as? Date)?
+            .timeIntervalSince1970 ?? 0
+        let source = "\(src.path)|\(stamp)"
+        if let prepared, prepared.source == source { return prepared.sound }
+        guard let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Sounds", isDirectory: true) else { return nil }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let label = s.soundId == "custom" ? "Custom" : (Self.builtins.first { $0.id == s.soundId }?.title ?? "Chime")
+            .replacingOccurrences(of: " (default)", with: "").replacingOccurrences(of: " (synthesised)", with: " 2")
+        let ext = src.pathExtension.lowercased()
+        let playable = ["aif", "aiff", "wav", "caf"].contains(ext)
+        let name = "Corvus \(label).\(playable ? ext : "caf")"
+        let dest = dir.appendingPathComponent(name)
+        // Only one Corvus sound at a time in the user's Sounds folder (System Settings lists them).
+        for old in (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        where old.hasPrefix("Corvus ") && old != name {
+            try? FileManager.default.removeItem(at: dir.appendingPathComponent(old))
+        }
+        try? FileManager.default.removeItem(at: dest)
+        do {
+            if playable {
+                try FileManager.default.copyItem(at: src, to: dest)
+            } else {
+                try Self.convertToCaf(src, dest)
+            }
+        } catch {
+            return nil
+        }
+        let sound = UNNotificationSound(named: UNNotificationSoundName(name))
+        prepared = (source, sound)
+        return sound
+    }
+
+    /// Another audio format (MP3, M4A …) as linear PCM in a CAF file; at most 30 s (the notification limit).
+    private static func convertToCaf(_ src: URL, _ dest: URL) throws {
+        let input = try AVAudioFile(forReading: src)
+        let format = input.processingFormat
+        let pcm16: [String: Any] = [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: format.sampleRate,
+                                    AVNumberOfChannelsKey: format.channelCount, AVLinearPCMBitDepthKey: 16,
+                                    AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false]
+        let output = try AVAudioFile(forWriting: dest, settings: pcm16, commonFormat: format.commonFormat,
+                                     interleaved: format.isInterleaved)
+        let total = min(input.length, AVAudioFramePosition(format.sampleRate * 29))
+        guard let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 32768) else { throw CocoaError(.fileWriteUnknown) }
+        var done: AVAudioFramePosition = 0
+        while done < total {
+            buffer.frameLength = 0
+            try input.read(into: buffer, frameCount: AVAudioFrameCount(min(32768, total - done)))
+            if buffer.frameLength == 0 { break }
+            try output.write(from: buffer)
+            done += AVAudioFramePosition(buffer.frameLength)
+        }
     }
 
     private func resolve(_ s: NotificationSettings) -> URL? {

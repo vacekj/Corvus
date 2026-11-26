@@ -2,7 +2,7 @@
 //! presage manager with helpers to resolve recipients and groups.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -71,6 +71,8 @@ pub struct Account {
     /// Numbers contact discovery (CDSI) found not on Signal, with when it was asked (CDSI is rate
     /// limited). Found accounts are kept in the local store under [DISCOVERED_KEY].
     discovery_misses: RefCell<HashMap<String, Instant>>,
+    /// Accounts whose profile was fetched (or tried) this run because nothing else named them.
+    profiles_fetched: RefCell<HashSet<Uuid>>,
 }
 
 /// Number and group-name lookups for the envelope mapping, cached briefly.
@@ -94,6 +96,7 @@ impl Lookup for Directory {
 const DIRECTORY_TTL: Duration = Duration::from_secs(60);
 const DISCOVERED_KEY: &str = "discovered_numbers";
 const DISCOVERY_MISS_TTL: Duration = Duration::from_secs(10 * 60);
+const PROFILE_FETCH_TIMEOUT: Duration = Duration::from_secs(4);
 
 impl Account {
     pub fn new(store: SqliteStore, manager: Mgr) -> Self {
@@ -111,6 +114,7 @@ impl Account {
             device_id,
             directory: RefCell::new(None),
             discovery_misses: RefCell::new(HashMap::new()),
+            profiles_fetched: RefCell::new(HashSet::new()),
         }
     }
 
@@ -290,6 +294,31 @@ impl Account {
             None => name.given_name,
         };
         (!full.trim().is_empty()).then_some(full)
+    }
+
+    /// The profile name, with the profile fetched (once per run) when it is not cached: a group member who
+    /// is not a contact is otherwise shown as a UUID. Bounded, so a slow server does not hold up the caller.
+    pub async fn profile_name_fetching(&self, uuid: &Uuid) -> Option<String> {
+        if let Some(name) = self.profile_name(uuid).await {
+            return Some(name);
+        }
+        if *uuid == self.aci || !self.profiles_fetched.borrow_mut().insert(*uuid) {
+            return None;
+        }
+        let id: ServiceId = Aci::from(*uuid).into();
+        let key = self.store.profile_key(&id).await.ok().flatten()?;
+        let mut mgr = self.manager();
+        match tokio::time::timeout(PROFILE_FETCH_TIMEOUT, mgr.retrieve_profile_by_uuid(Aci::from(*uuid), key)).await {
+            Ok(Ok(_)) => self.profile_name(uuid).await,
+            Ok(Err(error)) => {
+                tracing::info!(%error, "profile not fetched");
+                None
+            }
+            Err(_) => {
+                tracing::info!("profile fetch timed out");
+                None
+            }
+        }
     }
 
     /// The file-name key Corvus uses for a person: number if known, else UUID.

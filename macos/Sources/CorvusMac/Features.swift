@@ -532,27 +532,56 @@ extension AppModel {
     }
 }
 
-/// A video with playback controls: AppKit's AVPlayerView. SwiftUI's `VideoPlayer` aborts on macOS 27 when
-/// AVKit is not loaded yet ("failed to demangle superclass of VideoPlayerView"), and referencing AVPlayerView
-/// here also links AVKit.
+/// A video with the system's playback controls: AppKit's AVPlayerView, with a full screen button, and back
+/// at the start when the video ends so that play plays it again (like QuickTime Player). SwiftUI's
+/// `VideoPlayer` aborts on macOS 27 when AVKit is not loaded yet ("failed to demangle superclass of
+/// VideoPlayerView"); referencing AVPlayerView here also links AVKit.
 struct PlayerView: NSViewRepresentable {
     let player: AVPlayer
+    var controls: AVPlayerViewControlsStyle = .floating
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeNSView(context: Context) -> AVPlayerView {
         let v = AVPlayerView()
-        v.controlsStyle = .floating
-        v.showsFullScreenToggleButton = false
+        v.controlsStyle = controls
+        v.showsFullScreenToggleButton = true
         v.player = player
+        context.coordinator.rewindAtEnd(player)
         return v
     }
 
     func updateNSView(_ v: AVPlayerView, context: Context) {
-        if v.player !== player { v.player = player }
+        if v.controlsStyle != controls { v.controlsStyle = controls }
+        if v.player !== player {
+            v.player = player
+            context.coordinator.rewindAtEnd(player)
+        }
     }
 
-    static func dismantleNSView(_ v: AVPlayerView, coordinator: ()) {
+    static func dismantleNSView(_ v: AVPlayerView, coordinator: Coordinator) {
         v.player?.pause()
         v.player = nil
+        coordinator.rewindAtEnd(nil)
+    }
+
+    final class Coordinator {
+        private var endObserver: NSObjectProtocol?
+
+        func rewindAtEnd(_ player: AVPlayer?) {
+            if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+            endObserver = nil
+            guard let player else { return }
+            endObserver = NotificationCenter.default.addObserver(forName: .AVPlayerItemDidPlayToEndTime, object: nil,
+                                                                 queue: .main) { [weak player] n in
+                guard let player, let item = n.object as? AVPlayerItem, item === player.currentItem else { return }
+                player.seek(to: .zero)
+            }
+        }
+
+        deinit {
+            if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+        }
     }
 }
 

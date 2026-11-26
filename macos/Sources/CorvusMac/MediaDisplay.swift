@@ -62,9 +62,22 @@ enum MediaDecode {
         return NSImage(cgImage: cg, size: NSSize(width: cg.width, height: cg.height))
     }
 
+    /// A video file as AVFoundation can read it. The backend keeps attachments without a file extension,
+    /// and AVFoundation does not open a file whose type it cannot tell ("Cannot Open"): the attachment's
+    /// content type says what it is.
+    static func videoAsset(_ url: URL, contentType: String) -> AVURLAsset {
+        guard url.pathExtension.isEmpty else { return AVURLAsset(url: url) }
+        let type = contentType.lowercased()
+        return AVURLAsset(url: url, options: [AVURLAssetOverrideMIMETypeKey: type.hasPrefix("video/") ? type : "video/mp4"])
+    }
+
+    static func videoPlayer(_ url: URL, contentType: String) -> AVPlayer {
+        AVPlayer(playerItem: AVPlayerItem(asset: videoAsset(url, contentType: contentType)))
+    }
+
     /// First frame and display size (rotation applied) of a video file.
-    static func poster(_ url: URL, maxPixel: Int) async -> (NSImage?, CGSize?) {
-        let asset = AVURLAsset(url: url)
+    static func poster(_ url: URL, contentType: String, maxPixel: Int) async -> (NSImage?, CGSize?) {
+        let asset = videoAsset(url, contentType: contentType)
         var size: CGSize?
         if let track = try? await asset.loadTracks(withMediaType: .video).first,
            let (natural, transform) = try? await track.load(.naturalSize, .preferredTransform) {
@@ -130,7 +143,7 @@ extension AppModel {
         let att = m.attachments[i], token = attachmentToken(m, i)
         return await MediaImageCache.shared.image(mediaCacheKey(att, maxPixel) + "|poster", base: mediaCacheBase(att) + "|poster") { [weak self] in
             guard let self, let url = try? await self.videoFile(key, att, token: token) else { return nil }
-            let (img, size) = await MediaDecode.poster(url, maxPixel: maxPixel)
+            let (img, size) = await MediaDecode.poster(url, contentType: att.contentType, maxPixel: maxPixel)
             if let size { await self.noteMediaSize(key, m, i, Int(size.width), Int(size.height)) }
             return img
         }

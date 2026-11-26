@@ -165,9 +165,15 @@ pub async fn handle(ctx: &Rc<Ctx>, account: &Account, content: Content, ack: Ack
     let source_name = match &content.metadata.sender {
         ServiceId::Aci(aci) => {
             let uuid: Uuid = (*aci).into();
-            match account.profile_name(&uuid).await {
+            let name = match account.profile_name(&uuid).await {
                 Some(name) => Some(name),
                 None => account.contact(&uuid).await.map(|c| c.name).filter(|n| !n.is_empty()),
+            };
+            // Nobody named yet (a group member who is not a contact): fetch the profile, except while the
+            // queue is caught up on, where Corvus asks for the names it lacks afterwards.
+            match name {
+                None if !catchup.active => account.profile_name_fetching(&uuid).await,
+                name => name,
             }
         }
         ServiceId::Pni(_) => None,

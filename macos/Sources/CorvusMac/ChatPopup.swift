@@ -281,7 +281,7 @@ private struct PopupBubble: View {
             VStack(alignment: m.outgoing ? .trailing : .leading, spacing: 2) {
                 VStack(alignment: .leading, spacing: 5) {
                     if showSender {
-                        Text(m.sender.isEmpty ? model.displayName(m.authorKey) : m.sender)
+                        Text(model.senderName(m))
                             .font(TypeScale.caption.weight(.semibold))
                             .foregroundStyle(Theme.senderColor(m.authorKey))
                     }

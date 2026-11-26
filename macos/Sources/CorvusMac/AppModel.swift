@@ -112,6 +112,9 @@ final class AppModel {
     var editTs: Int64 = 0
     private var editDraft = ""
     var composerFocusRequest = 0    // incremented to put the caret into the composer
+    @ObservationIgnored private var namesAsked: Set<String> = []
+    @ObservationIgnored private var namesWanted: Set<String> = []
+    @ObservationIgnored private var namesRequest: Task<Void, Never>?
     var composerCursorToEnd = 0
     private var drafts: [String: Draft] = [:] {
         didSet { if oldValue.mapValues(\.preview) != drafts.mapValues(\.preview) { chatListCache.removeAll() } }
@@ -1017,6 +1020,36 @@ final class AppModel {
     var totalUnread: Int { chats.convs.values.reduce(0) { $0 + $1.unread } }
 
     func displayName(_ key: String) -> String { chats.displayName(key) }
+    func senderName(_ m: Message) -> String { chats.senderName(m) }
+
+    /// Group members the backend could not name when their messages came (a member who is not a contact,
+    /// while catching up or with a slow profile server): asked for in one request, once per run each.
+    func askForMissingNames(_ key: String) {
+        guard let c = chats.convs[key], c.isGroup else { return }
+        for m in c.msgs.suffix(500) where !m.outgoing && People.isServiceId(m.authorKey) {
+            noteMissingName(m.authorKey)
+        }
+    }
+
+    private func noteMissingName(_ author: String) {
+        guard !namesAsked.contains(author), People.isServiceId(chats.displayName(author)) else { return }
+        namesAsked.insert(author)
+        namesWanted.insert(author)
+        guard namesRequest == nil else { return }
+        namesRequest = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(1))
+            guard let self else { return }
+            let wanted = Array(namesWanted)
+            namesWanted = []
+            namesRequest = nil
+            guard let list = try? await cli.call("listContacts", ["recipients": wanted]) as? [Any] else { return }
+            for case let e as JSON in list {
+                let uuid = jsonString(e["uuid"])
+                let name = People.displayName(names: [jsonString(e["profileName"]), jsonString(e["name"])], unknown: "")
+                if wanted.contains(uuid), !name.isEmpty { learnName(uuid, name) }
+            }
+        }
+    }
 
     /// Chat title as shown: the own number's chat is "Note to Self", like in the official clients.
     func title(_ c: Conversation) -> String { !account.isEmpty && c.key == account ? "Note to Self" : c.title }
@@ -1220,6 +1253,7 @@ final class AppModel {
             current = key
             loadDraft(key)
             closeSearch()
+            askForMissingNames(key)
         }
         // Only real changes: any write to `chats` makes every view showing chats update.
         // From the launch snapshot nothing is marked read yet: that happens once the history is loaded.
@@ -1482,7 +1516,7 @@ final class AppModel {
         if m.quote.valid { m.quote.authorKey = chats.resolveKey(m.quote.authorKey) }
         if !pe.outgoing {
             var display = chats.convs[srcKey]?.title ?? ""
-            if display.isEmpty { display = pe.srcName.isEmpty ? pe.src : pe.srcName }
+            if display.isEmpty || People.isServiceId(display) { display = pe.srcName.isEmpty ? pe.src : pe.srcName }
             m.sender = display
         }
 
@@ -1497,7 +1531,8 @@ final class AppModel {
 
         let title = group ? "Group" : (pe.outgoing ? key : m.sender)
         guard addMessage(key, m, title: title, group: group) else { return }
-        if !pe.outgoing && !group && !pe.srcName.isEmpty { learnName(key, pe.srcName) }
+        if !pe.outgoing && !pe.srcName.isEmpty { learnName(group ? srcKey : key, pe.srcName) }
+        if !pe.outgoing && group && pe.srcName.isEmpty && People.isServiceId(srcKey) { noteMissingName(srcKey) }
         if !pe.outgoing {
             typingEnded(key, typer: srcKey)
             alertIncoming(key, m)
@@ -1537,7 +1572,12 @@ final class AppModel {
         if key == current && userIsLooking() { return }
         if alertSuppressed(key) { return } // notifications muted, or the chat is open in its own window
 
-        // Notification and sound are independent switches.
+        // Notification and sound are independent switches. With notifications, the sound is the notification's:
+        // macOS then silences it with the banner (Do Not Disturb, Sleep and other Focus modes). Without them,
+        // Corvus plays it itself.
+        let now = nowMs()
+        let ping = notify.sound && now - lastSoundMs >= 700 // a burst of messages should not become a burst of noise
+        if ping { lastSoundMs = now }
         if notify.notifications {
             var preview = m.text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
             if preview.count > 240 { preview = String(preview.prefix(240)) + "…" }
@@ -1554,18 +1594,18 @@ final class AppModel {
             case .nameOnly:
                 body = "New message"
             case .nameAndText:
-                body = c.isGroup && !m.sender.isEmpty ? m.sender + ": " + preview : preview
+                let sender = chats.senderName(m)
+                body = c.isGroup && !People.isServiceId(sender) ? sender + ": " + preview : preview
             }
             // The sender's picture instead of a generic icon; not when the notification hides who wrote.
+            let settings = notify
+            let tone = ping ? sound.notificationSound(settings) : nil
+            if ping && tone == nil { sound.play(settings) } // the file could not be prepared for macOS
             notifier.notify(key: key, title: title, body: body, icon: notify.content == .hidden ? nil : avatarImage(c),
-                            kind: notify.content == .hidden ? .privateMessage : .message)
-        }
-        if notify.sound {
-            let now = nowMs()
-            if now - lastSoundMs >= 700 { // a burst of messages should not become a burst of noise
-                lastSoundMs = now
-                sound.play(notify)
-            }
+                            kind: notify.content == .hidden ? .privateMessage : .message, sound: tone,
+                            soundFallback: tone == nil ? nil : { [weak self] in self?.sound.play(settings) })
+        } else if ping {
+            sound.play(notify)
         }
     }
 

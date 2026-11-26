@@ -175,7 +175,7 @@ struct MessageInfoSheet: View {
                         }
                     }
                 } else {
-                    LabeledContent("From", value: m.sender.isEmpty ? model.displayName(m.authorKey) : m.sender)
+                    LabeledContent("From", value: model.senderName(m))
                 }
             } else {
                 Text("The message is no longer available.").foregroundStyle(.secondary)
